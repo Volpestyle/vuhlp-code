@@ -1,0 +1,35 @@
+name: Forge Verify
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "9"
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Forge
+        # Example: download forge binary or build it
+        # run: curl -L ... -o /usr/local/bin/forge && chmod +x /usr/local/bin/forge
+        run: |
+          echo "Install forge here"
+
+      - name: Forge verify (CI)
+        run: forge verify --mode=ci

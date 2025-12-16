@@ -1,0 +1,93 @@
+{
+  "schema_version": "forge.plan.v1",
+  "goal": "Add passwordless login using email OTP",
+  "target": {
+    "package": "web",
+    "packages": [
+      "web",
+      "api"
+    ],
+    "paths_hint": [
+      "packages/web",
+      "packages/api"
+    ]
+  },
+  "doc_refs": [
+    {
+      "path": "docs/product/auth.md",
+      "heading": "Passwordless login",
+      "rationale": "Defines OTP flow + UX",
+      "confidence": 0.86
+    },
+    {
+      "path": "packages/web/README.md",
+      "heading": "Auth",
+      "rationale": "Local web auth integration notes",
+      "confidence": 0.72
+    }
+  ],
+  "constraints": {
+    "docs_as_contract": true,
+    "no_secrets": true,
+    "diff_only": true,
+    "pnpm_monorepo": true,
+    "aws_serverless": true,
+    "env_sync_command": "pnpm sync:prod"
+  },
+  "plan": [
+    {
+      "id": "step-1",
+      "summary": "Implement OTP request + verify endpoints in api package per docs.",
+      "doc_ref_ids": [
+        0
+      ],
+      "files_to_modify": [
+        "packages/api/src/routes/auth.ts"
+      ],
+      "files_to_create": [],
+      "commands": [
+        "pnpm -r typecheck",
+        "pnpm -r test"
+      ],
+      "notes": "Keep API surface exactly as documented."
+    },
+    {
+      "id": "step-2",
+      "summary": "Wire web UI flow for passwordless login, matching UX described in docs.",
+      "doc_ref_ids": [
+        0,
+        1
+      ],
+      "files_to_modify": [
+        "packages/web/src/pages/login.tsx"
+      ],
+      "files_to_create": [],
+      "commands": [
+        "pnpm -r lint",
+        "pnpm -r test"
+      ],
+      "notes": "No design drift; update docs if new UI states are introduced."
+    }
+  ],
+  "behavior_change": true,
+  "doc_updates_required": false,
+  "doc_updates": [],
+  "risk": "medium",
+  "test_plan": [
+    "pnpm -r test",
+    "Manual: request OTP, verify OTP, ensure session persists"
+  ],
+  "rollback_plan": "Revert the branch/commit created by Forge; no migrations expected.",
+  "acceptance_criteria": [
+    "Users can request OTP via email",
+    "Users can verify OTP and sign in"
+  ],
+  "out_of_scope": [
+    "SMS OTP",
+    "Magic links"
+  ],
+  "questions": [
+    "Do we already have an email provider configured in prod?"
+  ],
+  "estimated_files_changed_max": 10
+}

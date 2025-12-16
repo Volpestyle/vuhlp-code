@@ -1,0 +1,49 @@
+{
+  "schema_version": "forge.verify.v1",
+  "compliant": false,
+  "summary": "Patch introduces a new API response field not documented. Env sync gate is satisfied.",
+  "doc_alignment": {
+    "compliant": false,
+    "mismatches": [
+      {
+        "severity": "error",
+        "doc_ref": {
+          "path": "docs/product/auth.md",
+          "heading": "Passwordless login"
+        },
+        "file": "packages/api/src/routes/auth.ts",
+        "line_range": "120-145",
+        "description": "Endpoint /auth/verify returns {user, token, expiresAt} but docs specify {user, token} only.",
+        "suggested_fix": "Either remove expiresAt from response or update docs to include it and regenerate diagrams."
+      }
+    ]
+  },
+  "policy": {
+    "forbidden_paths_touched": [],
+    "env_prod_changed": true,
+    "env_prod_synced": true,
+    "readme_missing": [],
+    "docs_diagrams_out_of_date": []
+  },
+  "verification_commands": [
+    {
+      "command": "pnpm -r lint",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "command": "pnpm -r test",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "command": "pnpm -C infra cdk:synth",
+      "status": "skipped",
+      "exit_code": 0
+    }
+  ],
+  "next_actions": [
+    "Align API response with docs or update docs + diagrams.",
+    "Re-run forge verify --mode=ci"
+  ]
+}
