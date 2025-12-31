@@ -23,23 +23,39 @@ type Store struct {
 	mu   sync.RWMutex
 	runs map[string]*Run
 
+	sessionsMu sync.RWMutex
+	sessions   map[string]*Session
+
 	subsMu sync.Mutex
 	subs   map[string]map[chan Event]struct{}
+
+	sessionSubsMu sync.Mutex
+	sessionSubs   map[string]map[chan SessionEvent]struct{}
 
 	approvalMu sync.Mutex
 	approvals  map[string]map[string]chan struct{} // runID -> stepID -> ch
 
+	sessionApprovalMu sync.Mutex
+	sessionApprovals  map[string]map[string]chan ApprovalDecision // sessionID -> callID -> ch
+
 	cancelMu sync.Mutex
 	cancels  map[string]context.CancelFunc
+
+	sessionCancelMu sync.Mutex
+	sessionCancels  map[string]context.CancelFunc
 }
 
 func New(dataDir string) *Store {
 	return &Store{
-		dataDir:   util.ExpandHome(dataDir),
-		runs:      map[string]*Run{},
-		subs:      map[string]map[chan Event]struct{}{},
-		approvals: map[string]map[string]chan struct{}{},
-		cancels:   map[string]context.CancelFunc{},
+		dataDir:          util.ExpandHome(dataDir),
+		runs:             map[string]*Run{},
+		sessions:         map[string]*Session{},
+		subs:             map[string]map[chan Event]struct{}{},
+		sessionSubs:      map[string]map[chan SessionEvent]struct{}{},
+		approvals:        map[string]map[string]chan struct{}{},
+		sessionApprovals: map[string]map[string]chan ApprovalDecision{},
+		cancels:          map[string]context.CancelFunc{},
+		sessionCancels:   map[string]context.CancelFunc{},
 	}
 }
 
@@ -50,10 +66,23 @@ func (s *Store) Init() error {
 	if err := os.MkdirAll(filepath.Join(s.dataDir, "runs"), 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(s.dataDir, "sessions"), 0o755); err != nil {
+		return err
+	}
 	return s.loadExisting()
 }
 
 func (s *Store) loadExisting() error {
+	if err := s.loadExistingRuns(); err != nil {
+		return err
+	}
+	if err := s.loadExistingSessions(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) loadExistingRuns() error {
 	runsDir := filepath.Join(s.dataDir, "runs")
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
@@ -76,6 +105,33 @@ func (s *Store) loadExisting() error {
 		s.mu.Lock()
 		s.runs[run.ID] = &run
 		s.mu.Unlock()
+	}
+	return nil
+}
+
+func (s *Store) loadExistingSessions() error {
+	sessionsDir := filepath.Join(s.dataDir, "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sessionID := e.Name()
+		sessionPath := filepath.Join(sessionsDir, sessionID, "session.json")
+		b, err := os.ReadFile(sessionPath)
+		if err != nil {
+			continue
+		}
+		var session Session
+		if err := json.Unmarshal(b, &session); err != nil {
+			continue
+		}
+		s.sessionsMu.Lock()
+		s.sessions[session.ID] = &session
+		s.sessionsMu.Unlock()
 	}
 	return nil
 }
