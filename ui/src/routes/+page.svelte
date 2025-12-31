@@ -36,19 +36,6 @@
   let approvalTurnId = '';
   let stepId = '';
   let isWaitingForModel = false;
-  let waitStartTime = null;
-  let elapsedSeconds = 0;
-  let elapsedInterval = null;
-
-  const thinkingPhrases = [
-    'thinking',
-    'reasoning',
-    'processing',
-    'analyzing',
-    'considering',
-    'computing'
-  ];
-  let currentPhraseIndex = 0;
 
   let providerFilter = '';
   let selectedModel = '';
@@ -106,7 +93,6 @@
 
     return () => {
       clearInterval(interval);
-      if (elapsedInterval) clearInterval(elapsedInterval);
       if (runStream) runStream.close();
       if (sessionStream) sessionStream.close();
       document.removeEventListener('mousemove', handleMouseMove);
@@ -229,7 +215,7 @@
     if (runStream) runStream.close();
     runStream = null;
     streamingText = '';
-    stopWaiting();
+    isWaitingForModel = false;
     await loadSession();
     if (sessionStream) sessionStream.close();
     sessionStream = new EventSource(`${baseUrl}/v1/sessions/${session.id}/events`);
@@ -250,24 +236,35 @@
 
   function handleSessionEvent(ev) {
     recordSessionEvent(ev);
+    if (ev.type === 'turn_started') {
+      isWaitingForModel = true;
+      return;
+    }
     if (ev.type === 'model_output_delta' && ev.data && ev.data.delta) {
-      stopWaiting();
+      isWaitingForModel = false;
       streamingText += ev.data.delta;
       return;
     }
     if (ev.type === 'message_added') {
-      stopWaiting();
-      streamingText = '';
+      if (ev.data && ev.data.role === 'assistant') {
+        isWaitingForModel = false;
+        streamingText = '';
+      }
       loadSession();
       return;
     }
     if (ev.type === 'tool_call_started' && ev.data && ev.data.tool_call_id) {
-      stopWaiting();
       toolCallId = ev.data.tool_call_id;
       approvalTurnId = ev.data.turn_id || approvalTurnId;
     }
-    if (ev.type === 'error') {
-      stopWaiting();
+    if (
+      ev.type === 'error' ||
+      ev.type === 'turn_completed' ||
+      ev.type === 'session_completed' ||
+      ev.type === 'session_failed' ||
+      ev.type === 'session_canceled'
+    ) {
+      isWaitingForModel = false;
     }
   }
 
@@ -352,40 +349,17 @@
     refreshSessions();
   }
 
-  function startWaiting() {
-    isWaitingForModel = true;
-    waitStartTime = Date.now();
-    elapsedSeconds = 0;
-    currentPhraseIndex = 0;
-    
-    if (elapsedInterval) clearInterval(elapsedInterval);
-    elapsedInterval = setInterval(() => {
-      elapsedSeconds = Math.floor((Date.now() - waitStartTime) / 1000);
-      // Rotate phrases every 3 seconds
-      currentPhraseIndex = Math.floor(elapsedSeconds / 3) % thinkingPhrases.length;
-    }, 100);
-  }
-
-  function stopWaiting() {
-    isWaitingForModel = false;
-    waitStartTime = null;
-    if (elapsedInterval) {
-      clearInterval(elapsedInterval);
-      elapsedInterval = null;
-    }
-  }
-
   async function sendMessage() {
     if (!selectedSession) return alert('select a session first');
     if (!chatText.trim()) return alert('enter a message');
-    startWaiting();
+    isWaitingForModel = true;
     const res = await fetch(`${baseUrl}/v1/sessions/${selectedSession.id}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ role: 'user', parts: [{ type: 'text', text: chatText.trim() }], auto_run: true })
     });
     if (!res.ok) {
-      stopWaiting();
+      isWaitingForModel = false;
       const txt = await res.text();
       return alert('send failed: ' + txt);
     }
@@ -480,13 +454,6 @@
 
   function shortId(id) {
     return id ? id.slice(0, 20) + '...' : '---';
-  }
-
-  function formatElapsed(seconds) {
-    if (seconds < 60) return `${seconds}s`;
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}m ${secs}s`;
   }
 
   $: filteredModels = providerFilter
@@ -680,34 +647,18 @@
                 <div class="message assistant loading-state">
                   <div class="message-role">assistant</div>
                   <div class="loading-indicator">
-                    <div class="loading-orb">
-                      <div class="orb-ring"></div>
-                      <div class="orb-ring"></div>
-                      <div class="orb-ring"></div>
-                      <div class="orb-core"></div>
+                    <div class="loading-dots">
+                      <span></span>
+                      <span></span>
+                      <span></span>
                     </div>
-                    <div class="loading-info">
-                      <span class="loading-text">{thinkingPhrases[currentPhraseIndex]}</span>
-                      <span class="loading-elapsed">{formatElapsed(elapsedSeconds)}</span>
-                    </div>
-                  </div>
-                  <div class="loading-wave">
-                    {#each Array(12) as _, i}
-                      <span style="--i: {i}"></span>
-                    {/each}
+                    <span class="loading-text">thinking</span>
                   </div>
                 </div>
               {:else if streamingText}
                 <div class="message assistant streaming">
-                  <div class="message-role">
-                    assistant
-                    <span class="streaming-indicator">
-                      <span class="dot"></span>
-                      <span class="dot"></span>
-                      <span class="dot"></span>
-                    </span>
-                  </div>
-                  <div class="message-content">{streamingText}<span class="cursor-blink">▌</span></div>
+                  <div class="message-role">assistant <span class="blink">_</span></div>
+                  <div class="message-content">{streamingText}</div>
                 </div>
               {/if}
             </div>
@@ -1460,193 +1411,54 @@
     50% { opacity: 0; }
   }
 
-  .streaming {
-    border-color: var(--accent-border);
-    background: linear-gradient(135deg, var(--accent-dim) 0%, rgba(34, 197, 94, 0.05) 100%);
-  }
-
-  .streaming-indicator {
-    display: inline-flex;
-    gap: 3px;
-    margin-left: 8px;
-    vertical-align: middle;
-  }
-
-  .streaming-indicator .dot {
-    width: 4px;
-    height: 4px;
-    background: var(--accent);
-    border-radius: 50%;
-    animation: stream-dot 1s ease-in-out infinite;
-  }
-
-  .streaming-indicator .dot:nth-child(1) { animation-delay: 0s; }
-  .streaming-indicator .dot:nth-child(2) { animation-delay: 0.15s; }
-  .streaming-indicator .dot:nth-child(3) { animation-delay: 0.3s; }
-
-  @keyframes stream-dot {
-    0%, 100% { opacity: 0.3; transform: scale(0.8); }
-    50% { opacity: 1; transform: scale(1); }
-  }
-
-  .cursor-blink {
-    color: var(--accent);
-    animation: cursor-pulse 0.8s steps(1) infinite;
-    font-weight: 400;
-  }
-
-  @keyframes cursor-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0; }
-  }
-
   .loading-state {
-    background: linear-gradient(135deg, rgba(34, 197, 94, 0.05) 0%, rgba(34, 197, 94, 0.02) 100%);
-    border: 1px solid var(--accent-border);
-    position: relative;
-    overflow: hidden;
-  }
-
-  .loading-state::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-      90deg,
-      transparent 0%,
-      rgba(34, 197, 94, 0.08) 50%,
-      transparent 100%
-    );
-    animation: shimmer 2s ease-in-out infinite;
-  }
-
-  @keyframes shimmer {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(100%); }
+    background: transparent;
+    border: 1px dashed var(--accent-border);
   }
 
   .loading-indicator {
     display: flex;
     align-items: center;
-    gap: 16px;
-    position: relative;
-    z-index: 1;
+    gap: 12px;
   }
 
-  .loading-orb {
-    position: relative;
-    width: 32px;
-    height: 32px;
-  }
-
-  .orb-ring {
-    position: absolute;
-    inset: 0;
-    border: 2px solid transparent;
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: orbit 1.5s linear infinite;
-  }
-
-  .orb-ring:nth-child(1) {
-    animation-delay: 0s;
-    opacity: 1;
-  }
-
-  .orb-ring:nth-child(2) {
-    inset: 3px;
-    animation-delay: -0.5s;
-    animation-direction: reverse;
-    opacity: 0.7;
-    border-top-color: rgba(34, 197, 94, 0.7);
-  }
-
-  .orb-ring:nth-child(3) {
-    inset: 6px;
-    animation-delay: -1s;
-    opacity: 0.4;
-    border-top-color: rgba(34, 197, 94, 0.5);
-  }
-
-  .orb-core {
-    position: absolute;
-    inset: 10px;
-    background: var(--accent);
-    border-radius: 50%;
-    animation: core-pulse 1.5s ease-in-out infinite;
-    box-shadow: 0 0 12px rgba(34, 197, 94, 0.5);
-  }
-
-  @keyframes orbit {
-    to { transform: rotate(360deg); }
-  }
-
-  @keyframes core-pulse {
-    0%, 100% {
-      transform: scale(0.8);
-      opacity: 0.6;
-    }
-    50% {
-      transform: scale(1.1);
-      opacity: 1;
-    }
-  }
-
-  .loading-info {
+  .loading-dots {
     display: flex;
-    flex-direction: column;
     gap: 4px;
   }
 
-  .loading-text {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--accent);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    animation: text-fade 3s ease-in-out infinite;
+  .loading-dots span {
+    width: 6px;
+    height: 6px;
+    background: var(--accent);
+    animation: pulse 1.4s ease-in-out infinite;
   }
 
-  .loading-elapsed {
-    font-size: 11px;
-    color: var(--text-dim);
-    font-family: 'IBM Plex Mono', monospace;
-    letter-spacing: 0.05em;
-  }
+  .loading-dots span:nth-child(1) { animation-delay: 0s; }
+  .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
 
-  @keyframes text-fade {
-    0%, 100% { opacity: 0.7; }
-    50% { opacity: 1; }
-  }
-
-  .loading-wave {
-    display: flex;
-    gap: 3px;
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid rgba(34, 197, 94, 0.15);
-    position: relative;
-    z-index: 1;
-  }
-
-  .loading-wave span {
-    width: 4px;
-    height: 16px;
-    background: linear-gradient(to top, var(--accent-dim), var(--accent));
-    animation: wave 1.2s ease-in-out infinite;
-    animation-delay: calc(var(--i) * 0.08s);
-    border-radius: 2px;
-  }
-
-  @keyframes wave {
-    0%, 100% {
-      height: 6px;
-      opacity: 0.3;
+  @keyframes pulse {
+    0%, 80%, 100% {
+      opacity: 0.2;
+      transform: scale(0.8);
     }
-    50% {
-      height: 20px;
+    40% {
       opacity: 1;
+      transform: scale(1);
     }
+  }
+
+  .loading-text {
+    font-size: 12px;
+    color: var(--accent);
+    letter-spacing: 0.1em;
+    animation: fade-pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes fade-pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
   }
 
   button:disabled {
@@ -1661,25 +1473,16 @@
 
   .button-loading {
     display: inline-block;
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(34, 197, 94, 0.2);
+    width: 14px;
+    height: 14px;
+    border: 2px solid transparent;
     border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
+    border-right-color: var(--accent);
+    animation: spin 0.8s linear infinite;
   }
 
   @keyframes spin {
     to { transform: rotate(360deg); }
-  }
-
-  button.primary:disabled {
-    background: rgba(34, 197, 94, 0.08);
-    border-color: rgba(34, 197, 94, 0.2);
-  }
-
-  .chat-input button.primary:disabled {
-    min-width: 70px;
   }
 
   @media (max-width: 1000px) {

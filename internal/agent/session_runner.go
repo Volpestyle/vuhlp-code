@@ -197,7 +197,7 @@ func (r *SessionRunner) executeTurn(ctx context.Context, sessionID, turnID strin
 		default:
 		}
 
-		aikitMessages, err := r.buildAikitMessages(session, bundle)
+		aikitMessages, err := r.buildAikitMessages(session, bundle, model.Provider)
 		if err != nil {
 			return r.failTurn(sessionID, turnID, err)
 		}
@@ -406,7 +406,7 @@ func (r *SessionRunner) resolveModel(ctx context.Context) (aikit.ModelRecord, er
 	return resolved.Primary, nil
 }
 
-func (r *SessionRunner) buildAikitMessages(session *runstore.Session, bundle ContextBundle) ([]aikit.Message, error) {
+func (r *SessionRunner) buildAikitMessages(session *runstore.Session, bundle ContextBundle, provider aikit.Provider) ([]aikit.Message, error) {
 	var messages []runstore.Message
 	if strings.TrimSpace(session.SystemPrompt) != "" {
 		messages = append(messages, runstore.Message{
@@ -447,7 +447,7 @@ func (r *SessionRunner) buildAikitMessages(session *runstore.Session, bundle Con
 		}
 	}
 
-	messages = append(messages, session.Messages...)
+	messages = append(messages, r.prepareSessionMessages(session.Messages, provider)...)
 	return r.toAikitMessages(session.ID, messages)
 }
 
@@ -475,6 +475,54 @@ func buildContextText(bundle ContextBundle) string {
 		b.WriteString("\n\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func (r *SessionRunner) prepareSessionMessages(messages []runstore.Message, provider aikit.Provider) []runstore.Message {
+	if provider != aikit.ProviderOpenAI {
+		return messages
+	}
+	out := make([]runstore.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role != "tool" {
+			out = append(out, msg)
+			continue
+		}
+		text := toolMessageText(msg.Parts)
+		if strings.TrimSpace(text) == "" {
+			text = "(no output)"
+		}
+		label := "TOOL OUTPUT"
+		if msg.ToolCallID != "" {
+			label = fmt.Sprintf("TOOL OUTPUT (%s)", msg.ToolCallID)
+		}
+		out = append(out, runstore.Message{
+			ID:        msg.ID,
+			Role:      "assistant",
+			Parts:     []runstore.MessagePart{{Type: "text", Text: label + ":\n" + text}},
+			CreatedAt: msg.CreatedAt,
+		})
+	}
+	return out
+}
+
+func toolMessageText(parts []runstore.MessagePart) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "text":
+			if strings.TrimSpace(part.Text) != "" {
+				out = append(out, part.Text)
+			}
+		default:
+			if strings.TrimSpace(part.Ref) != "" {
+				out = append(out, fmt.Sprintf("[%s: %s]", part.Type, part.Ref))
+			}
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func specModePrompt(specPath string) string {
@@ -559,7 +607,8 @@ func (r *SessionRunner) streamModel(ctx context.Context, sessionID, turnID strin
 		return "", nil, err
 	}
 	var assistant strings.Builder
-	var calls []ToolCall
+	callsByID := map[string]ToolCall{}
+	callOrder := make([]string, 0, 4)
 
 	for chunk := range stream {
 		switch chunk.Type {
@@ -582,7 +631,19 @@ func (r *SessionRunner) streamModel(ctx context.Context, sessionID, turnID strin
 				if call.ID == "" {
 					call.ID = util.NewToolCallID()
 				}
-				calls = append(calls, call)
+				existing, ok := callsByID[call.ID]
+				if !ok {
+					callsByID[call.ID] = call
+					callOrder = append(callOrder, call.ID)
+					continue
+				}
+				if call.Name != "" {
+					existing.Name = call.Name
+				}
+				if len(call.Input) > 0 && string(call.Input) != "{}" {
+					existing.Input = call.Input
+				}
+				callsByID[call.ID] = existing
 			}
 		case aikit.StreamChunkMessageEnd:
 			_ = r.Store.AppendSessionEvent(sessionID, runstore.SessionEvent{
@@ -599,6 +660,10 @@ func (r *SessionRunner) streamModel(ctx context.Context, sessionID, turnID strin
 				return "", nil, fmt.Errorf("model error: %s", chunk.Error.Message)
 			}
 		}
+	}
+	calls := make([]ToolCall, 0, len(callOrder))
+	for _, id := range callOrder {
+		calls = append(calls, callsByID[id])
 	}
 	return assistant.String(), calls, nil
 }
