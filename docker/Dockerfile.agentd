@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:1.23 AS build
+WORKDIR /src
+COPY . .
+RUN go build -o /out/agentd ./cmd/agentd
+
+FROM debian:stable-slim
+WORKDIR /app
+COPY --from=build /out/agentd /usr/local/bin/agentd
+EXPOSE 8787
+ENV HARNESS_LISTEN=0.0.0.0:8787
+CMD ["agentd"]

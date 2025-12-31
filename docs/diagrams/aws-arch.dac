@@ -1,0 +1,20 @@
+diagram:
+  name: AWS Infra Overview (example)
+  direction: left-right
+  resources:
+    - type: aws:apigateway
+      id: api
+      label: Harness API
+    - type: aws:lambda
+      id: worker
+      label: Runner Worker
+    - type: aws:s3
+      id: artifacts
+      label: Artifacts Bucket
+  edges:
+    - from: api
+      to: worker
+      label: invoke
+    - from: worker
+      to: artifacts
+      label: write

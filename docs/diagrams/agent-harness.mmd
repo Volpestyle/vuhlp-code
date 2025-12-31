@@ -1,0 +1,14 @@
+%%{init: {'theme': 'base'}}%%
+flowchart TD
+  A[User writes spec.md] --> B[agentctl run]
+  B --> C[agentd creates run + event log]
+  C --> D[Context gather]
+  D --> E[Model resolve via ai-kit]
+  E --> F[Plan (structured JSON)]
+  F --> G{Needs approval?}
+  G -->|yes| H[Wait for approve]
+  H --> I[Execute step]
+  G -->|no| I[Execute step]
+  I --> J[Verify (tests)]
+  J --> K[Docs + diagrams]
+  K --> L[Export artifacts]

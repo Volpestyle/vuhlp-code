@@ -1,2 +1,10 @@
-.DS_Store
-**/.DS_Store
+/bin
+/dist
+/.harness-cache
+/.DS_Store
+*.log
+*.tmp
+*.swp
+
+# Local data directory (default for agentd)
+.agent-harness/

@@ -1,0 +1,14 @@
+{
+  "listen_addr": "127.0.0.1:8787",
+  "data_dir": "~/.agent-harness",
+  "auth_token": "",
+  "model_policy": {
+    "require_tools": true,
+    "require_vision": false,
+    "max_cost_usd": 5.0,
+    "preferred_models": [
+      "openai:gpt-4o-mini",
+      "anthropic:claude-3-5-sonnet"
+    ]
+  }
+}
