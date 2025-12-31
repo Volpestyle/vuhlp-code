@@ -5,6 +5,7 @@
 *.log
 *.tmp
 *.swp
+.env.local
 
 # Local Go workspace (dev-only)
 go.work
