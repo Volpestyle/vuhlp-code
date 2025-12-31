@@ -727,11 +727,7 @@
                 <div class="message assistant loading-state">
                   <div class="message-role">assistant</div>
                   <div class="loading-indicator">
-                    <div class="loading-dots">
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                    </div>
+                    <div class="loading-spinner" aria-hidden="true"></div>
                     <span class="loading-text">thinking</span>
                   </div>
                 </div>
@@ -1651,31 +1647,17 @@
     gap: 12px;
   }
 
-  .loading-dots {
-    display: flex;
-    gap: 4px;
+  .loading-spinner {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-top-color: var(--accent);
+    animation: spin 0.9s linear infinite;
   }
 
-  .loading-dots span {
-    width: 6px;
-    height: 6px;
-    background: var(--accent);
-    animation: pulse 1.4s ease-in-out infinite;
-  }
-
-  .loading-dots span:nth-child(1) { animation-delay: 0s; }
-  .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
-  .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
-
-  @keyframes pulse {
-    0%, 80%, 100% {
-      opacity: 0.2;
-      transform: scale(0.8);
-    }
-    40% {
-      opacity: 1;
-      transform: scale(1);
-    }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 
   .loading-text {

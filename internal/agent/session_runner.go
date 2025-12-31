@@ -216,27 +216,6 @@ func (r *SessionRunner) executeTurn(ctx context.Context, sessionID, turnID strin
 				"skipped":      true,
 			},
 		})
-		toolMsg := runstore.Message{
-			ID:         util.NewMessageID(),
-			Role:       "tool",
-			ToolCallID: call.ID,
-			Parts:      []runstore.MessagePart{{Type: "text", Text: "tool skipped: " + reason}},
-			CreatedAt:  time.Now().UTC(),
-		}
-		if _, err := r.Store.AppendMessage(sessionID, toolMsg); err != nil {
-			return err
-		}
-		_ = r.Store.AppendSessionEvent(sessionID, runstore.SessionEvent{
-			TS:        time.Now().UTC(),
-			SessionID: sessionID,
-			TurnID:    turnID,
-			Type:      "message_added",
-			Data: map[string]any{
-				"message_id": toolMsg.ID,
-				"role":       toolMsg.Role,
-			},
-		})
-		session.Messages = append(session.Messages, toolMsg)
 		return nil
 	}
 
@@ -292,6 +271,7 @@ func (r *SessionRunner) executeTurn(ctx context.Context, sessionID, turnID strin
 			return r.completeTurn(sessionID, turnID)
 		}
 
+		newToolCalls := 0
 		for _, call := range toolCalls {
 			tool, ok := toolRegistry.Get(call.Name)
 			if !ok {
@@ -305,6 +285,7 @@ func (r *SessionRunner) executeTurn(ctx context.Context, sessionID, turnID strin
 				continue
 			}
 			toolCallCounts[callKey]++
+			newToolCalls++
 			if r.requiresApproval(tool.Definition()) {
 				session.Status = runstore.SessionWaitingApproval
 				for i := range session.Turns {
@@ -435,6 +416,17 @@ func (r *SessionRunner) executeTurn(ctx context.Context, sessionID, turnID strin
 				// Let the model react to tool failures in the next loop iteration.
 				break
 			}
+		}
+		if newToolCalls == 0 {
+			if r.VerifyPolicy.AutoVerify && workspaceDirty {
+				verifyResult, err := r.invokeVerify(ctx, sessionID, turnID, toolRegistry)
+				if err != nil {
+					session.Messages = append(session.Messages, verifyResult)
+					continue
+				}
+				session.Messages = append(session.Messages, verifyResult)
+			}
+			return r.completeTurn(sessionID, turnID)
 		}
 	}
 
