@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,6 +36,8 @@ func main() {
 		cmdAttach(os.Args[2:])
 	case "approve":
 		cmdApprove(os.Args[2:])
+	case "session":
+		cmdSession(os.Args[2:])
 	case "list":
 		cmdList(os.Args[2:])
 	case "export":
@@ -55,9 +59,14 @@ func usage() {
 Usage:
   agentctl init [--force]
   agentctl spec new <name>
+  agentctl spec prompt <name> --prompt <text> [--workspace <path>] [--url <base>] [--overwrite] [--print]
   agentctl run --workspace <path> --spec <path> [--url <base>]
   agentctl attach <run_id> [--url <base>]
   agentctl approve <run_id> --step <step_id> [--url <base>]
+  agentctl session new --workspace <path> [--system <text>] [--mode <chat|spec>] [--spec <path>] [--url <base>]
+  agentctl session message <session_id> --text <msg> [--auto-run] [--url <base>]
+  agentctl session attach <session_id> --file <path> [--url <base>]
+  agentctl session approve <session_id> --call <tool_call_id> [--deny] [--reason <text>] [--url <base>]
   agentctl list [--url <base>]
   agentctl export <run_id> --out <file.zip> [--url <base>]
   agentctl doctor
@@ -169,6 +178,8 @@ func cmdSpec(args []string) {
 	switch args[0] {
 	case "new":
 		cmdSpecNew(args[1:])
+	case "prompt":
+		cmdSpecPrompt(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown spec subcommand: %s\n", args[0])
 		os.Exit(2)
@@ -218,6 +229,57 @@ Describe what you want built.
 	_ = os.WriteFile(filepath.Join(dir, "diagrams", "diagram.mmd"), []byte(mmd), 0o644)
 
 	fmt.Printf("[spec] created: %s\n", specPath)
+}
+
+func cmdSpecPrompt(args []string) {
+	fs := flag.NewFlagSet("spec prompt", flag.ExitOnError)
+	prompt := fs.String("prompt", "", "prompt text")
+	promptFile := fs.String("prompt-file", "", "path to prompt text")
+	workspace := fs.String("workspace", ".", "workspace path")
+	overwrite := fs.Bool("overwrite", false, "overwrite existing spec")
+	printSpec := fs.Bool("print", false, "print generated spec")
+	url := fs.String("url", "", "agentd base url")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		die(errors.New("usage: agentctl spec prompt <name> --prompt <text>"))
+	}
+	name := fs.Arg(0)
+
+	promptText := strings.TrimSpace(*prompt)
+	if promptText == "" && strings.TrimSpace(*promptFile) != "" {
+		b, err := os.ReadFile(*promptFile)
+		if err != nil {
+			die(err)
+		}
+		promptText = strings.TrimSpace(string(b))
+	}
+	if promptText == "" {
+		die(errors.New("prompt text is required"))
+	}
+
+	wsAbs, err := filepath.Abs(*workspace)
+	if err != nil {
+		die(err)
+	}
+
+	var resp struct {
+		SpecPath string `json:"spec_path"`
+		Content  string `json:"content"`
+	}
+	err = doJSON("POST", baseURL(*url)+"/v1/specs/generate", map[string]any{
+		"workspace_path": wsAbs,
+		"spec_name":      name,
+		"prompt":         promptText,
+		"overwrite":      *overwrite,
+	}, &resp)
+	if err != nil {
+		die(err)
+	}
+	fmt.Println(resp.SpecPath)
+	if *printSpec {
+		fmt.Println(resp.Content)
+	}
 }
 
 func cmdRun(args []string) {
@@ -328,6 +390,184 @@ func cmdApprove(args []string) {
 	fmt.Println("ok")
 }
 
+func cmdSession(args []string) {
+	if len(args) < 1 {
+		die(errors.New("session requires a subcommand (new|message|attach|approve)"))
+	}
+	switch args[0] {
+	case "new":
+		cmdSessionNew(args[1:])
+	case "message":
+		cmdSessionMessage(args[1:])
+	case "attach":
+		cmdSessionAttach(args[1:])
+	case "approve":
+		cmdSessionApprove(args[1:])
+	default:
+		die(fmt.Errorf("unknown session subcommand: %s", args[0]))
+	}
+}
+
+func cmdSessionNew(args []string) {
+	fs := flag.NewFlagSet("session new", flag.ExitOnError)
+	workspace := fs.String("workspace", ".", "workspace path")
+	system := fs.String("system", "", "system prompt")
+	mode := fs.String("mode", "chat", "session mode (chat|spec)")
+	specPath := fs.String("spec", "", "spec path (optional for spec mode)")
+	url := fs.String("url", "", "agentd base url")
+	_ = fs.Parse(args)
+
+	wsAbs, err := filepath.Abs(*workspace)
+	if err != nil {
+		die(err)
+	}
+	specVal := strings.TrimSpace(*specPath)
+
+	var resp struct {
+		SessionID string `json:"session_id"`
+		SpecPath  string `json:"spec_path"`
+	}
+	err = doJSON("POST", baseURL(*url)+"/v1/sessions", map[string]string{
+		"workspace_path": wsAbs,
+		"system_prompt":  *system,
+		"mode":           *mode,
+		"spec_path":      specVal,
+	}, &resp)
+	if err != nil {
+		die(err)
+	}
+	fmt.Println(resp.SessionID)
+}
+
+func cmdSessionMessage(args []string) {
+	fs := flag.NewFlagSet("session message", flag.ExitOnError)
+	text := fs.String("text", "", "message text")
+	ref := fs.String("ref", "", "attachment ref")
+	partType := fs.String("type", "", "part type (text|image|audio|file)")
+	mimeType := fs.String("mime", "", "mime type for ref")
+	role := fs.String("role", "user", "message role")
+	autoRun := fs.Bool("auto-run", true, "start a turn automatically")
+	url := fs.String("url", "", "agentd base url")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		die(errors.New("usage: agentctl session message <session_id> --text <msg>"))
+	}
+	sessionID := fs.Arg(0)
+
+	type part struct {
+		Type     string `json:"type"`
+		Text     string `json:"text,omitempty"`
+		Ref      string `json:"ref,omitempty"`
+		MimeType string `json:"mime_type,omitempty"`
+	}
+
+	var parts []part
+	if strings.TrimSpace(*text) != "" {
+		parts = append(parts, part{Type: "text", Text: *text})
+	}
+	if strings.TrimSpace(*ref) != "" {
+		typ := strings.TrimSpace(*partType)
+		if typ == "" {
+			if strings.HasPrefix(*mimeType, "image/") {
+				typ = "image"
+			} else {
+				typ = "file"
+			}
+		}
+		parts = append(parts, part{Type: typ, Ref: *ref, MimeType: *mimeType})
+	}
+	if len(parts) == 0 {
+		die(errors.New("message requires --text or --ref"))
+	}
+
+	var resp struct {
+		MessageID string `json:"message_id"`
+		TurnID    string `json:"turn_id"`
+	}
+	err := doJSON("POST", baseURL(*url)+"/v1/sessions/"+sessionID+"/messages", map[string]any{
+		"role":     *role,
+		"parts":    parts,
+		"auto_run": *autoRun,
+	}, &resp)
+	if err != nil {
+		die(err)
+	}
+	fmt.Printf("%s %s\n", resp.MessageID, resp.TurnID)
+}
+
+func cmdSessionAttach(args []string) {
+	fs := flag.NewFlagSet("session attach", flag.ExitOnError)
+	filePath := fs.String("file", "", "file path")
+	name := fs.String("name", "", "attachment name")
+	mimeType := fs.String("mime", "", "mime type")
+	url := fs.String("url", "", "agentd base url")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 || strings.TrimSpace(*filePath) == "" {
+		die(errors.New("usage: agentctl session attach <session_id> --file <path>"))
+	}
+	sessionID := fs.Arg(0)
+
+	content, err := os.ReadFile(*filePath)
+	if err != nil {
+		die(err)
+	}
+	enc := base64.StdEncoding.EncodeToString(content)
+	filename := *name
+	if strings.TrimSpace(filename) == "" {
+		filename = filepath.Base(*filePath)
+	}
+	mt := *mimeType
+	if strings.TrimSpace(mt) == "" {
+		mt = detectMime(filename)
+	}
+
+	var resp struct {
+		Ref      string `json:"ref"`
+		MimeType string `json:"mime_type"`
+	}
+	err = doJSON("POST", baseURL(*url)+"/v1/sessions/"+sessionID+"/attachments", map[string]string{
+		"name":           filename,
+		"mime_type":      mt,
+		"content_base64": enc,
+	}, &resp)
+	if err != nil {
+		die(err)
+	}
+	fmt.Printf("%s %s\n", resp.Ref, resp.MimeType)
+}
+
+func cmdSessionApprove(args []string) {
+	fs := flag.NewFlagSet("session approve", flag.ExitOnError)
+	callID := fs.String("call", "", "tool call id")
+	turnID := fs.String("turn", "", "turn id")
+	deny := fs.Bool("deny", false, "deny instead of approve")
+	reason := fs.String("reason", "", "approval reason")
+	url := fs.String("url", "", "agentd base url")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 || strings.TrimSpace(*callID) == "" {
+		die(errors.New("usage: agentctl session approve <session_id> --call <tool_call_id>"))
+	}
+	sessionID := fs.Arg(0)
+	action := "approve"
+	if *deny {
+		action = "deny"
+	}
+
+	err := doJSON("POST", baseURL(*url)+"/v1/sessions/"+sessionID+"/approve", map[string]string{
+		"turn_id":      *turnID,
+		"tool_call_id": *callID,
+		"action":       action,
+		"reason":       *reason,
+	}, nil)
+	if err != nil {
+		die(err)
+	}
+	fmt.Println("ok")
+}
+
 func cmdList(args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	url := fs.String("url", "", "agentd base url")
@@ -390,6 +630,17 @@ func cmdDoctor(args []string) {
 	fmt.Println("notes:")
 	fmt.Println("- For Mermaid diagrams, you can also use `npx -y @mermaid-js/mermaid-cli`.")
 	fmt.Println("- For remote cockpit, prefer an authenticated tunnel (Tailscale/Cloudflare).")
+}
+
+func detectMime(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == "" {
+		return "application/octet-stream"
+	}
+	if mt := mime.TypeByExtension(ext); mt != "" {
+		return mt
+	}
+	return "application/octet-stream"
 }
 
 func check(cmd string) {

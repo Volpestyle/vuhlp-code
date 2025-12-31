@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,13 @@ func main() {
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if err := util.LoadEnvFile(".env.local"); err != nil {
+		logger.Warn("failed to load .env.local", "err", err)
+	}
+	if err := util.LoadEnvFile(".env"); err != nil {
+		logger.Warn("failed to load .env", "err", err)
+	}
 
 	cfg := config.DefaultConfig()
 
@@ -67,6 +75,13 @@ func main() {
 	}
 
 	cfg.DataDir = util.ExpandHome(cfg.DataDir)
+
+	settingsPath := filepath.Join(cfg.DataDir, "settings.json")
+	if settings, ok, err := config.LoadSettings(settingsPath); err != nil {
+		logger.Warn("failed to load settings", "path", settingsPath, "err", err)
+	} else if ok {
+		cfg.ModelPolicy = settings.ModelPolicy
+	}
 
 	store := runstore.New(cfg.DataDir)
 	if err := store.Init(); err != nil {
@@ -134,12 +149,22 @@ func main() {
 	}
 
 	runner := agent.NewRunner(logger, store, kit, &aikit.ModelRouter{}, cfg.ModelPolicy)
+	sessionRunner := agent.NewSessionRunner(logger, store, kit, &aikit.ModelRouter{}, cfg.ModelPolicy)
+	modelSvc := agent.NewModelService(kit, cfg.ModelPolicy, settingsPath, runner, sessionRunner)
+	specGen := &agent.SpecGenerator{
+		Kit:    kit,
+		Router: &aikit.ModelRouter{},
+		Policy: cfg.ModelPolicy,
+	}
 
 	srv := &api.Server{
-		Logger:    logger,
-		Store:     store,
-		Runner:    runner,
-		AuthToken: cfg.AuthToken,
+		Logger:        logger,
+		Store:         store,
+		Runner:        runner,
+		SessionRunner: sessionRunner,
+		ModelSvc:      modelSvc,
+		SpecGen:       specGen,
+		AuthToken:     cfg.AuthToken,
 	}
 
 	httpSrv := &http.Server{
