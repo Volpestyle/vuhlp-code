@@ -38,10 +38,19 @@
   let sessionSystem = '';
 
   let chatText = '';
-  let toolCallId = '';
-  let approvalTurnId = '';
-  let stepId = '';
   let isWaitingForModel = false;
+
+  let askApproval = false;
+  let activeWorkspace = '';
+  let workspaceTree = null;
+  let workspaceTreeFiles = [];
+  let workspaceTreeError = '';
+  let isLoadingTree = false;
+  let openFolders = new Set();
+  let lastWorkspaceTreePath = '';
+  let workspaceRows = [];
+  let assistantName = 'assistant';
+  let pendingApprovals = [];
 
   let providerFilter = '';
   let selectedModel = '';
@@ -62,6 +71,7 @@
     if (typeof window !== 'undefined') {
       workspacePath = localStorage.getItem('workspace') || '';
       specPath = localStorage.getItem('specPath') || '';
+      askApproval = localStorage.getItem('askApproval') === 'true';
       
       // Load panel widths
       const savedLeft = localStorage.getItem('leftPanelWidth');
@@ -116,6 +126,13 @@
     isResizingRight = true;
     document.body.style.cursor = 'ew-resize';
     document.body.style.userSelect = 'none';
+  }
+
+  function toggleAskApproval() {
+    askApproval = !askApproval;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('askApproval', askApproval ? 'true' : 'false');
+    }
   }
 
   async function refreshAll() {
@@ -271,9 +288,8 @@
       loadSession();
       return;
     }
-    if (ev.type === 'tool_call_started' && ev.data && ev.data.tool_call_id) {
-      toolCallId = ev.data.tool_call_id;
-      approvalTurnId = ev.data.turn_id || approvalTurnId;
+    if (ev.type === 'approval_requested' && ev.data && ev.data.tool_call_id && !askApproval) {
+      sendToolApproval(ev.data.tool_call_id, 'approve', ev.turn_id);
     }
     if (
       ev.type === 'error' ||
@@ -295,6 +311,7 @@
     const prev = toolCallMeta[callId] || { id: callId };
     const next = { ...prev };
     if (data.tool) next.tool = data.tool;
+    if (ev.turn_id) next.turnId = ev.turn_id;
     if (ev.type === 'approval_requested') next.status = 'waiting';
     if (ev.type === 'approval_granted') next.status = 'approved';
     if (ev.type === 'approval_denied') next.status = 'denied';
@@ -384,28 +401,15 @@
     chatText = '';
   }
 
-  async function approveStep() {
-    if (!selectedRun) return alert('select a run first');
-    if (!stepId.trim()) return alert('enter step_id');
-    await fetch(`${baseUrl}/v1/runs/${selectedRun.id}/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step_id: stepId.trim() })
-    });
-    stepId = '';
-  }
-
-  async function approveToolCall() {
-    if (!selectedSession) return alert('select a session first');
-    if (!toolCallId.trim()) return alert('enter tool_call_id');
-    const payload = { tool_call_id: toolCallId.trim(), action: 'approve' };
-    if (approvalTurnId.trim()) payload.turn_id = approvalTurnId.trim();
+  async function sendToolApproval(toolCall, action, turnId) {
+    if (!selectedSession || !toolCall) return;
+    const payload = { tool_call_id: toolCall, action };
+    if (turnId) payload.turn_id = turnId;
     await fetch(`${baseUrl}/v1/sessions/${selectedSession.id}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    toolCallId = '';
   }
 
 
@@ -440,6 +444,118 @@
         return header;
       })
       .join('\n\n');
+  }
+
+  function workspaceLabel(path) {
+    if (!path) return 'workspace';
+    const clean = path.replace(/\\/g, '/').replace(/\/+$/, '');
+    const parts = clean.split('/').filter(Boolean);
+    return parts[parts.length - 1] || clean;
+  }
+
+  function buildWorkspaceTree(files, rootPath) {
+    const root = {
+      name: workspaceLabel(rootPath),
+      path: '',
+      type: 'dir',
+      children: []
+    };
+    const dirMap = new Map();
+    dirMap.set('', root);
+
+    (files || []).forEach((file) => {
+      const clean = file.replace(/\\/g, '/').replace(/^\/+/, '');
+      if (!clean) return;
+      const parts = clean.split('/').filter(Boolean);
+      let parent = root;
+      let parentPath = '';
+      parts.forEach((part, idx) => {
+        const nodePath = parentPath ? `${parentPath}/${part}` : part;
+        const isFile = idx === parts.length - 1;
+        if (isFile) {
+          if (!parent.children.find((c) => c.type === 'file' && c.name === part)) {
+            parent.children.push({ name: part, path: nodePath, type: 'file' });
+          }
+          return;
+        }
+        let dir = dirMap.get(nodePath);
+        if (!dir) {
+          dir = { name: part, path: nodePath, type: 'dir', children: [] };
+          dirMap.set(nodePath, dir);
+          parent.children.push(dir);
+        }
+        parent = dir;
+        parentPath = nodePath;
+      });
+    });
+
+    const sortTree = (node) => {
+      node.children.sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      node.children.forEach((child) => {
+        if (child.type === 'dir') sortTree(child);
+      });
+    };
+    sortTree(root);
+    return root;
+  }
+
+  function flattenWorkspaceTree(node, openSet, depth = 0, rows = []) {
+    const isOpen = openSet.has(node.path);
+    rows.push({ node, depth, isOpen });
+    if (node.type === 'dir' && isOpen) {
+      node.children.forEach((child) => flattenWorkspaceTree(child, openSet, depth + 1, rows));
+    }
+    return rows;
+  }
+
+  function toggleFolder(path) {
+    const next = new Set(openFolders);
+    if (next.has(path)) {
+      next.delete(path);
+    } else {
+      next.add(path);
+    }
+    openFolders = next;
+  }
+
+  async function loadWorkspaceTree(pathOverride, force = false) {
+    const path = (pathOverride || activeWorkspace || '').trim();
+    if (!path) {
+      workspaceTree = null;
+      workspaceTreeFiles = [];
+      workspaceTreeError = '';
+      lastWorkspaceTreePath = '';
+      return;
+    }
+    if (!force && path === lastWorkspaceTreePath) return;
+    lastWorkspaceTreePath = path;
+    isLoadingTree = true;
+    workspaceTreeError = '';
+    try {
+      const res = await fetch(
+        `${baseUrl}/v1/workspace/tree?workspace_path=${encodeURIComponent(path)}`
+      );
+      if (!res.ok) {
+        const txt = await res.text();
+        workspaceTreeError = `tree fetch failed: ${txt}`;
+        workspaceTreeFiles = [];
+        workspaceTree = null;
+        return;
+      }
+      const payload = await res.json();
+      workspaceTreeFiles = payload.files || [];
+      workspaceTree = buildWorkspaceTree(workspaceTreeFiles, payload.root || path);
+      openFolders = new Set(['']);
+    } catch (err) {
+      workspaceTreeError = 'tree fetch failed';
+      workspaceTreeFiles = [];
+      workspaceTree = null;
+    } finally {
+      isLoadingTree = false;
+    }
   }
 
   function toolStatusTone(meta) {
@@ -530,6 +646,26 @@
   $: filteredModels = providerFilter
     ? models.filter((m) => m.provider === providerFilter)
     : models;
+  $: activeWorkspace =
+    (selectedSession && selectedSession.workspace_path) ||
+    (selectedRun && selectedRun.workspace_path) ||
+    workspacePath;
+  $: if (activeWorkspace) {
+    loadWorkspaceTree(activeWorkspace);
+  }
+  $: if (!activeWorkspace) {
+    workspaceTree = null;
+    workspaceTreeFiles = [];
+    workspaceTreeError = '';
+    lastWorkspaceTreePath = '';
+  }
+  $: workspaceRows = workspaceTree ? flattenWorkspaceTree(workspaceTree, openFolders) : [];
+  $: assistantName = selectedModel
+    ? selectedModel.split(':')[1] || selectedModel
+    : 'assistant';
+  $: pendingApprovals = askApproval
+    ? Object.values(toolCallMeta).filter((meta) => meta.status === 'waiting')
+    : [];
   $: activeView = selectedSession ? 'session' : selectedRun ? 'run' : null;
 </script>
 
@@ -551,6 +687,9 @@
     </div>
     <div class="top-actions">
       <div class="pill">API: {baseUrl || 'n/a'}</div>
+      <button class={`pill toggle ${askApproval ? 'active' : ''}`} on:click={toggleAskApproval}>
+        APPROVALS: {askApproval ? 'ON' : 'OFF'}
+      </button>
       <button class="ghost" on:click={refreshAll}>REFRESH</button>
     </div>
   </header>
@@ -723,6 +862,32 @@
                   {/if}
                 {/each}
               {/if}
+              {#if askApproval}
+                {#each pendingApprovals as approval}
+                  {@const toolName = approval.tool || 'tool'}
+                  <div class="message approval">
+                    <div class="message-role">approval</div>
+                    <div class="approval-text">
+                      ({assistantName} wants to call <span class="tool-name">{toolName}</span>)
+                    </div>
+                    <div class="approval-meta">{approval.id}</div>
+                    <div class="approval-actions">
+                      <button
+                        class="small primary"
+                        on:click={() => sendToolApproval(approval.id, 'approve', approval.turnId)}
+                      >
+                        ACCEPT
+                      </button>
+                      <button
+                        class="small danger"
+                        on:click={() => sendToolApproval(approval.id, 'deny', approval.turnId)}
+                      >
+                        DENY
+                      </button>
+                    </div>
+                  </div>
+                {/each}
+              {/if}
               {#if isWaitingForModel}
                 <div class="message assistant loading-state">
                   <div class="message-role">assistant</div>
@@ -803,27 +968,47 @@
     <aside class="controls">
       <div class="card">
         <div class="card-header">
-          <h3>Approvals</h3>
+          <h3>Files</h3>
+          <div class="header-actions">
+            {#if activeWorkspace}
+              <span class="meta">{activeWorkspace}</span>
+            {/if}
+            <button class="small" on:click={() => loadWorkspaceTree(activeWorkspace, true)}>REFRESH</button>
+          </div>
         </div>
         <div class="card-body">
-          {#if selectedSession}
-            <div class="field">
-              <label>TOOL_CALL_ID</label>
-              <input bind:value={toolCallId} placeholder="call_..." />
-            </div>
-            <div class="field">
-              <label>TURN_ID</label>
-              <input bind:value={approvalTurnId} placeholder="turn_..." />
-            </div>
-            <button class="primary full" on:click={approveToolCall}>APPROVE TOOL</button>
-          {:else if selectedRun}
-            <div class="field">
-              <label>STEP_ID</label>
-              <input bind:value={stepId} placeholder="step_..." />
-            </div>
-            <button class="primary full" on:click={approveStep}>APPROVE STEP</button>
+          {#if !activeWorkspace}
+            <p class="muted">Set a workspace path to view files.</p>
+          {:else if workspaceTreeError}
+            <div class="tree-error">{workspaceTreeError}</div>
+          {:else if isLoadingTree}
+            <div class="muted">loading files...</div>
+          {:else if workspaceRows.length === 0}
+            <p class="muted">no files found</p>
           {:else}
-            <p class="muted">Select a session or run to approve actions.</p>
+            <div class="file-tree" role="tree">
+              {#each workspaceRows as row}
+                {#if row.node.type === 'dir'}
+                  <button
+                    class="file-row dir"
+                    style={`--depth: ${row.depth}`}
+                    aria-expanded={row.isOpen}
+                    on:click={() => toggleFolder(row.node.path)}
+                  >
+                    <span class="file-icon">{row.isOpen ? 'v' : '>'}</span>
+                    <span class="file-name">{row.node.name}</span>
+                    {#if row.depth === 0}
+                      <span class="file-path">{activeWorkspace}</span>
+                    {/if}
+                  </button>
+                {:else}
+                  <div class="file-row file" style={`--depth: ${row.depth}`}>
+                    <span class="file-icon">-</span>
+                    <span class="file-name">{row.node.name}</span>
+                  </div>
+                {/if}
+              {/each}
+            </div>
           {/if}
         </div>
       </div>
@@ -973,6 +1158,20 @@
     color: var(--text-dim);
     border: 1px solid var(--glass-border);
     background: rgba(0,0,0,0.3);
+  }
+
+  button.pill {
+    padding: 6px 10px;
+    font-size: 11px;
+    border: 1px solid var(--glass-border);
+    background: rgba(0,0,0,0.3);
+    color: var(--text-dim);
+  }
+
+  button.pill.toggle.active {
+    color: var(--accent);
+    border-color: var(--accent-border);
+    background: var(--accent-dim);
   }
 
   .status-bar {
@@ -1324,6 +1523,11 @@
     border-color: rgba(245, 158, 11, 0.3);
   }
 
+  .message.approval {
+    background: rgba(245, 158, 11, 0.08);
+    border-color: rgba(245, 158, 11, 0.35);
+  }
+
   .message-role {
     font-size: 10px;
     color: var(--text-dim);
@@ -1368,10 +1572,31 @@
     color: var(--accent);
   }
 
+  .message.approval .message-role {
+    color: var(--warning);
+  }
+
   .message-content {
     font-size: 13px;
     white-space: pre-wrap;
     line-height: 1.6;
+  }
+
+  .approval-text {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .approval-meta {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .approval-actions {
+    margin-top: 10px;
+    display: flex;
+    gap: 8px;
   }
 
   .chat-input {
@@ -1519,6 +1744,77 @@
 
   .detail-row span:last-child {
     color: var(--text-muted);
+  }
+
+  .file-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .file-tree::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .file-tree::-webkit-scrollbar-thumb {
+    background: var(--glass-border);
+  }
+
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    padding-left: calc(6px + var(--depth, 0) * 12px);
+    border: 1px solid transparent;
+    background: rgba(0,0,0,0.2);
+    color: var(--text-muted);
+    font-size: 11px;
+    text-align: left;
+    letter-spacing: 0;
+  }
+
+  .file-row.dir {
+    cursor: pointer;
+  }
+
+  .file-row.dir:hover {
+    border-color: var(--glass-border);
+    background: rgba(255,255,255,0.03);
+  }
+
+  .file-row.file {
+    cursor: default;
+  }
+
+  .file-icon {
+    width: 12px;
+    color: var(--text-dim);
+  }
+
+  .file-name {
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .file-path {
+    margin-left: auto;
+    font-size: 9px;
+    color: var(--text-dim);
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tree-error {
+    color: var(--danger);
+    font-size: 11px;
+    border: 1px solid var(--danger-border);
+    background: var(--danger-dim);
+    padding: 8px 10px;
   }
 
   .modal-backdrop {

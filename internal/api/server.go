@@ -67,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/specs/generate", s.handleSpecGenerate)
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/model-policy", s.handleModelPolicy)
+	mux.HandleFunc("/v1/workspace/tree", s.handleWorkspaceTree)
 
 	var h http.Handler = mux
 	h = CORSMiddleware()(h)
@@ -750,6 +751,35 @@ func (s *Server) handleModelPolicy(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	workspace := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
+	if workspace == "" {
+		util.WriteError(w, 400, "workspace_path required")
+		return
+	}
+	info, err := os.Stat(workspace)
+	if err != nil || !info.IsDir() {
+		util.WriteError(w, 400, "workspace_path must be a directory")
+		return
+	}
+	opts := util.DefaultWalkOptions()
+	opts.MaxFiles = 800
+	opts.MaxDepth = 8
+	files, err := util.WalkFiles(workspace, opts)
+	if err != nil {
+		util.WriteError(w, 500, err.Error())
+		return
+	}
+	util.WriteJSON(w, 200, map[string]any{
+		"root":  workspace,
+		"files": files,
+	})
 }
 
 func isSafeSpecName(name string) bool {
