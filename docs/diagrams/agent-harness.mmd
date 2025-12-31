@@ -1,14 +1,37 @@
 %%{init: {'theme': 'base'}}%%
-flowchart TD
-  A[User writes spec.md] --> B[agentctl run]
-  B --> C[agentd creates run + event log]
-  C --> D[Context gather]
-  D --> E[Model resolve via ai-kit]
-  E --> F[Plan - structured JSON]
-  F --> G{Needs approval?}
-  G -->|yes| H[Wait for approve]
-  H --> I[Execute step]
-  G -->|no| I[Execute step]
-  I --> J[Verify - tests]
-  J --> K[Docs + diagrams]
-  K --> L[Export artifacts]
+flowchart TB
+  subgraph Stack[Harness flows]
+    direction TB
+    subgraph Run[Spec-driven run]
+      direction TB
+      A[User writes spec.md] --> B[agentctl run]
+      B --> C[agentd creates run + event log]
+      C --> D[Context gather]
+      D --> E[Model resolve via ai-kit]
+      E --> F[Plan - structured JSON]
+      F --> G{Needs approval?}
+      G -->|yes| H[Wait for approve]
+      H --> I[Execute step]
+      G -->|no| I[Execute step]
+      I --> J[Verify - tests]
+      J --> K[Docs + diagrams]
+      K --> L[Export artifacts]
+    end
+
+    subgraph Session[Chat session]
+      direction TB
+      A2[User sends message] --> B2[agentctl session message]
+      B2 --> C2[agentd creates turn + event log]
+      C2 --> D2[Context gather]
+      D2 --> E2[Stream model output]
+      E2 --> F2[Tool calls]
+      F2 --> G2{Needs approval?}
+      G2 -->|yes| H2[Wait for approve]
+      H2 --> I2[Execute tool]
+      G2 -->|no| I2[Execute tool]
+      I2 --> J2[Tool result -> model]
+      J2 --> E2
+      E2 --> K2[Verify - tests]
+      K2 --> L2[Turn complete]
+    end
+  end
