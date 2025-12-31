@@ -1,20 +1,32 @@
-diagram:
-  name: AWS Infra Overview (example)
-  direction: left-right
-  resources:
-    - type: aws:apigateway
-      id: api
-      label: Harness API
-    - type: aws:lambda
-      id: worker
-      label: Runner Worker
-    - type: aws:s3
-      id: artifacts
-      label: Artifacts Bucket
-  edges:
-    - from: api
-      to: worker
-      label: invoke
-    - from: worker
-      to: artifacts
-      label: write
+Diagram:
+  DefinitionFiles:
+    - Type: URL
+      Url: "https://raw.githubusercontent.com/awslabs/diagram-as-code/main/definitions/definition-for-aws-icons-light.yaml"
+
+  Resources:
+    Canvas:
+      Type: AWS::Diagram::Canvas
+      Direction: horizontal
+      Children:
+        - HarnessAPI
+        - RunnerWorker
+        - ArtifactsBucket
+    HarnessAPI:
+      Type: AWS::ApiGateway
+      Title: Harness API
+    RunnerWorker:
+      Type: AWS::Lambda::Function
+      Title: Runner Worker
+    ArtifactsBucket:
+      Type: AWS::S3::Bucket
+      Title: Artifacts Bucket
+
+  Links:
+    - Source: HarnessAPI
+      Target: RunnerWorker
+      TargetArrowHead:
+        Type: Open
+    - Source: RunnerWorker
+      Target: ArtifactsBucket
+      TargetArrowHead:
+        Type: Open

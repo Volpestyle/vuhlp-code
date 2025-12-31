@@ -21,7 +21,7 @@ fi
 for f in "${FILES[@]}"; do
   out="${f%.dac}.png"
   echo "[render-awsdac] ${f} -> ${out}"
-  awsdac --input "${f}" --output "${out}" --format png || {
+  awsdac "${f}" --output "${out}" --force || {
     echo "[render-awsdac] WARNING: failed to render ${f}"
   }
 done

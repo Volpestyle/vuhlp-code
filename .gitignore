@@ -6,5 +6,9 @@
 *.tmp
 *.swp
 
+# Local Go workspace (dev-only)
+go.work
+go.work.sum
+
 # Local data directory (default for agentd)
 .agent-harness/
