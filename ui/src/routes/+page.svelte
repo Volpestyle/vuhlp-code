@@ -22,6 +22,12 @@
   let toolCallMeta = {};
   let sessionData = null;
   let streamingText = '';
+  let showSessionLogs = false;
+  let sessionLogText = '';
+  let sessionLogError = '';
+  let sessionLogCount = 0;
+  let sessionLogFetchedAt = '';
+  let isLoadingLogs = false;
 
   let runStream = null;
   let sessionStream = null;
@@ -191,6 +197,13 @@
     selectedRun = run;
     selectedSession = null;
     sessionData = null;
+    showSessionLogs = false;
+    sessionLogText = '';
+    sessionLogError = '';
+    sessionLogCount = 0;
+    sessionLogFetchedAt = '';
+    isLoadingLogs = false;
+    isLoadingLogs = false;
     if (sessionStream) sessionStream.close();
     sessionStream = null;
     runDetail = null;
@@ -212,6 +225,11 @@
     runEvents = [];
     sessionEvents = [];
     toolCallMeta = {};
+    showSessionLogs = false;
+    sessionLogText = '';
+    sessionLogError = '';
+    sessionLogCount = 0;
+    sessionLogFetchedAt = '';
     if (runStream) runStream.close();
     runStream = null;
     streamingText = '';
@@ -408,6 +426,22 @@
       .join('\n');
   }
 
+  function formatSessionLogs(events) {
+    if (!events || events.length === 0) return 'no events recorded';
+    return events
+      .map((ev) => {
+        const ts = ev.ts ? new Date(ev.ts).toLocaleString() : 'unknown';
+        const header = [ts, ev.type, ev.turn_id ? `turn=${ev.turn_id}` : '', ev.message ? `msg=${ev.message}` : '']
+          .filter(Boolean)
+          .join(' | ');
+        if (ev.data && Object.keys(ev.data).length) {
+          return `${header}\n${JSON.stringify(ev.data, null, 2)}`;
+        }
+        return header;
+      })
+      .join('\n\n');
+  }
+
   function toolStatusTone(meta) {
     if (!meta || !meta.status) return 'pending';
     switch (meta.status) {
@@ -456,6 +490,43 @@
     return id ? id.slice(0, 20) + '...' : '---';
   }
 
+  async function refreshSessionLogs() {
+    if (!selectedSession) return;
+    isLoadingLogs = true;
+    sessionLogError = '';
+    try {
+      const res = await fetch(`${baseUrl}/v1/sessions/${selectedSession.id}/events?format=json`);
+      if (!res.ok) {
+        const txt = await res.text();
+        sessionLogError = `log fetch failed: ${txt}`;
+        sessionLogText = '';
+        sessionLogCount = 0;
+        return;
+      }
+      const payload = await res.json();
+      const events = Array.isArray(payload) ? payload : [];
+      sessionLogCount = events.length;
+      sessionLogText = formatSessionLogs(events);
+      sessionLogFetchedAt = stamp();
+    } catch (err) {
+      sessionLogError = 'log fetch failed';
+      sessionLogText = '';
+      sessionLogCount = 0;
+    } finally {
+      isLoadingLogs = false;
+    }
+  }
+
+  async function openSessionLogs() {
+    if (!selectedSession) return;
+    showSessionLogs = true;
+    await refreshSessionLogs();
+  }
+
+  function closeSessionLogs() {
+    showSessionLogs = false;
+  }
+
   $: filteredModels = providerFilter
     ? models.filter((m) => m.provider === providerFilter)
     : models;
@@ -464,6 +535,10 @@
 
 <svelte:head>
   <title>Agent Harness</title>
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+  />
 </svelte:head>
 
 <div class="app">
@@ -610,7 +685,12 @@
         <div class="card full-height">
           <div class="card-header">
             <h3>Chat</h3>
-            <span class="meta">{selectedSession.id}</span>
+            <div class="header-actions">
+              <span class="meta">{selectedSession.id}</span>
+              <button class="small icon-button" on:click={openSessionLogs} aria-label="View session logs" title="View session logs">
+                <i class="fa-regular fa-file-lines" aria-hidden="true"></i>
+              </button>
+            </div>
           </div>
           <div class="chat-container">
             <div class="chat-messages">
@@ -676,7 +756,7 @@
                 disabled={isWaitingForModel}
               >
                 {#if isWaitingForModel}
-                  <span class="button-loading"></span>
+                  SENDING
                 {:else}
                   SEND
                 {/if}
@@ -772,6 +852,36 @@
       {/if}
     </aside>
   </main>
+
+  {#if showSessionLogs}
+    <div class="modal-backdrop" on:click={closeSessionLogs}>
+      <div class="modal" role="dialog" aria-modal="true" on:click|stopPropagation>
+        <div class="modal-header">
+          <div>
+            <div class="modal-title">Session Logs</div>
+            <div class="modal-subtitle">{selectedSession?.id || '---'}</div>
+          </div>
+          <div class="modal-actions">
+            <button class="small" on:click={refreshSessionLogs} disabled={isLoadingLogs}>REFRESH</button>
+            <button class="small" on:click={closeSessionLogs}>CLOSE</button>
+          </div>
+        </div>
+        <div class="modal-body">
+          <div class="log-meta">
+            <span>EVENTS: {sessionLogCount}</span>
+            <span>UPDATED: {sessionLogFetchedAt || '---'}</span>
+          </div>
+          {#if sessionLogError}
+            <div class="log-error">{sessionLogError}</div>
+          {/if}
+          {#if isLoadingLogs}
+            <div class="log-loading">loading logs...</div>
+          {/if}
+          <pre class="log-pane">{sessionLogText || 'no logs loaded'}</pre>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -981,6 +1091,12 @@
     text-overflow: ellipsis;
   }
 
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
   .card-body {
     padding: 12px 14px;
     display: flex;
@@ -1063,6 +1179,19 @@
   button.small {
     padding: 5px 10px;
     font-size: 10px;
+  }
+
+  button.icon-button {
+    padding: 5px 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-primary);
+  }
+
+  button.icon-button i {
+    font-size: 13px;
+    line-height: 1;
   }
 
   button.full {
@@ -1396,6 +1525,106 @@
     color: var(--text-muted);
   }
 
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0,0,0,0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  .modal {
+    width: min(980px, 96vw);
+    max-height: 85vh;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    display: flex;
+    flex-direction: column;
+    backdrop-filter: blur(18px);
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--glass-border);
+  }
+
+  .modal-title {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .modal-subtitle {
+    font-size: 10px;
+    color: var(--text-dim);
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .modal-body {
+    flex: 1;
+    min-height: 0;
+    padding: 12px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .log-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+  }
+
+  .log-error {
+    color: var(--danger);
+    font-size: 11px;
+    border: 1px solid var(--danger-border);
+    background: var(--danger-dim);
+    padding: 8px 10px;
+  }
+
+  .log-loading {
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  .log-pane {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px;
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--glass-border);
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .log-pane::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .log-pane::-webkit-scrollbar-thumb {
+    background: var(--glass-border);
+  }
+
   .muted {
     font-size: 11px;
     color: var(--text-dim);
@@ -1469,20 +1698,6 @@
   textarea:disabled {
     opacity: 0.6;
     cursor: not-allowed;
-  }
-
-  .button-loading {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid transparent;
-    border-top-color: var(--accent);
-    border-right-color: var(--accent);
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
   }
 
   @media (max-width: 1000px) {

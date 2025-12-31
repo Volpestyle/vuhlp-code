@@ -208,6 +208,13 @@ func (t RepoTreeTool) Invoke(ctx context.Context, call ToolCall) (ToolResult, er
 	if err != nil {
 		return ToolResult{ID: call.ID, OK: false, Error: err.Error()}, err
 	}
+	if len(files) == 0 {
+		return ToolResult{
+			ID:    call.ID,
+			OK:    true,
+			Parts: []runstore.MessagePart{{Type: "text", Text: "workspace contains no files"}},
+		}, nil
+	}
 	if maxFiles > 0 && len(files) > maxFiles {
 		files = files[:maxFiles]
 	}

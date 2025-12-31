@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -588,6 +589,22 @@ func (s *Server) handleSessionAttachment(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.URL.Query().Get("format") == "json" {
+		max := 0
+		if raw := r.URL.Query().Get("max"); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+				max = parsed
+			}
+		}
+		history, err := s.Store.ReadSessionEvents(sessionID, max)
+		if err != nil {
+			util.WriteError(w, 500, err.Error())
+			return
+		}
+		util.WriteJSON(w, 200, history)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")

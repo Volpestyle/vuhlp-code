@@ -145,6 +145,7 @@ func (r *SessionRunner) executeTurn(ctx context.Context, sessionID, turnID strin
 
 	maxTurns := 8
 	workspaceDirty := false
+	toolCallCounts := map[string]int{}
 	toolFactory := r.ToolsFactory
 	if toolFactory == nil {
 		toolFactory = DefaultToolRegistry
@@ -188,6 +189,55 @@ func (r *SessionRunner) executeTurn(ctx context.Context, sessionID, turnID strin
 		toolRegistry.Add(SpecReadTool{SpecPath: session.SpecPath})
 		toolRegistry.Add(SpecWriteTool{SpecPath: session.SpecPath})
 		toolRegistry.Add(SpecValidateTool{SpecPath: session.SpecPath})
+	}
+
+	appendSkippedTool := func(call ToolCall, reason string) error {
+		_ = r.Store.AppendSessionEvent(sessionID, runstore.SessionEvent{
+			TS:        time.Now().UTC(),
+			SessionID: sessionID,
+			TurnID:    turnID,
+			Type:      "tool_call_skipped",
+			Data: map[string]any{
+				"tool":         call.Name,
+				"tool_call_id": call.ID,
+				"reason":       reason,
+			},
+		})
+		_ = r.Store.AppendSessionEvent(sessionID, runstore.SessionEvent{
+			TS:        time.Now().UTC(),
+			SessionID: sessionID,
+			TurnID:    turnID,
+			Type:      "tool_call_completed",
+			Data: map[string]any{
+				"tool":         call.Name,
+				"tool_call_id": call.ID,
+				"ok":           false,
+				"error":        reason,
+				"skipped":      true,
+			},
+		})
+		toolMsg := runstore.Message{
+			ID:         util.NewMessageID(),
+			Role:       "tool",
+			ToolCallID: call.ID,
+			Parts:      []runstore.MessagePart{{Type: "text", Text: "tool skipped: " + reason}},
+			CreatedAt:  time.Now().UTC(),
+		}
+		if _, err := r.Store.AppendMessage(sessionID, toolMsg); err != nil {
+			return err
+		}
+		_ = r.Store.AppendSessionEvent(sessionID, runstore.SessionEvent{
+			TS:        time.Now().UTC(),
+			SessionID: sessionID,
+			TurnID:    turnID,
+			Type:      "message_added",
+			Data: map[string]any{
+				"message_id": toolMsg.ID,
+				"role":       toolMsg.Role,
+			},
+		})
+		session.Messages = append(session.Messages, toolMsg)
+		return nil
 	}
 
 	for attempt := 0; attempt < maxTurns; attempt++ {
@@ -247,6 +297,14 @@ func (r *SessionRunner) executeTurn(ctx context.Context, sessionID, turnID strin
 			if !ok {
 				return r.failTurn(sessionID, turnID, fmt.Errorf("unknown tool: %s", call.Name))
 			}
+			callKey := toolCallKey(call)
+			if toolCallCounts[callKey] > 0 {
+				if err := appendSkippedTool(call, "duplicate tool call: no new info"); err != nil {
+					return r.failTurn(sessionID, turnID, err)
+				}
+				continue
+			}
+			toolCallCounts[callKey]++
 			if r.requiresApproval(tool.Definition()) {
 				session.Status = runstore.SessionWaitingApproval
 				for i := range session.Turns {
@@ -523,6 +581,26 @@ func toolMessageText(parts []runstore.MessagePart) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+func normalizeToolInput(input json.RawMessage) string {
+	raw := strings.TrimSpace(string(input))
+	if raw == "" || raw == "null" {
+		return "{}"
+	}
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return raw
+	}
+	normalized, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return string(normalized)
+}
+
+func toolCallKey(call ToolCall) string {
+	return call.Name + ":" + normalizeToolInput(call.Input)
 }
 
 func specModePrompt(specPath string) string {
