@@ -28,7 +28,7 @@ func DefaultConfig() Config {
 		DataDir:    "~/.agent-harness",
 		AuthToken:  "",
 		ModelPolicy: ModelPolicy{
-			RequireTools:    true,
+			RequireTools:    false,
 			RequireVision:   false,
 			MaxCostUSD:      5.0,
 			PreferredModels: []string{},

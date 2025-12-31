@@ -26,8 +26,10 @@ if [ ${#FILES[@]} -eq 0 ]; then
   exit 0
 fi
 
+SCALE="${MERMAID_SCALE:-4}"
+
 for f in "${FILES[@]}"; do
   out="${f%.mmd}.png"
-  echo "[render-mermaid] ${f} -> ${out}"
-  "${MMDC[@]}" -i "${f}" -o "${out}" --backgroundColor transparent
+  echo "[render-mermaid] ${f} -> ${out} (scale=${SCALE})"
+  "${MMDC[@]}" -i "${f}" -o "${out}" --backgroundColor transparent --scale "${SCALE}"
 done

@@ -18,3 +18,18 @@ func newID(prefix string) string {
 
 func NewRunID() string  { return newID("run_") }
 func NewStepID() string { return newID("step_") }
+func NewSessionID() string {
+	return newID("sess_")
+}
+func NewMessageID() string {
+	return newID("msg_")
+}
+func NewTurnID() string {
+	return newID("turn_")
+}
+func NewToolCallID() string {
+	return newID("call_")
+}
+func NewAttachmentID() string {
+	return newID("att_")
+}

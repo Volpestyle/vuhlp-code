@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 BIN_DIR := ./bin
 
-.PHONY: all build test fmt vet clean diagrams
+.PHONY: all build test fmt vet clean diagrams ui dev-dashboard dev-d
 
 all: build
 
@@ -23,6 +23,14 @@ vet:
 diagrams:
 	./scripts/render-mermaid.sh
 	./scripts/render-awsdac.sh
+
+ui:
+	cd ui && npm install && npm run build
+
+dev-dashboard:
+	./scripts/dev-dashboard.sh
+
+dev-d: dev-dashboard
 
 clean:
 	rm -rf $(BIN_DIR)
