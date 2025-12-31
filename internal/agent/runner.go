@@ -27,8 +27,9 @@ type Runner struct {
 
 	Policy config.ModelPolicy
 
-	mu      sync.Mutex
-	running map[string]struct{}
+	policyMu sync.RWMutex
+	mu       sync.Mutex
+	running  map[string]struct{}
 }
 
 func NewRunner(logger *slog.Logger, store *runstore.Store, kit *aikit.Kit, router *aikit.ModelRouter, policy config.ModelPolicy) *Runner {
@@ -43,6 +44,18 @@ func NewRunner(logger *slog.Logger, store *runstore.Store, kit *aikit.Kit, route
 		Policy:  policy,
 		running: map[string]struct{}{},
 	}
+}
+
+func (r *Runner) SetPolicy(policy config.ModelPolicy) {
+	r.policyMu.Lock()
+	r.Policy = policy
+	r.policyMu.Unlock()
+}
+
+func (r *Runner) policySnapshot() config.ModelPolicy {
+	r.policyMu.RLock()
+	defer r.policyMu.RUnlock()
+	return r.Policy
 }
 
 // StartRun spawns a goroutine to execute the run if it isn't already running.
@@ -87,6 +100,21 @@ func (r *Runner) execute(ctx context.Context, runID string) error {
 		Type:    "run_started",
 		Message: "run started",
 	})
+
+	created, err := util.EnsureSpecFile(run.SpecPath)
+	if err != nil {
+		return r.failRun(runID, fmt.Errorf("ensure spec: %w", err))
+	}
+	if created {
+		_ = r.Store.AppendEvent(runID, runstore.Event{
+			TS:    time.Now().UTC(),
+			RunID: runID,
+			Type:  "spec_created",
+			Data: map[string]any{
+				"spec_path": run.SpecPath,
+			},
+		})
+	}
 
 	specBytes, err := os.ReadFile(run.SpecPath)
 	if err != nil {
@@ -191,13 +219,14 @@ func (r *Runner) resolveModel(ctx context.Context) (aikit.ModelRecord, error) {
 	if r.Router == nil {
 		r.Router = &aikit.ModelRouter{}
 	}
+	policy := r.policySnapshot()
 	resolved, err := r.Router.Resolve(records, aikit.ModelResolutionRequest{
 		Constraints: aikit.ModelConstraints{
-			RequireTools:  r.Policy.RequireTools,
-			RequireVision: r.Policy.RequireVision,
-			MaxCostUSD:    r.Policy.MaxCostUSD,
+			RequireTools:  policy.RequireTools,
+			RequireVision: policy.RequireVision,
+			MaxCostUSD:    policy.MaxCostUSD,
 		},
-		PreferredModels: r.Policy.PreferredModels,
+		PreferredModels: policy.PreferredModels,
 	})
 	if err != nil {
 		return aikit.ModelRecord{}, err
