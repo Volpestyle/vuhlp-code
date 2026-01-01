@@ -28,6 +28,10 @@
   let sessionLogCount = 0;
   let sessionLogFetchedAt = '';
   let isLoadingLogs = false;
+  let sessionFailureNotice = '';
+  let sessionFailureStatus = false;
+  let sessionFailureLabel = '';
+  let sessionFailureDetail = '';
 
   let runStream = null;
   let sessionStream = null;
@@ -51,6 +55,7 @@
   let workspaceRows = [];
   let assistantName = 'assistant';
   let pendingApprovals = [];
+  let workspacePathOverride = false;
 
   let providerFilter = '';
   let selectedModel = '';
@@ -213,6 +218,7 @@
   async function selectRun(run) {
     selectedRun = run;
     selectedSession = null;
+    workspacePathOverride = false;
     sessionData = null;
     showSessionLogs = false;
     sessionLogText = '';
@@ -239,9 +245,11 @@
   async function selectSession(session) {
     selectedSession = session;
     selectedRun = null;
+    workspacePathOverride = false;
     runEvents = [];
     sessionEvents = [];
     toolCallMeta = {};
+    sessionFailureNotice = '';
     showSessionLogs = false;
     sessionLogText = '';
     sessionLogError = '';
@@ -273,6 +281,7 @@
     recordSessionEvent(ev);
     if (ev.type === 'turn_started') {
       isWaitingForModel = true;
+      sessionFailureNotice = '';
       return;
     }
     if (ev.type === 'model_output_delta' && ev.data && ev.data.delta) {
@@ -293,7 +302,17 @@
     }
     if (
       ev.type === 'error' ||
+      ev.type === 'turn_failed' ||
+      ev.type === 'session_failed' ||
+      ev.type === 'session_canceled'
+    ) {
+      if (ev.message) sessionFailureNotice = ev.message;
+      streamingText = '';
+    }
+    if (
+      ev.type === 'error' ||
       ev.type === 'turn_completed' ||
+      ev.type === 'turn_failed' ||
       ev.type === 'session_completed' ||
       ev.type === 'session_failed' ||
       ev.type === 'session_canceled'
@@ -388,6 +407,7 @@
     if (!selectedSession) return alert('select a session first');
     if (!chatText.trim()) return alert('enter a message');
     isWaitingForModel = true;
+    sessionFailureNotice = '';
     const res = await fetch(`${baseUrl}/v1/sessions/${selectedSession.id}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -646,10 +666,11 @@
   $: filteredModels = providerFilter
     ? models.filter((m) => m.provider === providerFilter)
     : models;
-  $: activeWorkspace =
-    (selectedSession && selectedSession.workspace_path) ||
-    (selectedRun && selectedRun.workspace_path) ||
-    workspacePath;
+  $: activeWorkspace = workspacePathOverride
+    ? workspacePath
+    : (selectedSession && selectedSession.workspace_path) ||
+      (selectedRun && selectedRun.workspace_path) ||
+      workspacePath;
   $: if (activeWorkspace) {
     loadWorkspaceTree(activeWorkspace);
   }
@@ -667,6 +688,21 @@
     ? Object.values(toolCallMeta).filter((meta) => meta.status === 'waiting')
     : [];
   $: activeView = selectedSession ? 'session' : selectedRun ? 'run' : null;
+  $: sessionFailureStatus =
+    !!selectedSession &&
+    (selectedSession.status === 'failed' || selectedSession.status === 'canceled');
+  $: sessionFailureLabel = sessionFailureStatus
+    ? selectedSession.status === 'canceled'
+      ? 'canceled'
+      : 'failed'
+    : '';
+  $: sessionFailureDetail = sessionFailureStatus
+    ? (sessionFailureNotice || selectedSession?.error || sessionData?.error || '')
+    : '';
+  $: if (sessionFailureStatus) {
+    isWaitingForModel = false;
+    if (streamingText) streamingText = '';
+  }
 </script>
 
 <svelte:head>
@@ -726,7 +762,11 @@
         <div class="card-body">
           <div class="field">
             <label>PATH</label>
-            <input bind:value={workspacePath} placeholder="/path/to/repo" />
+            <input
+              bind:value={workspacePath}
+              placeholder="/path/to/repo"
+              on:input={() => (workspacePathOverride = true)}
+            />
           </div>
           <div class="field">
             <label>SPEC</label>
@@ -888,6 +928,17 @@
                   </div>
                 {/each}
               {/if}
+              {#if sessionFailureStatus}
+                <div class="message status">
+                  <div class="message-role">status</div>
+                  <div class="message-content status-content">
+                    <span class="tag tone-failed">{sessionFailureLabel}</span>
+                    {#if sessionFailureDetail}
+                      <span class="status-detail">{sessionFailureDetail}</span>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
               {#if isWaitingForModel}
                 <div class="message assistant loading-state">
                   <div class="message-role">assistant</div>
@@ -973,7 +1024,6 @@
             {#if activeWorkspace}
               <span class="meta">{activeWorkspace}</span>
             {/if}
-            <button class="small" on:click={() => loadWorkspaceTree(activeWorkspace, true)}>REFRESH</button>
           </div>
         </div>
         <div class="card-body">
@@ -1099,8 +1149,11 @@
 
   .app {
     min-height: 100vh;
+    height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
   }
 
   .bg-pattern {
@@ -1213,6 +1266,8 @@
     grid-template-columns: var(--left-width, 260px) 4px 1fr 4px var(--right-width, 240px);
     flex: 1;
     background: var(--bg-base);
+    min-height: 0;
+    overflow: hidden;
   }
 
   .sidebar, .main-panel, .controls {
@@ -1220,6 +1275,16 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
+    min-height: 0;
+  }
+
+  .sidebar,
+  .controls {
+    overflow-y: auto;
+  }
+
+  .main-panel {
+    overflow: hidden;
   }
 
   .resize-handle {
@@ -1528,6 +1593,15 @@
     border-color: rgba(245, 158, 11, 0.35);
   }
 
+  .message.status {
+    background: var(--danger-dim);
+    border-color: var(--danger-border);
+  }
+
+  .message.status .message-role {
+    color: var(--danger);
+  }
+
   .message-role {
     font-size: 10px;
     color: var(--text-dim);
@@ -1580,6 +1654,18 @@
     font-size: 13px;
     white-space: pre-wrap;
     line-height: 1.6;
+  }
+
+  .status-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .status-detail {
+    color: var(--text-muted);
+    font-size: 12px;
   }
 
   .approval-text {
@@ -1981,9 +2067,19 @@
   @media (max-width: 1000px) {
     .layout {
       grid-template-columns: 1fr;
+      overflow: visible;
     }
     .resize-handle {
       display: none;
+    }
+    .app {
+      height: auto;
+      overflow: visible;
+    }
+    .sidebar,
+    .main-panel,
+    .controls {
+      overflow: visible;
     }
   }
 </style>
