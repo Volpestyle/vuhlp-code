@@ -6,7 +6,7 @@ A **local-first**, spec-driven coding agent harness designed for:
 - **diagram-first docs** (Mermaid + AWS diagrams exported as PNG and embedded into Markdown)
 - an **agent daemon + CLI** model so you can *peek/pilot* runs from another device (e.g. iPhone via Tailscale/Cloudflare Tunnel)
 
-This repo integrates the real `ai-kit` Go module and uses a local `replace` to `../ai-kit/packages/go` during development. For production builds, drop the `replace` directive to pull from GitHub.
+This repo integrates the real `ai-kit` Node package and uses a local file dependency to `../ai-kit/packages/node` during development.
 
 ---
 
@@ -16,7 +16,7 @@ This repo integrates the real `ai-kit` Go module and uses a local `replace` to `
 - `cmd/agentctl` — CLI client for `agentd` (init/spec/run/attach/approve/export/list/doctor + sessions)
 - `internal/agent` — step-based agent runtime (plan → execute w/ approvals → verify → docs)
 - `internal/runstore` — persistent run store with an append-only NDJSON event log + live subscriptions
-- `ai-kit` — provider-agnostic model registry + generation via the real Go module
+- `ai-kit` — provider-agnostic model registry + generation via the real Node package
 
 ---
 
@@ -24,6 +24,7 @@ This repo integrates the real `ai-kit` Go module and uses a local `replace` to `
 
 ### 1) Build
 ```bash
+ bun install
 make build
 ```
 

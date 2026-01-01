@@ -8,10 +8,10 @@ This file is read by coding agents and humans to understand how to work in this 
 - Keep changes small and testable. Always run `make test` before finalizing.
 
 ## Repo layout
-- `cmd/agentd` — daemon HTTP API + run coordinator
-- `cmd/agentctl` — CLI client
+- `cmd/agentd` — daemon HTTP API + run coordinator (Bun/TS)
+- `cmd/agentctl` — CLI client (Bun/TS)
 - `internal/*` — harness implementation details
-- `ai-kit` — integrated via Go module replace to `../ai-kit/packages/go`
+- `ai-kit` — integrated via local node package at `../ai-kit/packages/node`
 
 ## Build & test
 ```bash

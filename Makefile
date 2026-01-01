@@ -2,23 +2,22 @@ SHELL := /bin/bash
 
 BIN_DIR := ./bin
 
-.PHONY: all build test fmt vet clean diagrams ui dev-dashboard dev-d
+.PHONY: all build test fmt vet lint clean diagrams ui dev-dashboard dev-d
 
 all: build
 
 build:
 	mkdir -p $(BIN_DIR)
-	go build -o $(BIN_DIR)/agentd ./cmd/agentd
-	go build -o $(BIN_DIR)/agentctl ./cmd/agentctl
+	bun run build
 
 test:
-	go test ./...
+	bun test
 
 fmt:
-	gofmt -w .
+	bun run fmt
 
 vet:
-	go vet ./...
+	bun run lint
 
 diagrams:
 	./scripts/render-mermaid.sh
