@@ -39,6 +39,13 @@ class Turn:
 
 
 @dataclass
+class SessionCost:
+    input_cost_usd: Optional[float] = None
+    output_cost_usd: Optional[float] = None
+    total_cost_usd: Optional[float] = None
+
+
+@dataclass
 class Session:
     id: str
     created_at: str
@@ -51,6 +58,7 @@ class Session:
     last_turn_id: Optional[str] = None
     messages: Optional[List[Message]] = None
     turns: Optional[List[Turn]] = None
+    cost: Optional[SessionCost] = None
     error: Optional[str] = None
 
 

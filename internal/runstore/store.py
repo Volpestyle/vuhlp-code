@@ -18,7 +18,7 @@ from internal.util.id import (
     new_turn_id,
 )
 from .models import Event, Run, Step
-from .session_models import ApprovalDecision, Message, Session, SessionEvent, Turn
+from .session_models import ApprovalDecision, Message, Session, SessionCost, SessionEvent, Turn
 
 
 class ApprovalWaiter:
@@ -292,6 +292,7 @@ class Store:
             spec_path=spec_path.strip() if spec_path else "",
             messages=[],
             turns=[],
+            cost=SessionCost(input_cost_usd=0.0, output_cost_usd=0.0, total_cost_usd=0.0),
         )
         dir_path = self._session_dir(session.id)
         dir_path.mkdir(parents=True, exist_ok=True)
@@ -586,9 +587,19 @@ def _turn_from_dict(data: dict) -> Turn:
     )
 
 
+def _session_cost_from_dict(data: dict) -> SessionCost:
+    return SessionCost(
+        input_cost_usd=data.get("input_cost_usd"),
+        output_cost_usd=data.get("output_cost_usd"),
+        total_cost_usd=data.get("total_cost_usd"),
+    )
+
+
 def _session_from_dict(data: dict) -> Session:
     messages = data.get("messages") or []
     turns = data.get("turns") or []
+    cost_data = data.get("cost")
+    cost = _session_cost_from_dict(cost_data) if isinstance(cost_data, dict) else None
     return Session(
         id=data.get("id", ""),
         created_at=data.get("created_at", ""),
@@ -601,5 +612,6 @@ def _session_from_dict(data: dict) -> Session:
         last_turn_id=data.get("last_turn_id"),
         messages=[_message_from_dict(m) for m in messages] if messages else None,
         turns=[_turn_from_dict(t) for t in turns] if turns else None,
+        cost=cost,
         error=data.get("error"),
     )

@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 from internal.config import ModelPolicy
 from internal.runstore import Store
 from internal.runstore.session_models import Message as SessionMessage
-from internal.runstore.session_models import MessagePart, Session
+from internal.runstore.session_models import MessagePart, Session, SessionCost
 from internal.util.cancel import CancelToken
 from internal.util.id import new_message_id, new_tool_call_id
 from internal.util.spec import default_spec_path, ensure_spec_file
@@ -113,7 +113,8 @@ class SessionRunner:
                     return
                 aikit_messages = self._build_aikit_messages(session, bundle, model)
                 tools = self.adapter.to_aikit_tools(tool_registry.definitions())
-                assistant_text, tool_calls = self._run_model(session_id, turn_id, model, aikit_messages, tools)
+                assistant_text, tool_calls, cost = self._run_model(session_id, turn_id, model, aikit_messages, tools)
+                self._record_session_cost(session, cost)
 
                 calls_to_run: List[Dict[str, object]] = []
                 for call in tool_calls:
@@ -468,7 +469,7 @@ class SessionRunner:
         model: "ModelRecord",
         messages: List["Message"],
         tools: List["AikitToolDefinition"],
-    ) -> tuple[str, List[ToolCall]]:
+    ) -> tuple[str, List[ToolCall], Optional[object]]:
         from ai_kit import GenerateInput
 
         output = self._kit.generate(
@@ -479,6 +480,15 @@ class SessionRunner:
                 tools=tools,
             )
         )
+        cost = output.cost
+        if cost is None and output.usage:
+            try:
+                from ai_kit.pricing import estimate_cost
+            except Exception:
+                cost = None
+            else:
+                model_id = model.providerModelId or model.id
+                cost = estimate_cost(model.provider, model_id, output.usage)
         assistant_text = output.text or ""
         if assistant_text:
             self._store.append_session_event(
@@ -500,7 +510,28 @@ class SessionRunner:
             if not tool_call.id:
                 tool_call.id = new_tool_call_id()
             tool_calls.append(tool_call)
-        return assistant_text, tool_calls
+        return assistant_text, tool_calls, cost
+
+    def _record_session_cost(self, session: Session, cost: Optional[object]) -> None:
+        if not cost:
+            return
+        if (
+            getattr(cost, "input_cost_usd", None) is None
+            and getattr(cost, "output_cost_usd", None) is None
+            and getattr(cost, "total_cost_usd", None) is None
+        ):
+            return
+        if session.cost is None:
+            session.cost = SessionCost(input_cost_usd=0.0, output_cost_usd=0.0, total_cost_usd=0.0)
+        input_cost = getattr(cost, "input_cost_usd", None) or 0.0
+        output_cost = getattr(cost, "output_cost_usd", None) or 0.0
+        total_cost = getattr(cost, "total_cost_usd", None)
+        if total_cost is None:
+            total_cost = input_cost + output_cost
+        session.cost.input_cost_usd = round((session.cost.input_cost_usd or 0.0) + input_cost, 6)
+        session.cost.output_cost_usd = round((session.cost.output_cost_usd or 0.0) + output_cost, 6)
+        session.cost.total_cost_usd = round((session.cost.total_cost_usd or 0.0) + total_cost, 6)
+        self._store.update_session(session)
 
     def _invoke_verify(
         self,

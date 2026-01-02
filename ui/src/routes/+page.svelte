@@ -454,6 +454,14 @@
       .join('\n');
   }
 
+  function formatCost(value) {
+    if (value === null || value === undefined) return '---';
+    const num = Number(value);
+    if (!Number.isFinite(num)) return '---';
+    const precision = Math.abs(num) >= 1 ? 2 : 4;
+    return `$${num.toFixed(precision)}`;
+  }
+
   function formatSessionLogs(events) {
     if (!events || events.length === 0) return 'no events recorded';
     return events
@@ -1074,9 +1082,11 @@
           </div>
           <div class="card-body">
             {#if selectedSession}
+              {@const cost = sessionData?.cost ?? selectedSession?.cost}
               <div class="detail-row"><span>MODE</span><span>{selectedSession.mode || 'chat'}</span></div>
               <div class="detail-row"><span>STATUS</span><span>{selectedSession.status}</span></div>
               <div class="detail-row"><span>MESSAGES</span><span>{sessionData?.messages?.length || 0}</span></div>
+              <div class="detail-row"><span>COST</span><span>{formatCost(cost?.total_cost_usd)}</span></div>
               <div class="detail-row"><span>STREAM</span><span>{sessionStream ? 'LIVE' : 'IDLE'}</span></div>
             {:else if selectedRun}
               <div class="detail-row"><span>STATUS</span><span>{selectedRun.status}</span></div>
