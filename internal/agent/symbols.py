@@ -30,8 +30,6 @@ def build_repo_map(
     signal: CancelToken | None = None,
 ) -> str:
     entries = _load_or_build_index(workspace, files, signal)
-    if not entries:
-        entries = _build_regex_index(workspace, files, max_symbols)
     entries = _sort_entries(entries)
     if max_symbols > 0:
         entries = entries[:max_symbols]
@@ -78,6 +76,7 @@ def _load_or_build_index(
     signal: CancelToken | None,
 ) -> List[SymbolEntry]:
     workspace_path = Path(workspace).resolve()
+    _require_ctags()
     index_path, meta_path = _index_paths(workspace_path)
     fingerprint = _compute_fingerprint(workspace_path, files)
     meta = _load_meta(meta_path)
@@ -85,15 +84,8 @@ def _load_or_build_index(
         return _load_index_entries(index_path)
 
     entries = _build_ctags_index(workspace_path, files, signal)
-    if entries:
-        _write_index_entries(index_path, entries)
-        _write_meta(meta_path, fingerprint, "ctags")
-        return entries
-
-    entries = _build_regex_index(str(workspace_path), files, max_symbols=0)
-    if entries:
-        _write_index_entries(index_path, entries)
-        _write_meta(meta_path, fingerprint, "regex")
+    _write_index_entries(index_path, entries)
+    _write_meta(meta_path, fingerprint, "ctags")
     return entries
 
 
@@ -173,16 +165,21 @@ def _write_index_entries(path: Path, entries: Iterable[SymbolEntry]) -> None:
             handle.write(json.dumps(payload) + "\n")
 
 
+def _require_ctags() -> str:
+    ctags = shutil.which("ctags")
+    if not ctags:
+        raise RuntimeError("ctags is required; install universal-ctags and ensure it is on PATH")
+    return ctags
+
+
 def _build_ctags_index(
     workspace: Path,
     files: List[str],
     signal: CancelToken | None,
 ) -> List[SymbolEntry]:
-    ctags = shutil.which("ctags")
-    if not ctags:
-        return []
     if not files:
         return []
+    ctags = _require_ctags()
 
     list_path = workspace / ".agent-harness-cache" / "symbols.files"
     try:
@@ -237,11 +234,14 @@ def _build_ctags_index(
                 entries.append(entry)
 
     if process.stderr:
-        _ = process.stderr.read()
+        stderr = process.stderr.read().strip()
+    else:
+        stderr = ""
 
     exit_code = process.wait()
     if exit_code != 0:
-        return []
+        detail = f": {stderr}" if stderr else ""
+        raise RuntimeError(f"ctags failed with exit code {exit_code}{detail}")
     return entries
 
 
@@ -266,76 +266,6 @@ def _parse_ctags_json(raw: str, workspace: Path) -> Optional[SymbolEntry]:
     except Exception:
         file_path = str(Path(path))
     return SymbolEntry(file=file_path, line=line, name=name, kind=kind, language=language)
-
-
-def _build_regex_index(workspace: str, files: List[str], max_symbols: int) -> List[SymbolEntry]:
-    import re
-
-    symbols: List[SymbolEntry] = []
-    re_py = re.compile(r"^(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b")
-    re_js = re.compile(r"^(export\s+)?(async\s+)?(function|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b")
-    re_js2 = re.compile(r"^(export\s+)?(const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*")
-
-    root = Path(workspace)
-
-    for rel in files:
-        if max_symbols > 0 and len(symbols) >= max_symbols:
-            break
-        ext = Path(rel).suffix.lower()
-        if ext not in {".py", ".js", ".ts", ".tsx", ".jsx"}:
-            continue
-        language = "Python" if ext == ".py" else "JavaScript"
-        if ext in {".ts", ".tsx"}:
-            language = "TypeScript"
-        abs_path = root / rel
-        try:
-            content = abs_path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            continue
-        lines = content.split("\n")[:300]
-        for idx, line in enumerate(lines, start=1):
-            if max_symbols > 0 and len(symbols) >= max_symbols:
-                break
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or stripped.startswith("//"):
-                continue
-            if ext == ".py":
-                match = re_py.match(stripped)
-                if match:
-                    symbols.append(
-                        SymbolEntry(
-                            file=rel,
-                            line=idx,
-                            name=match.group(2),
-                            kind=match.group(1),
-                            language=language,
-                        )
-                    )
-            else:
-                match = re_js.match(stripped)
-                if match:
-                    symbols.append(
-                        SymbolEntry(
-                            file=rel,
-                            line=idx,
-                            name=match.group(4),
-                            kind=match.group(3),
-                            language=language,
-                        )
-                    )
-                    continue
-                match2 = re_js2.match(stripped)
-                if match2:
-                    symbols.append(
-                        SymbolEntry(
-                            file=rel,
-                            line=idx,
-                            name=match2.group(3),
-                            kind=match2.group(2),
-                            language=language,
-                        )
-                    )
-    return symbols
 
 
 def _sort_entries(entries: List[SymbolEntry]) -> List[SymbolEntry]:

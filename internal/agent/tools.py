@@ -219,7 +219,7 @@ class RepoMapTool:
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="repo_map",
-            description="List symbols in the repo (ctags-backed if available).",
+            description="List symbols in the repo (ctags required).",
             kind="read",
             parameters={"type": "object", "properties": {"max_symbols": {"type": "integer"}}},
         )
@@ -247,7 +247,7 @@ class SymbolQueryTool:
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="symbol_query",
-            description="Query the symbol index by name, file glob, kind, or language.",
+            description="Query the symbol index by name, file glob, kind, or language (ctags required).",
             kind="read",
             parameters={
                 "type": "object",
