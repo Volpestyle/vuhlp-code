@@ -1,4 +1,5 @@
-from .context import ContextBundle, build_repo_map, gather_context
+from .context import ContextBundle, gather_context
+from .symbols import build_repo_map
 from .model_service import ModelService
 from .plan import Plan, PlanStep, default_plan, generate_plan, parse_plan_from_text
 from .runner import Runner

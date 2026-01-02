@@ -11,7 +11,7 @@ from internal.runstore.session_models import MessagePart
 from internal.util.exec import ExecOptions, run_command
 from internal.util.files import default_walk_options, walk_files
 from internal.util.patch import apply_unified_diff
-from .context import build_repo_map
+from .symbols import build_repo_map, query_symbol_index
 
 ToolKind = str
 
@@ -96,6 +96,7 @@ def default_tool_registry(workspace: str, commands: List[str]) -> ToolRegistry:
     return Registry(
         RepoTreeTool(workspace, 500),
         RepoMapTool(workspace, 400),
+        SymbolQueryTool(workspace, 50),
         ReadFileTool(workspace, 400),
         SearchTool(workspace, 50),
         GitStatusTool(workspace),
@@ -218,7 +219,7 @@ class RepoMapTool:
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="repo_map",
-            description="List symbols in the repo (Go/Python/JS/TS).",
+            description="List symbols in the repo (ctags-backed if available).",
             kind="read",
             parameters={"type": "object", "properties": {"max_symbols": {"type": "integer"}}},
         )
@@ -234,8 +235,69 @@ class RepoMapTool:
         if max_symbols <= 0:
             max_symbols = 400
         files = walk_files(self._workspace, default_walk_options())
-        out = build_repo_map(self._workspace, files, max_symbols)
+        out = build_repo_map(self._workspace, files, max_symbols, signal)
         return ToolResult(id=call.id, ok=True, parts=[MessagePart(type="text", text=out)])
+
+
+class SymbolQueryTool:
+    def __init__(self, workspace: str, max_results: int) -> None:
+        self._workspace = workspace
+        self._max_results = max_results
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name="symbol_query",
+            description="Query the symbol index by name, file glob, kind, or language.",
+            kind="read",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "glob": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "language": {"type": "string"},
+                    "max_results": {"type": "integer"},
+                },
+            },
+        )
+
+    def invoke(self, call: ToolCall, signal=None) -> ToolResult:
+        try:
+            payload = json.loads(call.input or "{}")
+        except Exception:
+            return ToolResult(id=call.id, ok=False, error="invalid input", parts=[])
+        max_results = self._max_results
+        try:
+            if payload.get("max_results") is not None:
+                max_results = int(payload.get("max_results"))
+        except Exception:
+            max_results = self._max_results
+        if max_results <= 0:
+            max_results = 50
+        files = walk_files(self._workspace, default_walk_options())
+        entries = query_symbol_index(
+            self._workspace,
+            files,
+            payload.get("query", ""),
+            payload.get("glob", ""),
+            payload.get("kind", ""),
+            payload.get("language", ""),
+            max_results,
+            signal,
+        )
+        if not entries:
+            return ToolResult(
+                id=call.id,
+                ok=True,
+                parts=[MessagePart(type="text", text="no matches (index unavailable or empty)")],
+            )
+        lines = []
+        for entry in entries:
+            label = entry.kind
+            if entry.language:
+                label = f"{label} [{entry.language}]"
+            lines.append(f"{entry.file}:{entry.line}:{label} {entry.name}")
+        return ToolResult(id=call.id, ok=True, parts=[MessagePart(type="text", text="\n".join(lines))])
 
 
 class ReadFileTool:

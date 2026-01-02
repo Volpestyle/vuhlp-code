@@ -411,6 +411,7 @@ def cmd_doctor() -> None:
     print("doctor:")
     check("git")
     check("rg (ripgrep)")
+    check("ctags (universal-ctags)")
     check("mmdc (mermaid-cli)")
     check("awsdac (diagram-as-code)")
     print("notes:")
