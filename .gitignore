@@ -21,3 +21,10 @@ go.work.sum
 /ui/dist/
 /ui/.svelte-kit/
 /ui/.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/

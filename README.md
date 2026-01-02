@@ -6,7 +6,7 @@ A **local-first**, spec-driven coding agent harness designed for:
 - **diagram-first docs** (Mermaid + AWS diagrams exported as PNG and embedded into Markdown)
 - an **agent daemon + CLI** model so you can *peek/pilot* runs from another device (e.g. iPhone via Tailscale/Cloudflare Tunnel)
 
-This repo integrates the real `ai-kit` Node package and uses a local file dependency to `../ai-kit/packages/node` during development.
+This repo integrates the real `ai-kit` Python packages and uses local file dependencies to `../ai-kit/packages/python` and `../ai-kit/packages/python-inference` during development.
 
 ---
 
@@ -16,19 +16,30 @@ This repo integrates the real `ai-kit` Node package and uses a local file depend
 - `cmd/agentctl` — CLI client for `agentd` (init/spec/run/attach/approve/export/list/doctor + sessions)
 - `internal/agent` — step-based agent runtime (plan → execute w/ approvals → verify → docs)
 - `internal/runstore` — persistent run store with an append-only NDJSON event log + live subscriptions
-- `ai-kit` — provider-agnostic model registry + generation via the real Node package
+- `ai-kit` — provider-agnostic model registry + generation via the Python inference kit
 
 ---
 
 ## Quick start (local)
 
-### 1) Build
+### 1) Install dependencies
 ```bash
- bun install
+python -m pip install -e .[dev]
+```
+Note: this repo expects the ai-kit packages to be available at `../ai-kit`. If you're using a published package instead, update `pyproject.toml`.
+If your Python is externally managed (PEP 668), create a venv first:
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .[dev]
+```
+
+### 2) Build wrappers
+```bash
 make build
 ```
 
-### 2) Start the daemon
+### 3) Start the daemon
 ```bash
 ./bin/agentd --listen 127.0.0.1:8787
 ```
@@ -36,28 +47,28 @@ make build
 Open the dashboard:
 - http://127.0.0.1:8787/
 
-### 3) Initialize a repo (creates AGENTS.md, docs/diagrams, scripts, etc.)
+### 4) Initialize a repo (creates AGENTS.md, docs/diagrams, scripts, etc.)
 From any git repo you want to run the agent against:
 ```bash
 /path/to/agentctl init
 ```
 
-### 4) Create a spec
+### 5) Create a spec
 ```bash
 /path/to/agentctl spec new my-feature
 ```
 
-### 5) Run the harness
+### 6) Run the harness
 ```bash
 /path/to/agentctl run --workspace . --spec specs/my-feature/spec.md
 ```
 
-### 6) Attach to the run (live events)
+### 7) Attach to the run (live events)
 ```bash
 /path/to/agentctl attach <run_id>
 ```
 
-### 7) Approve gated steps
+### 8) Approve gated steps
 Some actions (shell commands, infra steps) are **approval-gated**. When the run requests approval:
 ```bash
 /path/to/agentctl approve --step <step_id> <run_id>

@@ -16,7 +16,7 @@ This separation enables:
 ## Run lifecycle
 
 1. **Create run**: `POST /v1/runs` (spec path + workspace path)
-2. **Run coordinator** starts an agent runner goroutine
+2. **Run coordinator** starts an agent runner thread
 3. Runner emits **events** to:
    - an append-only NDJSON log on disk
    - in-memory subscribers (SSE)

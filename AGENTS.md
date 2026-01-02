@@ -8,10 +8,10 @@ This file is read by coding agents and humans to understand how to work in this 
 - Keep changes small and testable. Always run `make test` before finalizing.
 
 ## Repo layout
-- `cmd/agentd` — daemon HTTP API + run coordinator (Bun/TS)
-- `cmd/agentctl` — CLI client (Bun/TS)
+- `cmd/agentd` — daemon HTTP API + run coordinator (Python/FastAPI)
+- `cmd/agentctl` — CLI client (Python)
 - `internal/*` — harness implementation details
-- `ai-kit` — integrated via local node package at `../ai-kit/packages/node`
+- `ai-kit` — integrated via local Python packages at `../ai-kit/packages/python` and `../ai-kit/packages/python-inference`
 
 ## Build & test
 ```bash

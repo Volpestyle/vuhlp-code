@@ -255,3 +255,22 @@ Request:
   "preferred_models": ["openai:gpt-4o-mini"]
 }
 ```
+
+---
+
+## GET /v1/workspace/tree
+
+List files in a workspace (used by the dashboard).
+
+Query params:
+```
+workspace_path=/abs/path/to/repo
+```
+
+Response:
+```json
+{
+  "root": "/abs/path/to/repo",
+  "files": ["README.md", "cmd/agentd/main.py"]
+}
+```

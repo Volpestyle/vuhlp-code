@@ -1,23 +1,40 @@
 SHELL := /bin/bash
 
 BIN_DIR := ./bin
+PYTHON := python
 
-.PHONY: all build test fmt vet lint clean diagrams ui dev-dashboard dev-d
+ifneq (,$(wildcard .venv/bin/python))
+PYTHON := .venv/bin/python
+endif
+
+.PHONY: all build test fmt vet clean diagrams ui dev-dashboard dev-d
 
 all: build
 
 build:
 	mkdir -p $(BIN_DIR)
-	bun run build
+	printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'set -euo pipefail' \
+		'ROOT="$$(cd "$$(dirname "$${BASH_SOURCE[0]}")/.." && pwd)"' \
+		'PYTHONPATH="$$ROOT" exec python3 -m cmd.agentd.main "$$@"' \
+		> $(BIN_DIR)/agentd
+	printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'set -euo pipefail' \
+		'ROOT="$$(cd "$$(dirname "$${BASH_SOURCE[0]}")/.." && pwd)"' \
+		'PYTHONPATH="$$ROOT" exec python3 -m cmd.agentctl.main "$$@"' \
+		> $(BIN_DIR)/agentctl
+	chmod +x $(BIN_DIR)/agentd $(BIN_DIR)/agentctl
 
 test:
-	bun test
+	$(PYTHON) -m pytest
 
 fmt:
-	bun run fmt
+	$(PYTHON) -m ruff format .
 
 vet:
-	bun run lint
+	$(PYTHON) -m ruff check .
 
 diagrams:
 	./scripts/render-mermaid.sh
