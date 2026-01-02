@@ -7,7 +7,7 @@ import type {
   ToolDefinition as AikitToolDefinition,
   ToolCall as AikitToolCall,
 } from "@volpestyle/ai-kit-node";
-import { ModelRouter, Provider } from "@volpestyle/ai-kit-node";
+import { ModelRouter } from "@volpestyle/ai-kit-node";
 import type { ModelPolicy } from "../config";
 import { Store } from "../runstore";
 import type {
@@ -21,6 +21,7 @@ import { gatherContext } from "./context";
 import {
   AikitAdapter,
   defaultToolRegistry,
+  Tool,
   ToolCall,
   ToolDefinition,
   ToolRegistry,
@@ -143,7 +144,7 @@ export class SessionRunner {
           await this.cancelTurn(sessionId, turnId, signal.reason ?? new Error("canceled"));
           return;
         }
-        const aikitMessages = await this.buildAikitMessages(session, bundle, model.provider);
+        const aikitMessages = await this.buildAikitMessages(session, bundle, model);
         const tools = this.adapter.toAikitTools(toolRegistry.definitions());
         const { assistantText, toolCalls } = await this.streamModel(
           sessionId,
@@ -153,11 +154,37 @@ export class SessionRunner {
           tools,
         );
 
+        const callsToRun: Array<{ call: ToolCall; tool: Tool }> = [];
+        for (const call of toolCalls) {
+          const tool = toolRegistry.get(call.name);
+          if (!tool) throw new Error(`unknown tool: ${call.name}`);
+          const callKey = toolCallKey(call);
+          const count = toolCallCounts.get(callKey) ?? 0;
+          if (count > 0) {
+            await this.appendSkippedTool(sessionId, turnId, call, "duplicate tool call: no new info");
+            continue;
+          }
+          toolCallCounts.set(callKey, count + 1);
+          callsToRun.push({ call, tool });
+        }
+
+        const assistantParts: MessagePart[] = [];
         if (assistantText.trim()) {
+          assistantParts.push({ type: "text", text: assistantText });
+        }
+        for (const { call } of callsToRun) {
+          assistantParts.push({
+            type: "tool_use",
+            tool_call_id: call.id,
+            tool_name: call.name,
+            tool_input: parseToolInput(call.input),
+          });
+        }
+        if (assistantParts.length) {
           const msg = {
             id: newMessageId(),
             role: "assistant",
-            parts: [{ type: "text", text: assistantText }],
+            parts: assistantParts,
             created_at: new Date().toISOString(),
           } as SessionMessage;
           await this.store.appendMessage(sessionId, msg);
@@ -184,16 +211,7 @@ export class SessionRunner {
         }
 
         let newToolCalls = 0;
-        for (const call of toolCalls) {
-          const tool = toolRegistry.get(call.name);
-          if (!tool) throw new Error(`unknown tool: ${call.name}`);
-          const callKey = toolCallKey(call);
-          const count = toolCallCounts.get(callKey) ?? 0;
-          if (count > 0) {
-            await this.appendSkippedTool(sessionId, turnId, call, "duplicate tool call: no new info");
-            continue;
-          }
-          toolCallCounts.set(callKey, count + 1);
+        for (const { call, tool } of callsToRun) {
           newToolCalls++;
 
           if (this.requiresApproval(tool.definition())) {
@@ -321,7 +339,7 @@ export class SessionRunner {
   private async buildAikitMessages(
     session: Session,
     bundle: Awaited<ReturnType<typeof gatherContext>>,
-    provider: Provider,
+    model: ModelRecord,
   ): Promise<Message[]> {
     const messages: SessionMessage[] = [];
     if (session.system_prompt?.trim()) {
@@ -365,30 +383,50 @@ export class SessionRunner {
       }
     }
     const base = session.messages ?? [];
-    const prepared = this.prepareSessionMessages(base, provider);
+    const prepared = this.prepareSessionMessages(base, Boolean(model.features?.tools));
     const allMessages = messages.concat(prepared);
     return this.toAikitMessages(session.id, allMessages);
   }
 
-  private prepareSessionMessages(messages: SessionMessage[], provider: Provider): SessionMessage[] {
-    if (provider !== Provider.OpenAI) return messages;
+  private prepareSessionMessages(messages: SessionMessage[], supportsTools: boolean): SessionMessage[] {
+    // Inline tool outputs when the model cannot consume tool-role messages.
     const out: SessionMessage[] = [];
+    const seenToolUses = new Set<string>();
     for (const msg of messages) {
-      if (msg.role !== "tool") {
-        out.push(msg);
+      let normalized = msg;
+      if (normalized.parts?.length) {
+        for (const part of normalized.parts) {
+          if (part.type === "tool_use" && part.tool_call_id) {
+            seenToolUses.add(part.tool_call_id);
+          }
+        }
+      }
+      if (!supportsTools && normalized.parts?.length) {
+        const filtered = normalized.parts.filter((part) => part.type !== "tool_use");
+        if (!filtered.length) continue;
+        normalized = { ...normalized, parts: filtered };
+      }
+      if (normalized.role !== "tool") {
+        out.push(normalized);
         continue;
       }
-      let text = toolMessageText(msg.parts ?? []);
+      if (supportsTools && normalized.tool_call_id && seenToolUses.has(normalized.tool_call_id)) {
+        out.push(normalized);
+        continue;
+      }
+      let text = toolMessageText(normalized.parts ?? []);
       if (!text.trim()) text = "(no output)";
-      const label = msg.tool_call_id ? `TOOL OUTPUT (${msg.tool_call_id})` : "TOOL OUTPUT";
+      const label = normalized.tool_call_id ? `TOOL OUTPUT (${normalized.tool_call_id})` : "TOOL OUTPUT";
       out.push({
-        id: msg.id,
-        role: "assistant",
+        id: normalized.id,
+        role: "user",
         parts: [{ type: "text", text: `${label}:\n${text}` }],
-        created_at: msg.created_at,
+        created_at: normalized.created_at,
       });
     }
-    return out;
+    return out.map((msg) =>
+      msg.role === "assistant" ? { ...msg, parts: trimTextParts(msg.parts ?? []) } : msg,
+    );
   }
 
   private async toAikitMessages(sessionId: string, messages: SessionMessage[]): Promise<Message[]> {
@@ -398,6 +436,15 @@ export class SessionRunner {
       for (const part of msg.parts ?? []) {
         if (part.type === "text") {
           parts.push({ type: "text", text: part.text ?? "" });
+        } else if (part.type === "tool_use") {
+          if (part.tool_call_id && part.tool_name) {
+            parts.push({
+              type: "tool_use",
+              id: part.tool_call_id,
+              name: part.tool_name,
+              input: part.tool_input ?? {},
+            });
+          }
         } else if (part.type === "image") {
           const img = await this.loadImageAttachment(sessionId, part.ref ?? "", part.mime_type ?? "");
           if (img) {
@@ -732,6 +779,24 @@ function toolMessageText(parts: MessagePart[]): string {
     }
   }
   return out.join("\n");
+}
+
+function trimTextParts(parts: MessagePart[]): MessagePart[] {
+  return parts.map((part) => {
+    if (part.type !== "text") return part;
+    const text = (part.text ?? "").replace(/\s+$/g, "");
+    return { ...part, text };
+  });
+}
+
+function parseToolInput(input: string): unknown {
+  const raw = input?.trim();
+  if (!raw || raw === "null") return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function normalizeToolInput(input: string): string {

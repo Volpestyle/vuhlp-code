@@ -435,12 +435,16 @@
 
   function formatParts(parts) {
     if (!parts) return '';
-    return parts.map((p) => p.text || `[${p.type} ${p.ref || ''}]`).join('\n');
+    return parts
+      .filter((p) => p.type !== 'tool_use')
+      .map((p) => p.text || `[${p.type} ${p.ref || ''}]`)
+      .join('\n');
   }
 
   function formatToolParts(parts) {
     if (!parts) return '';
     return parts
+      .filter((p) => p.type !== 'tool_use')
       .map((p) => {
         if (p.text && p.text.trim() !== '') return p.text;
         if (p.ref && p.ref.trim() !== '') return `[${p.type} ${p.ref}]`;

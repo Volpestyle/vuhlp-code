@@ -1,6 +1,6 @@
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import minimatch from "minimatch";
+import { minimatch } from "minimatch";
 import type { ToolDefinition as AikitToolDefinition, ToolCall as AikitToolCall } from "@volpestyle/ai-kit-node";
 import type { MessagePart } from "../runstore/session_models";
 import { applyUnifiedDiff } from "../util/patch";
@@ -107,7 +107,7 @@ export class AikitAdapter {
   }
 
   fromAikitCall(call: AikitToolCall): ToolCall {
-    const raw = call.argumentsJson?.trim() || "{}";
+    const raw = normalizeToolInput(call.argumentsJson ?? "");
     return { id: call.id, name: call.name, input: raw };
   }
 }
@@ -125,6 +125,44 @@ function safeWorkspacePath(workspace: string, rel: string): string {
 
 function toJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
+}
+
+function normalizeToolInput(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "{}";
+  if (isValidJSON(trimmed)) return trimmed;
+  const candidate = extractLastJSONObject(trimmed);
+  if (candidate && isValidJSON(candidate)) return candidate;
+  return trimmed;
+}
+
+function isValidJSON(value: string): boolean {
+  try {
+    JSON.parse(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function extractLastJSONObject(value: string): string | null {
+  let depth = 0;
+  let end = -1;
+  for (let i = value.length - 1; i >= 0; i -= 1) {
+    const ch = value[i];
+    if (ch === "}") {
+      if (depth === 0) end = i;
+      depth += 1;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth > 0) depth -= 1;
+      if (depth === 0 && end !== -1) {
+        return value.slice(i, end + 1);
+      }
+    }
+  }
+  return null;
 }
 
 export class RepoTreeTool implements Tool {

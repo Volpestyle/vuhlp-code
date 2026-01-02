@@ -19,6 +19,9 @@ export interface MessagePart {
   text?: string;
   ref?: string;
   mime_type?: string;
+  tool_call_id?: string;
+  tool_name?: string;
+  tool_input?: unknown;
 }
 
 export interface Message {
