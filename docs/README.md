@@ -1,24 +1,26 @@
-# Forge CLI Docs Bundle
+# vuhlp code documentation
 
-This `/docs` folder is a self-contained documentation bundle for **Forge CLI** — a terminal-based, agentic coding harness (written in Go) designed for **pnpm monorepos** with **docs-as-contract** rules, **Mermaid → PNG** diagrams, **AWS serverless** infra, and **`.env.prod` sync** via `pnpm sync:prod`.
+This folder contains the **product + technical spec** plus implementation notes for v0.
 
-## Contents
+## Table of contents
 
-- `design/forge-cli-design.md` — full design doc (architecture, commands, config, policies, workflows).
-- `schemas/plan.schema.json` — strict JSON Schema for the **Plan** output.
-- `schemas/verify.schema.json` — strict JSON Schema for the **Verify** output.
-- `prompts/plan_system.md` — default system prompt for **Plan** (docs-as-contract).
-- `prompts/patch_system.md` — default system prompt for **Patch** (diff-only).
-- `prompts/verify_system.md` — default system prompt for **Verify** (docs alignment + policy checks).
-- `ci/policy-checks.md` — CI-ready policy checks with clear failure messages.
-- `ci/github-actions-example.yml` — example workflow wiring `forge verify` into GitHub Actions.
-- `config/forge.example.yaml` — example Forge configuration.
-- `examples/` — sample plan + verify JSON and a sample diff.
+- [01. Quickstart](./01-quickstart.md)
+- [02. Concepts](./02-concepts.md)
+- [03. Architecture](./03-architecture.md)
+- [04. Orchestration loop](./04-orchestration-loop.md)
+- [05. Provider adapters](./05-provider-adapters.md)
+- [06. Authentication](./06-auth.md)
+- [07. Workspaces and patches](./07-workspaces.md)
+- [08. Verification](./08-verification.md)
+- [09. UI and graph](./09-ui-graph.md)
+- [10. Configuration](./10-config.md)
+- [11. Roadmap (v1/v2)](./11-roadmap.md)
+- [12. HTTP + WS API](./12-api.md)
+- [13. Security + privacy](./13-security.md)
+- [14. Design decisions](./14-decisions.md)
+- [15. Agents SDK integration](./15-agents-sdk-integration.md)
 
-## Diagram rendering
+## Schemas and examples
 
-Some docs include Mermaid diagrams and reference PNG outputs under `assets/diagrams/`.
-In this bundle the PNGs are **placeholders**. In a real repo you would generate them with your own renderer pipeline, e.g.:
-
-- `forge docs render`
-- or a repo script like `pnpm docs:render`
+- JSON schemas: `docs/schemas/`
+- Example config and prompts: `docs/examples/`

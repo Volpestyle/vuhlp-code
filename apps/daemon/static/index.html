@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>vuhlp code (v0)</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">v</div>
+        <div>
+          <div class="title">vuhlp code</div>
+          <div class="subtitle">v0 orchestration harness</div>
+        </div>
+      </div>
+      <div class="status" id="connStatus">connecting…</div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <section class="panel">
+          <h2>Runs</h2>
+          <div id="runsList" class="runs"></div>
+        </section>
+
+        <section class="panel">
+          <h2>New run</h2>
+          <label class="field">
+            <div class="fieldLabel">Repo path</div>
+            <input id="repoPath" type="text" placeholder="/path/to/repo" />
+            <div class="hint">If blank, the daemon working directory is used.</div>
+          </label>
+          <label class="field">
+            <div class="fieldLabel">Prompt</div>
+            <textarea id="prompt" rows="8" placeholder="Describe what you want built…"></textarea>
+          </label>
+          <button id="createRunBtn" class="primary">Create & start</button>
+
+          <div class="hint" style="margin-top:10px">
+            Provider roles are configured in <code>apps/daemon/vuhlp.config.json</code>.
+            v0 defaults to the built-in <strong>mock</strong> provider.
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Providers</h2>
+          <div id="providersList" class="providers"></div>
+        </section>
+      </aside>
+
+      <section class="graphPane">
+        <div class="graphHeader">
+          <div>
+            <div class="graphTitle" id="activeRunTitle">No run selected</div>
+            <div class="graphMeta" id="activeRunMeta"></div>
+          </div>
+          <div class="graphActions">
+            <button id="snapshotBtn">Snapshot</button>
+            <button id="stopRunBtn" class="danger">Stop</button>
+          </div>
+        </div>
+
+        <div id="cy" class="graph"></div>
+      </section>
+
+      <aside class="inspector">
+        <section class="panel">
+          <h2>Node inspector</h2>
+          <div id="nodeInspectorEmpty" class="hint">Select a node to see details.</div>
+          <div id="nodeInspector" class="nodeInspector hidden">
+            <div class="kv">
+              <div class="k">Node</div>
+              <div class="v" id="nodeId"></div>
+            </div>
+            <div class="kv">
+              <div class="k">Type</div>
+              <div class="v" id="nodeType"></div>
+            </div>
+            <div class="kv">
+              <div class="k">Status</div>
+              <div class="v" id="nodeStatus"></div>
+            </div>
+            <div class="kv">
+              <div class="k">Provider</div>
+              <div class="v" id="nodeProvider"></div>
+            </div>
+            <div class="kv">
+              <div class="k">Role</div>
+              <div class="v" id="nodeRole"></div>
+            </div>
+
+            <h3>Summary</h3>
+            <pre id="nodeSummary" class="pre"></pre>
+
+            <h3>Input</h3>
+            <pre id="nodeInput" class="pre"></pre>
+
+            <h3>Output</h3>
+            <pre id="nodeOutput" class="pre"></pre>
+
+            <h3>Progress</h3>
+            <div id="nodeProgress" class="log"></div>
+
+            <h3>Artifacts</h3>
+            <div id="nodeArtifacts" class="artifacts"></div>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

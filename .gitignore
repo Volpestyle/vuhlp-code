@@ -1,2 +1,16 @@
+# Node
+node_modules/
+dist/
+*.log
+
+# Local runtime data
+.vuhlp/
+data/
+tmp/
+
+# OS
 .DS_Store
-**/.DS_Store
+
+# IDE
+.vscode/
+.idea/
