@@ -3,14 +3,13 @@
 ## 1) Install dependencies
 
 ```bash
-cd apps/daemon
-npm install
+pnpm install
 ```
 
 ## 2) Start the daemon + UI
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 This starts:

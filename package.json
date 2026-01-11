@@ -2,12 +2,9 @@
   "name": "vuhlp-code",
   "private": true,
   "version": "0.0.0",
-  "workspaces": [
-    "apps/*"
-  ],
   "scripts": {
-    "dev": "npm --workspace apps/daemon run dev",
-    "build": "npm --workspace apps/daemon run build",
-    "start": "npm --workspace apps/daemon run start"
+    "dev": "pnpm --filter @vuhlp/daemon dev",
+    "build": "pnpm --filter @vuhlp/daemon build",
+    "start": "pnpm --filter @vuhlp/daemon start"
   }
 }
