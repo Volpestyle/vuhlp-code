@@ -21,7 +21,6 @@ import {
   ApprovalQueue,
   PromptQueue,
   MainPane,
-  Toast,
 } from '@vuhlp/ui';
 // Styles are imported in main.tsx
 
@@ -86,7 +85,6 @@ function App() {
   const [savingConfig, setSavingConfig] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
-  const [toast, setToast] = useState<{message: string, type: 'success' | 'error' | 'info'} | null>(null);
 
   const activeRun = activeRunId ? runs[activeRunId] : null;
 
@@ -336,8 +334,7 @@ function App() {
       const nextConfig = JSON.parse(JSON.stringify(data.config ?? {})) as VuhlpConfig;
       setEditingConfig(nextConfig);
       setProvidersJson(JSON.stringify(nextConfig.providers ?? {}, null, 2));
-      setSaveSuccess("Configuration saved.");
-      setToast({ message: "Configuration profiles updated and applied to session", type: "success" });
+      setSaveSuccess("Configuration profiles updated and applied to session");
     } catch (error: unknown) {
       const message =
         error instanceof Error
@@ -697,14 +694,6 @@ function App() {
           onEditPrompt={(promptId, newContent) => modifyPrompt(activeRunId, promptId, newContent)}
           onCreatePrompt={(content, targetNodeId) => addUserPrompt(activeRunId, content, targetNodeId)}
           className="vuhlp-promptQueueOverlay"
-        />
-      )}
-      
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => setToast(null)}
         />
       )}
     </div>
