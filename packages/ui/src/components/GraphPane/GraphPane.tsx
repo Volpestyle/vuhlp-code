@@ -614,8 +614,8 @@ export function GraphPane({
             'taxi-turn': 20,
             'arrow-scale': 1,
             'opacity': 0.85,
-            'source-endpoint': '0 1',
-            'target-endpoint': '0 -1',
+            'source-endpoint': '0% 50%',
+            'target-endpoint': '0% -50%',
           },
         },
         {
@@ -773,8 +773,8 @@ export function GraphPane({
       .selector('edge')
       .style({
         'curve-style': connectionStyle,
-        'source-endpoint': '0 1',
-        'target-endpoint': '0 -1',
+        'source-endpoint': '0% 50%',
+        'target-endpoint': '0% -50%',
       })
       .update();
   }, [connectionStyle]);
