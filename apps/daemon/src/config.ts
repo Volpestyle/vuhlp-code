@@ -4,11 +4,11 @@ import path from "node:path";
 export interface VuhlpConfig {
   server?: { port?: number };
   dataDir?: string;
-  providers?: Record<string, any>;
+  providers?: Record<string, { kind: string } & Record<string, unknown>>;
   roles?: Record<string, string>;
   scheduler?: { maxConcurrency?: number };
-  orchestration?: { maxIterations?: number };
-  workspace?: { mode?: "shared" | "worktree" | "copy"; rootDir?: string };
+  orchestration?: { maxIterations?: number; maxTurnsPerNode?: number };
+  workspace?: { mode?: "shared" | "worktree" | "copy"; rootDir?: string; cleanupOnDone?: boolean };
   verification?: { commands?: string[] };
 }
 
@@ -44,8 +44,13 @@ export function loadConfig(): VuhlpConfig {
     reviewer: "mock",
   };
   cfg.scheduler = cfg.scheduler ?? { maxConcurrency: 3 };
-  cfg.orchestration = cfg.orchestration ?? { maxIterations: 3 };
-  cfg.workspace = cfg.workspace ?? { mode: "shared", rootDir: ".vuhlp/workspaces" };
+  cfg.orchestration = cfg.orchestration ?? { maxIterations: 3, maxTurnsPerNode: 2 };
+  cfg.orchestration.maxIterations = cfg.orchestration.maxIterations ?? 3;
+  cfg.orchestration.maxTurnsPerNode = cfg.orchestration.maxTurnsPerNode ?? 2;
+  cfg.workspace = cfg.workspace ?? { mode: "shared", rootDir: ".vuhlp/workspaces", cleanupOnDone: false };
+  cfg.workspace.mode = cfg.workspace.mode ?? "shared";
+  cfg.workspace.rootDir = cfg.workspace.rootDir ?? ".vuhlp/workspaces";
+  cfg.workspace.cleanupOnDone = cfg.workspace.cleanupOnDone ?? false;
   cfg.verification = cfg.verification ?? { commands: [] };
 
   return cfg;

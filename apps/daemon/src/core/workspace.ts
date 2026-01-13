@@ -410,4 +410,30 @@ export class WorkspaceManager {
 
     return { cleaned, errors };
   }
+
+  /**
+   * Clean up all workspaces for a completed run based on workspace mode.
+   */
+  async cleanupRunWorkspaces(repoPath: string, runId: string): Promise<{ cleaned: number; errors: string[] }> {
+    if (this.mode === "worktree") {
+      return this.cleanupRunWorktrees(repoPath, runId);
+    }
+
+    if (this.mode === "copy") {
+      const rootDirAbs = path.isAbsolute(this.rootDir)
+        ? this.rootDir
+        : path.join(path.resolve(repoPath), this.rootDir);
+      const runDir = path.join(rootDirAbs, runId);
+      if (!fs.existsSync(runDir)) return { cleaned: 0, errors: [] };
+      try {
+        fs.rmSync(runDir, { recursive: true, force: true });
+        return { cleaned: 1, errors: [] };
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        return { cleaned: 0, errors: [message] };
+      }
+    }
+
+    return { cleaned: 0, errors: [] };
+  }
 }

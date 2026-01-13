@@ -54,8 +54,12 @@ const orchestrator = new OrchestratorEngine({
   cfg: {
     roles: cfg.roles!,
     scheduler: { maxConcurrency: cfg.scheduler!.maxConcurrency ?? 3 },
-    orchestration: { maxIterations: cfg.orchestration!.maxIterations ?? 3 },
+    orchestration: {
+      maxIterations: cfg.orchestration!.maxIterations ?? 3,
+      maxTurnsPerNode: cfg.orchestration!.maxTurnsPerNode ?? 2,
+    },
     verification: { commands: cfg.verification!.commands ?? [] },
+    workspace: { cleanupOnDone: cfg.workspace!.cleanupOnDone ?? false },
   },
 });
 

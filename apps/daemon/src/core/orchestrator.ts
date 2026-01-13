@@ -16,6 +16,8 @@ import {
   DocsIterationPlan,
   DocAgentRole,
   RepoFacts,
+  AcceptanceCriterion,
+  TaskDagRecord,
   TaskStep,
   AutoPausePolicy,
 } from "./types.js";
@@ -34,8 +36,9 @@ import fs from "node:fs";
 export interface OrchestratorConfig {
   roles: Record<string, string>;
   scheduler: { maxConcurrency: number };
-  orchestration: { maxIterations: number };
+  orchestration: { maxIterations: number; maxTurnsPerNode?: number };
   verification: { commands: string[] };
+  workspace?: { cleanupOnDone?: boolean };
 }
 
 export interface CreateRunParams {
@@ -57,6 +60,47 @@ export interface ManualTurnOptions {
   /** Max turns to run (usually 1 for manual). */
   maxTurns?: number;
 }
+
+type VerificationCommandReport = {
+  command: string;
+  ok: boolean;
+  code: number | null;
+  durationMs: number;
+  logArtifactId?: string;
+};
+
+type VerificationReport = {
+  ok: boolean;
+  commands: VerificationCommandReport[];
+  docsCheck: { ok: boolean; missing: string[] };
+};
+
+type VerificationResult = {
+  ok: boolean;
+  report: VerificationReport;
+  reportArtifactId?: string;
+};
+
+type DocsSyncResult = {
+  ok: boolean;
+  hasChanges: boolean;
+  summary: string;
+};
+
+type CompletionReport = {
+  ok: boolean;
+  stepsOk: boolean;
+  acceptanceOk: boolean;
+  docsSynced: boolean;
+  issues: string[];
+  acceptanceFailures: AcceptanceCriterion[];
+};
+
+type NormalizedPlan = {
+  taskDag: TaskDagRecord;
+  acceptanceCriteria: AcceptanceCriterion[];
+  usedFallback: boolean;
+};
 
 export class OrchestratorEngine {
   private store: RunStore;
@@ -382,8 +426,12 @@ export class OrchestratorEngine {
    * - repo has only /docs
    * - required docs are missing
    */
-  private shouldEnterDocsIteration(run: { repoPath: string; docsInventory?: DocsInventory }): boolean {
+  private shouldEnterDocsIteration(run: { repoPath: string; docsInventory?: DocsInventory; repoFacts?: RepoFacts }): boolean {
     const inventory = run.docsInventory;
+    const facts = run.repoFacts;
+
+    if (facts?.isEmptyRepo) return true;
+    if (facts?.hasOnlyDocs) return true;
     if (!inventory) return false;
 
     // If missing required docs, enter docs iteration
@@ -454,8 +502,11 @@ export class OrchestratorEngine {
 
     try {
       const entries = fs.readdirSync(repoPath);
-      facts.isEmptyRepo = entries.length === 0 || (entries.length === 1 && entries[0] === ".git");
+      const visibleEntries = entries.filter((entry) => entry !== ".git" && entry !== ".vuhlp");
+      facts.isEmptyRepo = visibleEntries.length === 0;
       facts.hasDocs = fs.existsSync(path.join(repoPath, "docs"));
+      facts.hasOnlyDocs = visibleEntries.length > 0 && visibleEntries.every((entry) => entry === "docs");
+      facts.hasCode = visibleEntries.some((entry) => entry !== "docs");
 
       // Detect language and package manager
       if (fs.existsSync(path.join(repoPath, "package.json"))) {
@@ -511,6 +562,58 @@ export class OrchestratorEngine {
     return facts;
   }
 
+  /**
+   * Detect provider harness availability and health during BOOT.
+   */
+  private async collectHarnessHealth(runId: string, rootNodeId: string): Promise<void> {
+    const providers = this.providers.list();
+    if (providers.length === 0) return;
+
+    this.bus.emitNodeProgress(runId, rootNodeId, "BOOT: Checking harness availability...");
+
+    const results: Array<{
+      id: string;
+      displayName: string;
+      kind: string;
+      capabilities: ProviderAdapter["capabilities"];
+      authStatus: "unknown" | "unavailable";
+      health: { ok: boolean; message?: string; details?: Record<string, unknown> };
+    }> = [];
+
+    for (const provider of providers) {
+      let health: { ok: boolean; message?: string; details?: Record<string, unknown> };
+      try {
+        health = await provider.healthCheck();
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        health = { ok: false, message };
+      }
+      results.push({
+        id: provider.id,
+        displayName: provider.displayName,
+        kind: provider.kind,
+        capabilities: provider.capabilities,
+        authStatus: health.ok ? "unknown" : "unavailable",
+        health,
+      });
+    }
+
+    const payload = {
+      checkedAt: nowIso(),
+      providers: results,
+    };
+
+    const art = this.store.createArtifact({
+      runId,
+      nodeId: rootNodeId,
+      kind: "json",
+      name: "harness.health.json",
+      mimeType: "application/json",
+      content: JSON.stringify(payload, null, 2),
+    });
+    this.bus.emitArtifact(runId, art);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // DOCS_ITERATION PHASE - Section 7
   // ═══════════════════════════════════════════════════════════════════════════
@@ -530,7 +633,7 @@ export class OrchestratorEngine {
       if (docLower.includes("architecture")) {
         tasks.push({
           id: "draft-architecture",
-          role: "architecture-drafter" as DocAgentRole,
+          role: "architecture-drafter",
           targetDoc: "docs/ARCHITECTURE.md",
           instructions: `Create an ARCHITECTURE.md document that describes the system architecture for the following project goal:\n\n${run.prompt}\n\nInclude sections for: Overview, Components, Data Flow, Key Decisions.`,
           deps: [],
@@ -538,7 +641,7 @@ export class OrchestratorEngine {
       } else if (docLower.includes("overview")) {
         tasks.push({
           id: "draft-overview",
-          role: "architecture-drafter" as DocAgentRole,
+          role: "ux-spec-drafter",
           targetDoc: "docs/OVERVIEW.md",
           instructions: `Create an OVERVIEW.md document that provides a high-level project overview for:\n\n${run.prompt}\n\nInclude sections for: Purpose, Scope, Key Features, Getting Started.`,
           deps: [],
@@ -546,7 +649,7 @@ export class OrchestratorEngine {
       } else if (docLower.includes("plan")) {
         tasks.push({
           id: "draft-plan",
-          role: "architecture-drafter" as DocAgentRole,
+          role: "harness-integration-drafter",
           targetDoc: "docs/PLAN.md",
           instructions: `Create a PLAN.md document with the implementation plan for:\n\n${run.prompt}\n\nInclude sections for: Goals, Milestones, Tasks, Timeline (phases not dates).`,
           deps: ["draft-architecture"],
@@ -554,7 +657,7 @@ export class OrchestratorEngine {
       } else if (docLower.includes("acceptance")) {
         tasks.push({
           id: "draft-acceptance",
-          role: "architecture-drafter" as DocAgentRole,
+          role: "security-permissions-drafter",
           targetDoc: "docs/ACCEPTANCE.md",
           instructions: `Create an ACCEPTANCE.md document with acceptance criteria for:\n\n${run.prompt}\n\nInclude sections for: Success Criteria, Verification Steps, Test Requirements.`,
           deps: ["draft-plan"],
@@ -590,12 +693,13 @@ export class OrchestratorEngine {
     const docNodes: Array<{ task: DocsIterationPlan["docAgentTasks"][0]; node: NodeRecord }> = [];
 
     for (const task of docsIterationPlan.docAgentTasks) {
+      const providerId = this.cfg.roles[task.role] ?? this.cfg.roles["planner"] ?? "mock";
       const node = this.createTaskNode({
         runId,
         parentNodeId: rootNodeId,
-        label: `Doc: ${path.basename(task.targetDoc)}`,
-        role: "implementer" as RoleId, // Use implementer role with doc-specific prompt
-        providerId: this.cfg.roles["planner"] ?? "mock",
+        label: `Doc (${task.role}): ${path.basename(task.targetDoc)}`,
+        role: "implementer", // Use implementer role with doc-specific prompt
+        providerId,
       });
       docNodes.push({ task, node });
       this.createEdge(runId, rootNodeId, node.id, "handoff", `draft ${path.basename(task.targetDoc)}`);
@@ -678,8 +782,8 @@ export class OrchestratorEngine {
       try {
         await Promise.race([...running.values()]);
       } catch (e: unknown) {
-        const err = e as Error;
-        if (err.message === "PAUSED_INTERRUPT" || err.message === "aborted" || err.message === "MODE_INTERACTIVE") throw e;
+        const errMessage = e instanceof Error ? e.message : String(e);
+        if (errMessage === "PAUSED_INTERRUPT" || errMessage === "aborted" || errMessage === "MODE_INTERACTIVE") throw e;
       }
 
       for (const [nodeId] of [...running.entries()]) {
@@ -694,7 +798,7 @@ export class OrchestratorEngine {
       runId,
       parentNodeId: rootNodeId,
       label: "Doc Review",
-      role: "reviewer" as RoleId,
+      role: "reviewer",
       providerId: this.cfg.roles["reviewer"] ?? this.cfg.roles["planner"] ?? "mock",
     });
     this.createEdge(runId, rootNodeId, reviewNode.id, "gate", "doc review");
@@ -717,6 +821,8 @@ export class OrchestratorEngine {
   private buildDocDraftPrompt(task: DocsIterationPlan["docAgentTasks"][0]): string {
     return [
       "You are a documentation agent inside vuhlp code.",
+      "",
+      `Role: ${task.role}`,
       "",
       `Your task: Create the file ${task.targetDoc}`,
       "",
@@ -764,9 +870,9 @@ export class OrchestratorEngine {
     runId: string,
     rootNodeId: string,
     getSignal: () => AbortSignal
-  ): Promise<void> {
+  ): Promise<DocsSyncResult> {
     const run = this.store.getRun(runId);
-    if (!run) return;
+    if (!run) return { ok: false, hasChanges: false, summary: "" };
 
     this.transitionPhase(runId, "DOCS_SYNC", "Syncing documentation with implementation");
     this.bus.emitNodeProgress(runId, rootNodeId, "DOCS_SYNC: Updating documentation to match implementation...");
@@ -776,7 +882,9 @@ export class OrchestratorEngine {
 
     if (!changesSummary.hasChanges) {
       this.bus.emitNodeProgress(runId, rootNodeId, "DOCS_SYNC: No significant changes to document.");
-      return;
+      run.docsInventory = this.detectDocsInventory(run.repoPath);
+      this.store.persistRun(run);
+      return { ok: true, hasChanges: false, summary: "" };
     }
 
     // 2. Create doc update node
@@ -784,7 +892,7 @@ export class OrchestratorEngine {
       runId,
       parentNodeId: rootNodeId,
       label: "Update Docs",
-      role: "implementer" as RoleId,
+      role: "implementer",
       providerId: this.cfg.roles["planner"] ?? "mock",
     });
     this.createEdge(runId, rootNodeId, docUpdateNode.id, "handoff", "doc update");
@@ -799,7 +907,7 @@ export class OrchestratorEngine {
       runId,
       parentNodeId: rootNodeId,
       label: "Update Changelog",
-      role: "implementer" as RoleId,
+      role: "implementer",
       providerId: this.cfg.roles["planner"] ?? "mock",
     });
     this.createEdge(runId, rootNodeId, changelogNode.id, "handoff", "changelog");
@@ -814,7 +922,7 @@ export class OrchestratorEngine {
       runId,
       parentNodeId: rootNodeId,
       label: "Final Doc Review",
-      role: "reviewer" as RoleId,
+      role: "reviewer",
       providerId: this.cfg.roles["reviewer"] ?? this.cfg.roles["planner"] ?? "mock",
     });
     this.createEdge(runId, rootNodeId, finalReviewNode.id, "gate", "final review");
@@ -825,6 +933,30 @@ export class OrchestratorEngine {
     this.createEdge(runId, finalReviewNode.id, rootNodeId, "report", "final review result");
 
     this.bus.emitNodeProgress(runId, rootNodeId, "DOCS_SYNC: Documentation sync complete.");
+
+    run.docsInventory = this.detectDocsInventory(run.repoPath);
+    this.store.persistRun(run);
+
+    const summaryPayload = {
+      hasChanges: changesSummary.hasChanges,
+      filesChanged: changesSummary.filesChanged,
+      summary: changesSummary.summary,
+    };
+    const summaryArtifact = this.store.createArtifact({
+      runId,
+      nodeId: rootNodeId,
+      kind: "json",
+      name: "docs.sync.summary.json",
+      mimeType: "application/json",
+      content: JSON.stringify(summaryPayload, null, 2),
+    });
+    this.bus.emitArtifact(runId, summaryArtifact);
+
+    return {
+      ok: true,
+      hasChanges: true,
+      summary: changesSummary.summary,
+    };
   }
 
   /**
@@ -1067,15 +1199,16 @@ export class OrchestratorEngine {
       return { success: true, output: finalOutput };
 
     } catch (e: unknown) {
-      const err = e as Error;
+      const errMessage = e instanceof Error ? e.message : String(e);
+      const errStack = e instanceof Error ? e.stack : undefined;
       const durationMs = Date.now() - startTime;
 
       this.bus.emitTurnCompleted(runId, nodeId, turnId, turnNumber, true, undefined, {
-        message: err.message,
-        stack: err.stack,
+        message: errMessage,
+        stack: errStack,
       });
 
-      return { success: false, error: err.message };
+      return { success: false, error: errMessage };
     } finally {
       // Remove from turns in progress
       turnsSet.delete(turnId);
@@ -1120,9 +1253,9 @@ export class OrchestratorEngine {
     this.createEdge(runId, run.rootOrchestratorNodeId, verifyNode.id, "gate", "manual-verify");
 
     const controller = new AbortController();
-    const ok = await this.runVerificationNode(verifyNode, controller.signal);
+    const result = await this.runVerificationNode(verifyNode, controller.signal);
 
-    return { success: true, ok };
+    return { success: true, ok: result.ok };
   }
 
   /**
@@ -1311,6 +1444,8 @@ export class OrchestratorEngine {
 
     this.bus.emitNodeProgress(runId, rootNodeId, `BOOT: Detected language=${run.repoFacts.language}, hasTests=${run.repoFacts.hasTests}, hasDocs=${run.repoFacts.hasDocs}`);
 
+    await this.collectHarnessHealth(runId, rootNodeId);
+
     // Root orchestrator workspace (mostly used for verification).
     const rootWs = await this.workspace.prepareWorkspace({ repoPath: run.repoPath, runId, nodeId: rootNodeId });
     this.bus.emitNodePatch(runId, rootNodeId, { workspacePath: rootWs }, "node.progress");
@@ -1342,8 +1477,8 @@ export class OrchestratorEngine {
     }
 
     let iteration = 0;
-    let plan: any = null;
-    let lastVerificationLog = "";
+    let plan: TaskDagRecord | null = null;
+    let lastFixContext = "";
 
     while (true) {
       // Check pause at top of loop
@@ -1409,11 +1544,32 @@ export class OrchestratorEngine {
           this.createEdge(runId, rootNodeId, planNode.id, "handoff", "plan");
 
           const userFeedback = this.collectUserFeedback(runId);
-          plan = await this.runProviderNode(planNode, this.roleProvider("planner"), {
-            prompt: this.buildPlanningPrompt(run.prompt, lastVerificationLog, userFeedback),
+          const planOutput = await this.runProviderNode(planNode, this.roleProvider("planner"), {
+            prompt: this.buildPlanningPrompt(run.prompt, lastFixContext, userFeedback),
             outputSchemaName: "plan",
           }, getSignal());
           this.createEdge(runId, planNode.id, rootNodeId, "report", "plan report");
+
+          const normalizedPlan = this.normalizePlanOutput(planOutput, run.prompt);
+          plan = normalizedPlan.taskDag;
+
+          const runForPlan = this.store.getRun(runId);
+          if (runForPlan) {
+            runForPlan.taskDag = plan;
+            runForPlan.acceptanceCriteria = normalizedPlan.acceptanceCriteria;
+            this.store.persistRun(runForPlan);
+          }
+
+          if (normalizedPlan.usedFallback) {
+            this.bus.emitNodeProgress(runId, rootNodeId, "PLAN: Falling back to minimal plan due to invalid output.");
+          }
+
+          this.writePlanningArtifacts(run.repoPath, plan, normalizedPlan.acceptanceCriteria);
+          const runAfterDocs = this.store.getRun(runId);
+          if (runAfterDocs) {
+            runAfterDocs.docsInventory = this.detectDocsInventory(runAfterDocs.repoPath);
+            this.store.persistRun(runAfterDocs);
+          }
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -1423,11 +1579,11 @@ export class OrchestratorEngine {
         this.bus.emitNodeProgress(runId, rootNodeId, "EXECUTE: Scheduling and executing tasks...");
 
         // IMPLEMENT steps
-        const steps = this.extractSteps(plan, run.prompt, iteration, lastVerificationLog);
+        const steps = this.extractSteps(plan, run.prompt, iteration, lastFixContext);
         const semaphore = new Semaphore(this.cfg.scheduler.maxConcurrency);
 
         // Map stepId -> nodeId
-        const stepNodes: Array<{ step: any; node: NodeRecord }> = [];
+        const stepNodes: Array<{ step: TaskStep; node: NodeRecord }> = [];
         for (const step of steps) {
           const providerId = this.pickProviderForStep(step);
           const node = this.createTaskNode({
@@ -1455,9 +1611,12 @@ export class OrchestratorEngine {
           }
         }
 
+        this.updateTaskDagNodeLinks(runId, stepNodes);
+
         // Execute DAG-ish
         const completed = new Set<string>();
         const running = new Map<string, Promise<void>>();
+        let stepsOk = true;
 
         const startStep = async (sn: { step: TaskStep; node: NodeRecord }) => {
           const release = await semaphore.acquire();
@@ -1466,7 +1625,7 @@ export class OrchestratorEngine {
 
             const provider = this.providers.get(sn.node.providerId ?? "mock") ?? this.roleProvider("implementer");
             const userFeedback = this.collectUserFeedback(runId);
-            const stepPrompt = this.buildStepPrompt(runId, sn.node.id, run.prompt, sn.step, iteration, lastVerificationLog, userFeedback);
+            const stepPrompt = this.buildStepPrompt(runId, sn.node.id, run.prompt, sn.step, iteration, lastFixContext, userFeedback);
 
             // Check if we should queue the prompt in INTERACTIVE mode (Section 3.4)
             const currentRun = this.store.getRun(runId);
@@ -1522,7 +1681,7 @@ export class OrchestratorEngine {
           }
         };
 
-        const canRun = (sn: { step: any; node: NodeRecord }) => {
+        const canRun = (sn: { step: TaskStep; node: NodeRecord }) => {
           const deps: string[] = Array.isArray(sn.step.deps) ? sn.step.deps : [];
           for (const dep of deps) {
             const depNodeId = byStepId.get(dep);
@@ -1532,7 +1691,7 @@ export class OrchestratorEngine {
         };
 
         // Check if node control allows auto-scheduling
-        const canAutoSchedule = (sn: { step: any; node: NodeRecord }) => {
+        const canAutoSchedule = (sn: { step: TaskStep; node: NodeRecord }) => {
           // Check node-level control override
           if (sn.node.control === "MANUAL") {
             // Set to blocked_manual_input
@@ -1587,8 +1746,8 @@ export class OrchestratorEngine {
           try {
             await Promise.race([...running.values()]);
           } catch (e: unknown) {
-             const err = e as Error;
-             if (err.message === "PAUSED_INTERRUPT" || err.message === "aborted" || err.message === "MODE_INTERACTIVE") throw e;
+             const errMessage = e instanceof Error ? e.message : String(e);
+             if (errMessage === "PAUSED_INTERRUPT" || errMessage === "aborted" || errMessage === "MODE_INTERACTIVE") throw e;
              // otherwise ignore step failure here, handled in catch
           }
           
@@ -1597,6 +1756,9 @@ export class OrchestratorEngine {
             if (completed.has(nodeId)) running.delete(nodeId);
           }
         }
+
+        this.updateTaskDagStatuses(runId);
+        stepsOk = this.allStepsCompleted(runId, stepNodes);
 
         // REVIEW (optional) - minimal in v0
         const reviewerId = this.cfg.roles["reviewer"];
@@ -1626,13 +1788,94 @@ export class OrchestratorEngine {
         const verifyNode = this.createVerificationNode(runId, rootNodeId, rootWs);
         this.createEdge(runId, rootNodeId, verifyNode.id, "gate", "verify");
 
-        const verifyOk = await this.runVerificationNode(verifyNode, getSignal());
+        const verifyResult = await this.runVerificationNode(verifyNode, getSignal());
 
-        if (verifyOk) {
+        if (verifyResult.ok) {
           // ═══════════════════════════════════════════════════════════════════════
           // DOCS_SYNC PHASE - Section 2.1 (before DONE)
           // ═══════════════════════════════════════════════════════════════════════
-          await this.runDocsSyncPhase(runId, rootNodeId, getSignal);
+          const docsSyncResult = await this.runDocsSyncPhase(runId, rootNodeId, getSignal);
+
+          const acceptanceResult = this.evaluateAcceptanceCriteria({
+            runId,
+            repoPath: run.repoPath,
+            verification: verifyResult.report,
+          });
+
+          const completionIssues: string[] = [];
+          if (!stepsOk) completionIssues.push("One or more plan steps did not complete successfully.");
+          if (!acceptanceResult.ok) {
+            const failedIds = acceptanceResult.failures.map((c) => c.id).join(", ");
+            completionIssues.push(`Acceptance criteria failed: ${failedIds || "unspecified"}.`);
+          }
+          if (!docsSyncResult.ok) completionIssues.push("Documentation sync did not complete successfully.");
+
+          const completionReport: CompletionReport = {
+            ok: completionIssues.length === 0,
+            stepsOk,
+            acceptanceOk: acceptanceResult.ok,
+            docsSynced: docsSyncResult.ok,
+            issues: completionIssues,
+            acceptanceFailures: acceptanceResult.failures,
+          };
+
+          const completionArtifact = this.store.createArtifact({
+            runId,
+            nodeId: rootNodeId,
+            kind: "json",
+            name: "completeness.report.json",
+            mimeType: "application/json",
+            content: JSON.stringify(completionReport, null, 2),
+          });
+          this.bus.emitArtifact(runId, completionArtifact);
+
+          if (!completionReport.ok) {
+            const changesSummary = this.collectChangesSummary(runId);
+            const fixContextSections: string[] = [];
+            if (acceptanceResult.failures.length > 0) {
+              fixContextSections.push("## Acceptance Failures");
+              for (const failure of acceptanceResult.failures) {
+                fixContextSections.push(`- ${failure.id}: ${failure.description}`);
+              }
+            }
+            if (changesSummary.hasChanges) {
+              fixContextSections.push("## Last Patch Summary");
+              fixContextSections.push(changesSummary.summary || "No summary available.");
+              if (changesSummary.filesChanged.length > 0) {
+                fixContextSections.push(`Files: ${changesSummary.filesChanged.join(", ")}`);
+              }
+            }
+            lastFixContext = fixContextSections.join("\n");
+
+            iteration++;
+            this.bus.emitRunPatch(runId, { id: runId, iterations: iteration }, "run.updated");
+            this.bus.emitNodeProgress(runId, rootNodeId, `COMPLETENESS: Failed. Starting fix iteration ${iteration}...`);
+
+            plan = {
+              summary: "auto-fix (v0)",
+              steps: [
+                {
+                  id: `fix-${iteration}`,
+                  title: `Fix completeness issues (iteration ${iteration})`,
+                  instructions: [
+                    "Resolve the completion issues listed below.",
+                    "",
+                    lastFixContext,
+                  ].join("\n"),
+                  agentHint: "any",
+                  deps: [],
+                },
+              ],
+            };
+
+            const runForFixPlan = this.store.getRun(runId);
+            if (runForFixPlan) {
+              runForFixPlan.taskDag = plan;
+              this.store.persistRun(runForFixPlan);
+            }
+
+            continue;
+          }
 
           // ═══════════════════════════════════════════════════════════════════════
           // DONE PHASE - Section 2.1
@@ -1640,12 +1883,53 @@ export class OrchestratorEngine {
           this.transitionPhase(runId, "DONE", "All checks passed");
           this.bus.emitNodeProgress(runId, rootNodeId, "DONE: Run completed successfully.");
 
+          const finalReport = this.buildFinalReport(runId, {
+            verification: verifyResult.report,
+            docsSync: docsSyncResult,
+            completion: completionReport,
+            iterations: iteration + 1,
+          });
+          const reportArtifact = this.store.createArtifact({
+            runId,
+            nodeId: rootNodeId,
+            kind: "report",
+            name: "final.report.md",
+            mimeType: "text/markdown",
+            content: finalReport,
+          });
+          this.bus.emitArtifact(runId, reportArtifact);
+
+          if (this.cfg.workspace?.cleanupOnDone) {
+            try {
+              await this.workspace.cleanupRunWorkspaces(run.repoPath, runId);
+            } catch {
+              this.bus.emitNodeProgress(runId, rootNodeId, "DONE: Workspace cleanup failed.");
+            }
+          }
+
           this.bus.emitNodePatch(runId, rootNodeId, { status: "completed", completedAt: nowIso() }, "node.completed");
           this.bus.emitRunPatch(runId, { id: runId, status: "completed", iterations: iteration + 1 }, "run.completed");
           return;
         } else {
           // collect last verify logs for fix prompt
-          lastVerificationLog = this.collectLatestVerificationLog(runId, verifyNode.id);
+          if (!verifyResult.report.docsCheck.ok) {
+            this.transitionPhase(runId, "DOCS_ITERATION", "Missing required documentation");
+            await this.runDocsIterationPhase(runId, rootNodeId, getSignal);
+          }
+          const logText = this.collectLatestVerificationLog(runId, verifyNode.id);
+          const changesSummary = this.collectChangesSummary(runId);
+          const reportText = JSON.stringify(verifyResult.report, null, 2);
+          const fixContext = [
+            logText ? "## Verification Logs" : "",
+            logText,
+            "## Verification Report",
+            "```json",
+            reportText,
+            "```",
+            changesSummary.hasChanges ? "## Last Patch Summary" : "",
+            changesSummary.summary,
+          ].filter((section) => section.trim().length > 0).join("\n\n");
+          lastFixContext = fixContext;
           iteration++;
           this.bus.emitRunPatch(runId, { id: runId, iterations: iteration }, "run.updated");
           this.bus.emitNodeProgress(runId, rootNodeId, `VERIFY: Failed. Starting fix iteration ${iteration}...`);
@@ -1657,25 +1941,35 @@ export class OrchestratorEngine {
               {
                 id: `fix-${iteration}`,
                 title: `Fix verification failures (iteration ${iteration})`,
-                instructions: "Fix the verification failures described in the logs.",
+                instructions: [
+                  "Fix the verification failures described below.",
+                  "",
+                  lastFixContext,
+                ].join("\n"),
                 agentHint: "any",
                 deps: [],
               },
             ],
           };
+
+          const runForFixPlan = this.store.getRun(runId);
+          if (runForFixPlan) {
+            runForFixPlan.taskDag = plan;
+            this.store.persistRun(runForFixPlan);
+          }
         }
 
       } catch (e: unknown) {
-        const err = e as Error;
+        const errMessage = e instanceof Error ? e.message : String(e);
         if (this.pauseSignals.has(runId)) {
           // It was a pause interrupt. Loop around to wait.
           this.bus.emitNodeProgress(runId, rootNodeId, "Run interrupted for pause.");
           continue;
-        } else if (err.message === "MODE_INTERACTIVE") {
+        } else if (errMessage === "MODE_INTERACTIVE") {
           // Mode switched to INTERACTIVE. Loop around to wait for AUTO.
           this.bus.emitNodeProgress(runId, rootNodeId, "Run paused - switched to INTERACTIVE mode.");
           continue;
-        } else if (err.message === "aborted") {
+        } else if (errMessage === "aborted") {
           // Standard stop
           break;
         } else {
@@ -1710,7 +2004,7 @@ export class OrchestratorEngine {
       createdAt: nowIso(),
       input: params.input,
     };
-    this.bus.emitNodePatch(params.runId, id, node as any, "node.created");
+    this.bus.emitNodePatch(params.runId, id, node, "node.created");
     return node;
   }
 
@@ -1726,7 +2020,7 @@ export class OrchestratorEngine {
       createdAt: nowIso(),
       workspacePath,
     };
-    this.bus.emitNodePatch(runId, id, node as any, "node.created");
+    this.bus.emitNodePatch(runId, id, node, "node.created");
     return node;
   }
 
@@ -1743,8 +2037,8 @@ export class OrchestratorEngine {
     this.bus.emitEdge(runId, edge);
   }
 
-  private pickProviderForStep(step: any): string {
-    const hint = (step?.agentHint ?? "any") as string;
+  private pickProviderForStep(step: TaskStep): string {
+    const hint = step.agentHint ?? "any";
     if (hint && hint !== "any") return hint;
     // default implementer role provider
     return this.cfg.roles["implementer"] ?? "mock";
@@ -1758,6 +2052,48 @@ export class OrchestratorEngine {
       // ignore
     }
     return undefined;
+  }
+
+  private validateStructuredOutput(
+    name: "plan" | "repo-brief",
+    output: unknown
+  ): { ok: boolean; issue?: string } {
+    if (name !== "plan") return { ok: true };
+    if (!this.isRecord(output)) return { ok: false, issue: "Output must be a JSON object." };
+
+    const steps = output["steps"];
+    if (!Array.isArray(steps) || steps.length === 0) {
+      return { ok: false, issue: "Plan must include a non-empty steps array." };
+    }
+
+    for (const step of steps) {
+      if (!this.isRecord(step)) {
+        return { ok: false, issue: "Each step must be an object." };
+      }
+      const idValue = step["id"];
+      const titleValue = step["title"];
+      const instructionsValue = step["instructions"];
+      if (typeof idValue !== "string" || idValue.trim().length === 0) {
+        return { ok: false, issue: "Each step must include a non-empty id." };
+      }
+      if (typeof titleValue !== "string" || titleValue.trim().length === 0) {
+        return { ok: false, issue: "Each step must include a non-empty title." };
+      }
+      if (typeof instructionsValue !== "string" || instructionsValue.trim().length === 0) {
+        return { ok: false, issue: "Each step must include non-empty instructions." };
+      }
+    }
+
+    return { ok: true };
+  }
+
+  private buildFollowupPrompt(issue?: string): string {
+    const lines = [
+      "The previous response did not match the required schema.",
+      "Please return ONLY valid JSON that matches the schema.",
+    ];
+    if (issue) lines.push(`Validation issue: ${issue}`);
+    return lines.join("\n");
   }
 
   private async runProviderNode(
@@ -1776,39 +2112,73 @@ export class OrchestratorEngine {
 
     const schemaJson = params.outputSchemaName ? this.schemaJson(params.outputSchemaName) : undefined;
 
+    const maxTurns = Math.max(1, this.cfg.orchestration.maxTurnsPerNode ?? 1);
     let finalOutput: unknown = undefined;
     let finalSummary: string | undefined = undefined;
+    let validationIssue: string | undefined = undefined;
+    let turnsUsed = 0;
 
     try {
-      // Get existing session ID for resumption (Section 4.2.2)
-      const existingSession = this.sessionRegistry.getByNodeId(node.id);
-      const sessionId = node.providerSessionId ?? existingSession?.providerSessionId;
-
-      const iter = provider.runTask(
-        {
-          runId,
-          nodeId: node.id,
-          role: (node.role ?? "implementer") as RoleId,
-          prompt: params.prompt,
-          workspacePath: wsPath,
-          outputSchemaJson: schemaJson,
-          sessionId, // Pass session for continuity
-        },
-        signal
-      );
-
-      for await (const ev of iter) {
-        if (signal.aborted) throw new Error("aborted");
-        await this.handleProviderEvent(ev, runId, node, provider);
-
-        // Update finalOutput and finalSummary if this is a final event
-        if (ev.type === "final") {
-          finalOutput = ev.output ?? finalOutput;
-          finalSummary = ev.summary ?? finalSummary;
+      for (let turn = 1; turn <= maxTurns; turn += 1) {
+        turnsUsed = turn;
+        const turnPrompt = turn === 1 ? params.prompt : this.buildFollowupPrompt(validationIssue);
+        if (turn > 1) {
+          this.bus.emitNodeProgress(runId, node.id, `AUTO: Re-prompting for structured output (${turn}/${maxTurns}).`);
         }
-        // best-effort: treat named plan outputs as finalOutput
-        if (ev.type === "json" && String(ev.name).includes("plan")) {
-          finalOutput = ev.json;
+
+        // Get existing session ID for resumption (Section 4.2.2)
+        const existingSession = this.sessionRegistry.getByNodeId(node.id);
+        const sessionId = node.providerSessionId ?? existingSession?.providerSessionId;
+
+        finalOutput = undefined;
+        finalSummary = undefined;
+
+        const iter = provider.runTask(
+          {
+            runId,
+            nodeId: node.id,
+            role: node.role ?? "implementer",
+            prompt: turnPrompt,
+            workspacePath: wsPath,
+            outputSchemaJson: schemaJson,
+            sessionId, // Pass session for continuity
+          },
+          signal
+        );
+
+        for await (const ev of iter) {
+          if (signal.aborted) throw new Error("aborted");
+          await this.handleProviderEvent(ev, runId, node, provider);
+
+          // Update finalOutput and finalSummary if this is a final event
+          if (ev.type === "final") {
+            finalOutput = ev.output ?? finalOutput;
+            finalSummary = ev.summary ?? finalSummary;
+          }
+          // best-effort: treat named plan outputs as finalOutput
+          if (ev.type === "json" && String(ev.name).includes("plan")) {
+            finalOutput = ev.json;
+          }
+        }
+
+        if (params.outputSchemaName) {
+          const validation = this.validateStructuredOutput(params.outputSchemaName, finalOutput);
+          if (!validation.ok) {
+            validationIssue = validation.issue;
+            if (turn < maxTurns) continue;
+          }
+        }
+
+        break;
+      }
+
+      const run = this.store.getRun(runId);
+      if (run) {
+        const storedNode = run.nodes[node.id];
+        if (storedNode) {
+          const currentTurns = storedNode.turnCount ?? 0;
+          storedNode.turnCount = currentTurns + turnsUsed;
+          this.store.persistRun(run);
         }
       }
 
@@ -1846,46 +2216,48 @@ export class OrchestratorEngine {
       }, "node.completed");
 
       return finalOutput;
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (signal.aborted) throw new Error("aborted"); // propagate proper abort
-      
+
+      const message = e instanceof Error ? e.message : String(e);
+      const stack = e instanceof Error ? e.stack : undefined;
       this.bus.emitNodePatch(runId, node.id, {
         status: "failed",
         completedAt: nowIso(),
-        error: { message: e?.message ?? String(e), stack: e?.stack },
+        error: { message, stack },
       }, "node.failed");
       throw e;
     }
   }
 
-  private async runVerificationNode(node: NodeRecord, signal: AbortSignal): Promise<boolean> {
+  private async runVerificationNode(node: NodeRecord, signal: AbortSignal): Promise<VerificationResult> {
     const runId = node.runId;
     this.bus.emitNodePatch(runId, node.id, { status: "running", startedAt: nowIso() }, "node.started");
 
     const run = this.store.getRun(runId)!;
     const commands = (this.cfg.verification.commands ?? []).filter((c) => String(c).trim().length);
 
+    let verifyOk = true;
+    let verifyResults: Array<{
+      command: string;
+      ok: boolean;
+      code: number | null;
+      durationMs: number;
+      stdout: string;
+      stderr: string;
+    }> = [];
+
     if (!commands.length) {
       this.bus.emitNodeProgress(runId, node.id, "No verification commands configured; treating as PASS.");
-      this.bus.emitVerificationCompleted(runId, node.id, { ok: true, commands: [] });
-      this.bus.emitNodePatch(runId, node.id, { status: "completed", completedAt: nowIso(), summary: "No verification commands (PASS)." }, "node.completed");
-      return true;
+    } else {
+      const result = await verifyAll(commands, { cwd: run.repoPath, signal });
+      verifyOk = result.ok;
+      verifyResults = result.results;
     }
 
-    const result = await verifyAll(commands, { cwd: run.repoPath, signal });
-    const report = {
-      ok: result.ok,
-      commands: result.results.map((r) => ({
-        command: r.command,
-        ok: r.ok,
-        code: r.code,
-        durationMs: r.durationMs,
-      })),
-    };
-
     // persist logs per command
-    const commandsOut = [];
-    for (const r of result.results) {
+    const commandsOut: VerificationCommandReport[] = [];
+    for (const r of verifyResults) {
       const combined = `# ${r.command}\n\nEXIT=${r.code}\n\n--- STDOUT ---\n${r.stdout}\n\n--- STDERR ---\n${r.stderr}\n`;
       const art = this.store.createArtifact({
         runId,
@@ -1897,27 +2269,60 @@ export class OrchestratorEngine {
         meta: { command: r.command, ok: r.ok, code: r.code, durationMs: r.durationMs },
       });
       this.bus.emitArtifact(runId, art);
-      commandsOut.push({ ...r, logArtifactId: art.id });
+      commandsOut.push({
+        command: r.command,
+        ok: r.ok,
+        code: r.code,
+        durationMs: r.durationMs,
+        logArtifactId: art.id,
+      });
     }
 
+    const docsInventory = this.detectDocsInventory(run.repoPath);
+    run.docsInventory = docsInventory;
+    this.store.persistRun(run);
+
+    const docsCheck = {
+      ok: docsInventory.missingRequired.length === 0,
+      missing: docsInventory.missingRequired,
+    };
+
+    const overallOk = verifyOk && docsCheck.ok;
+    const report: VerificationReport = {
+      ok: overallOk,
+      commands: commandsOut,
+      docsCheck,
+    };
+
+    const reportArtifact = this.store.createArtifact({
+      runId,
+      nodeId: node.id,
+      kind: "json",
+      name: "verification.report.json",
+      mimeType: "application/json",
+      content: JSON.stringify(report, null, 2),
+    });
+    this.bus.emitArtifact(runId, reportArtifact);
+
     this.bus.emitVerificationCompleted(runId, node.id, {
-      ok: result.ok,
-      commands: commandsOut.map((r) => ({
+      ok: report.ok,
+      commands: report.commands.map((r) => ({
         command: r.command,
         ok: r.ok,
         code: r.code,
         durationMs: r.durationMs,
         logArtifactId: r.logArtifactId,
       })),
+      docsCheck: report.docsCheck,
     });
 
-    if (result.ok) {
+    if (overallOk) {
       this.bus.emitNodePatch(runId, node.id, { status: "completed", completedAt: nowIso(), summary: "Verification PASS." }, "node.completed");
-      return true;
     } else {
       this.bus.emitNodePatch(runId, node.id, { status: "failed", completedAt: nowIso(), summary: "Verification FAIL." }, "node.failed");
-      return false;
     }
+
+    return { ok: overallOk, report, reportArtifactId: reportArtifact.id };
   }
 
   private collectLatestVerificationLog(runId: string, verifyNodeId: string): string {
@@ -1962,7 +2367,209 @@ export class OrchestratorEngine {
     return combined;
   }
 
-  private extractSteps(plan: any, fallbackPrompt: string, iteration: number, lastVerify: string): any[] {
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  private normalizeCheckType(value: unknown): AcceptanceCriterion["checkType"] {
+    if (typeof value !== "string") return "custom";
+    switch (value) {
+      case "test":
+      case "lint":
+      case "build":
+      case "manual":
+      case "doc_exists":
+      case "custom":
+        return value;
+      default:
+        return "custom";
+    }
+  }
+
+  private normalizeAcceptanceCriteria(value: unknown): AcceptanceCriterion[] {
+    if (!Array.isArray(value)) return [];
+    const criteria: AcceptanceCriterion[] = [];
+    for (let i = 0; i < value.length; i += 1) {
+      const item = value[i];
+      if (!this.isRecord(item)) continue;
+      const idValue = item["id"];
+      const descriptionValue = item["description"];
+      const id = typeof idValue === "string" && idValue.trim().length > 0
+        ? idValue
+        : `accept-${i + 1}`;
+      const description = typeof descriptionValue === "string" ? descriptionValue.trim() : "";
+      if (!description) continue;
+      const checkType = this.normalizeCheckType(item["checkType"]);
+      const checkCommandValue = item["checkCommand"];
+      const checkCommand = typeof checkCommandValue === "string" && checkCommandValue.trim().length > 0
+        ? checkCommandValue
+        : undefined;
+      criteria.push({ id, description, checkType, checkCommand });
+    }
+    return criteria;
+  }
+
+  private deriveAcceptanceCriteriaFromCommands(commands: string[]): AcceptanceCriterion[] {
+    const criteria: AcceptanceCriterion[] = [];
+    for (let i = 0; i < commands.length; i += 1) {
+      const command = commands[i];
+      const checkType = this.classifyCommand(command);
+      criteria.push({
+        id: `verify-${i + 1}`,
+        description: `Command succeeds: ${command}`,
+        checkType,
+        checkCommand: command,
+      });
+    }
+    return criteria;
+  }
+
+  private normalizePlanOutput(output: unknown, fallbackPrompt: string): NormalizedPlan {
+    const fallbackTaskDag: TaskDagRecord = {
+      summary: "auto-plan (fallback)",
+      steps: [
+        {
+          id: "impl-1",
+          title: "Implement requested changes",
+          instructions: fallbackPrompt,
+          agentHint: "any",
+          deps: [],
+        },
+      ],
+    };
+
+    if (!this.isRecord(output)) {
+      return {
+        taskDag: fallbackTaskDag,
+        acceptanceCriteria: this.deriveAcceptanceCriteriaFromCommands(this.cfg.verification.commands ?? []),
+        usedFallback: true,
+      };
+    }
+
+    const stepsValue = output["steps"];
+    if (!Array.isArray(stepsValue) || stepsValue.length === 0) {
+      return {
+        taskDag: fallbackTaskDag,
+        acceptanceCriteria: this.deriveAcceptanceCriteriaFromCommands(this.cfg.verification.commands ?? []),
+        usedFallback: true,
+      };
+    }
+
+    const steps: TaskStep[] = [];
+    for (let i = 0; i < stepsValue.length; i += 1) {
+      const raw = stepsValue[i];
+      if (!this.isRecord(raw)) continue;
+      const idValue = raw["id"];
+      const titleValue = raw["title"];
+      const instructionsValue = raw["instructions"];
+      const agentHintValue = raw["agentHint"];
+      const depsValue = raw["deps"];
+
+      const id = typeof idValue === "string" && idValue.trim().length > 0 ? idValue : `step-${i + 1}`;
+      const title = typeof titleValue === "string" && titleValue.trim().length > 0 ? titleValue : id;
+      const instructions = typeof instructionsValue === "string" && instructionsValue.trim().length > 0
+        ? instructionsValue
+        : title;
+      const agentHint = typeof agentHintValue === "string" && agentHintValue.trim().length > 0
+        ? agentHintValue
+        : "any";
+      const deps = Array.isArray(depsValue)
+        ? depsValue.filter((dep) => typeof dep === "string")
+        : [];
+
+      steps.push({ id, title, instructions, agentHint, deps });
+    }
+
+    if (!steps.length) {
+      return {
+        taskDag: fallbackTaskDag,
+        acceptanceCriteria: this.deriveAcceptanceCriteriaFromCommands(this.cfg.verification.commands ?? []),
+        usedFallback: true,
+      };
+    }
+
+    const summaryValue = output["summary"];
+    const summary = typeof summaryValue === "string" && summaryValue.trim().length > 0
+      ? summaryValue
+      : "plan";
+
+    const acceptanceRaw = output["acceptanceCriteria"];
+    const acceptanceFromPlan = this.normalizeAcceptanceCriteria(acceptanceRaw);
+    const acceptanceCriteria = acceptanceFromPlan.length > 0
+      ? acceptanceFromPlan
+      : this.deriveAcceptanceCriteriaFromCommands(this.cfg.verification.commands ?? []);
+
+    return {
+      taskDag: { summary, steps },
+      acceptanceCriteria,
+      usedFallback: false,
+    };
+  }
+
+  private formatPlanMarkdown(taskDag: TaskDagRecord): string {
+    const lines: string[] = [];
+    lines.push("# Plan");
+    lines.push("");
+    lines.push("## Summary");
+    lines.push(taskDag.summary || "Plan output");
+    lines.push("");
+    lines.push("## Steps");
+
+    for (const step of taskDag.steps) {
+      lines.push("");
+      lines.push(`### ${step.id}: ${step.title}`);
+      if (step.instructions) {
+        lines.push("");
+        lines.push("Instructions:");
+        lines.push("```");
+        lines.push(step.instructions);
+        lines.push("```");
+      }
+      const deps = step.deps?.length ? step.deps.join(", ") : "None";
+      lines.push(`- Dependencies: ${deps}`);
+      if (step.agentHint) {
+        lines.push(`- Agent hint: ${step.agentHint}`);
+      }
+    }
+
+    lines.push("");
+    return lines.join("\n");
+  }
+
+  private formatAcceptanceMarkdown(criteria: AcceptanceCriterion[]): string {
+    const lines: string[] = [];
+    lines.push("# Acceptance Criteria");
+    lines.push("");
+
+    if (criteria.length === 0) {
+      lines.push("_No acceptance criteria were generated._");
+      lines.push("");
+      return lines.join("\n");
+    }
+
+    for (const criterion of criteria) {
+      lines.push(`- [${criterion.id}] ${criterion.description}`);
+      lines.push(`  - Type: ${criterion.checkType}`);
+      if (criterion.checkCommand) {
+        lines.push(`  - Command: ${criterion.checkCommand}`);
+      }
+    }
+
+    lines.push("");
+    return lines.join("\n");
+  }
+
+  private writePlanningArtifacts(repoPath: string, taskDag: TaskDagRecord, criteria: AcceptanceCriterion[]): void {
+    const docsDir = path.join(repoPath, "docs");
+    fs.mkdirSync(docsDir, { recursive: true });
+    const planPath = path.join(docsDir, "PLAN.md");
+    const acceptancePath = path.join(docsDir, "ACCEPTANCE.md");
+
+    fs.writeFileSync(planPath, this.formatPlanMarkdown(taskDag), "utf-8");
+    fs.writeFileSync(acceptancePath, this.formatAcceptanceMarkdown(criteria), "utf-8");
+  }
+
+  private extractSteps(plan: TaskDagRecord | null, fallbackPrompt: string, iteration: number, lastVerify: string): TaskStep[] {
     const maybeSteps = plan?.steps;
     if (Array.isArray(maybeSteps) && maybeSteps.length) return maybeSteps;
 
@@ -1976,6 +2583,141 @@ export class OrchestratorEngine {
         deps: [],
       },
     ];
+  }
+
+  private classifyCommand(command: string): AcceptanceCriterion["checkType"] {
+    const lower = command.toLowerCase();
+    if (lower.includes("lint")) return "lint";
+    if (lower.includes("test")) return "test";
+    if (lower.includes("build")) return "build";
+    return "custom";
+  }
+
+  private checkDocExists(repoPath: string, relativePath: string): boolean {
+    const normalized = relativePath.startsWith("/") ? relativePath.slice(1) : relativePath;
+    const useRepoPath = !path.isAbsolute(relativePath) || normalized.startsWith("docs/");
+    const fullPath = useRepoPath ? path.join(repoPath, normalized) : relativePath;
+    if (!fs.existsSync(fullPath)) return false;
+    try {
+      const content = fs.readFileSync(fullPath, "utf-8");
+      return content.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private evaluateAcceptanceCriteria(params: {
+    runId: string;
+    repoPath: string;
+    verification: VerificationReport;
+  }): { ok: boolean; failures: AcceptanceCriterion[] } {
+    const run = this.store.getRun(params.runId);
+    if (!run) return { ok: true, failures: [] };
+
+    const criteria = run.acceptanceCriteria ?? [];
+    if (criteria.length === 0) return { ok: true, failures: [] };
+
+    const failures: AcceptanceCriterion[] = [];
+    const updated: AcceptanceCriterion[] = [];
+    const checkTime = nowIso();
+
+    for (const criterion of criteria) {
+      let passed = false;
+
+      if (criterion.checkType === "doc_exists") {
+        if (criterion.checkCommand) {
+          passed = this.checkDocExists(params.repoPath, criterion.checkCommand);
+        } else {
+          const inventory = this.detectDocsInventory(params.repoPath);
+          run.docsInventory = inventory;
+          passed = inventory.missingRequired.length === 0;
+        }
+      } else if (criterion.checkType === "manual") {
+        passed = criterion.passed === true;
+      } else if (criterion.checkType === "test" || criterion.checkType === "lint" || criterion.checkType === "build") {
+        const matches = criterion.checkCommand
+          ? params.verification.commands.filter((c) => c.command === criterion.checkCommand)
+          : params.verification.commands.filter((c) => this.classifyCommand(c.command) === criterion.checkType);
+        passed = matches.length > 0 && matches.every((c) => c.ok);
+      } else {
+        const matches = criterion.checkCommand
+          ? params.verification.commands.filter((c) => c.command === criterion.checkCommand)
+          : [];
+        passed = matches.length > 0 ? matches.every((c) => c.ok) : criterion.passed === true;
+      }
+
+      const updatedCriterion: AcceptanceCriterion = {
+        ...criterion,
+        passed,
+        checkedAt: checkTime,
+      };
+      updated.push(updatedCriterion);
+      if (!passed) failures.push(updatedCriterion);
+    }
+
+    run.acceptanceCriteria = updated;
+    this.store.persistRun(run);
+
+    return { ok: failures.length === 0, failures };
+  }
+
+  private updateTaskDagNodeLinks(runId: string, stepNodes: Array<{ step: TaskStep; node: NodeRecord }>): void {
+    const run = this.store.getRun(runId);
+    if (!run?.taskDag) return;
+
+    const stepMap = new Map<string, TaskStep>();
+    for (const step of run.taskDag.steps) {
+      stepMap.set(step.id, step);
+    }
+
+    for (const sn of stepNodes) {
+      const step = stepMap.get(sn.step.id);
+      if (!step) continue;
+      step.nodeId = sn.node.id;
+      step.status = step.status ?? "pending";
+    }
+
+    this.store.persistRun(run);
+  }
+
+  private updateTaskDagStatuses(runId: string): void {
+    const run = this.store.getRun(runId);
+    if (!run?.taskDag) return;
+
+    for (const step of run.taskDag.steps) {
+      if (!step.nodeId) continue;
+      const node = run.nodes[step.nodeId];
+      if (!node) continue;
+      switch (node.status) {
+        case "running":
+          step.status = "running";
+          break;
+        case "completed":
+          step.status = "completed";
+          break;
+        case "failed":
+          step.status = "failed";
+          break;
+        case "skipped":
+          step.status = "skipped";
+          break;
+        default:
+          step.status = "pending";
+      }
+    }
+
+    this.store.persistRun(run);
+  }
+
+  private allStepsCompleted(runId: string, stepNodes: Array<{ step: TaskStep; node: NodeRecord }>): boolean {
+    const run = this.store.getRun(runId);
+    if (!run) return true;
+
+    for (const sn of stepNodes) {
+      const node = run.nodes[sn.node.id];
+      if (!node || node.status !== "completed") return false;
+    }
+    return true;
   }
 
   // Prompt builders
@@ -2000,9 +2742,10 @@ export class OrchestratorEngine {
       "Create a minimal step plan to satisfy the user request.",
       "",
       "Rules:",
-      "- Output JSON matching the provided schema (steps[], deps).",
+      "- Output JSON matching the provided schema (steps[], deps, acceptanceCriteria).",
       "- Prefer 1-5 steps.",
       "- Include deps only when required.",
+      "- Include acceptance criteria; prefer automated checks over manual.",
       "",
       "User request:",
       userPrompt,
@@ -2074,6 +2817,73 @@ export class OrchestratorEngine {
       "User request:",
       userPrompt,
     ].join("\n");
+  }
+
+  private buildFinalReport(
+    runId: string,
+    details: { verification: VerificationReport; docsSync: DocsSyncResult; completion: CompletionReport; iterations?: number }
+  ): string {
+    const run = this.store.getRun(runId);
+    const lines: string[] = [];
+
+    lines.push("# Run Report");
+    lines.push("");
+    lines.push(`Run ID: ${runId}`);
+    if (run) {
+      lines.push(`Prompt: ${run.prompt}`);
+      lines.push(`Mode: ${run.mode}`);
+      const status = details.completion.ok ? "completed" : run.status;
+      lines.push(`Status: ${status}`);
+      const iterations = details.iterations ?? run.iterations;
+      lines.push(`Iterations: ${iterations}`);
+    }
+
+    if (run?.taskDag) {
+      lines.push("");
+      lines.push("## Plan Summary");
+      lines.push(run.taskDag.summary || "Plan");
+      lines.push("");
+      lines.push("### Steps");
+      for (const step of run.taskDag.steps) {
+        const status = step.status ?? "pending";
+        lines.push(`- [${status}] ${step.id}: ${step.title}`);
+      }
+    }
+
+    if (run?.acceptanceCriteria?.length) {
+      lines.push("");
+      lines.push("## Acceptance Criteria");
+      for (const criterion of run.acceptanceCriteria) {
+        const status = criterion.passed ? "PASS" : "FAIL";
+        lines.push(`- [${status}] ${criterion.id}: ${criterion.description}`);
+      }
+    }
+
+    lines.push("");
+    lines.push("## Verification");
+    lines.push(`Result: ${details.verification.ok ? "PASS" : "FAIL"}`);
+    for (const cmd of details.verification.commands) {
+      lines.push(`- ${cmd.ok ? "PASS" : "FAIL"}: ${cmd.command} (exit ${cmd.code ?? "n/a"})`);
+    }
+    if (!details.verification.docsCheck.ok) {
+      lines.push(`- Docs missing: ${details.verification.docsCheck.missing.join(", ")}`);
+    }
+
+    lines.push("");
+    lines.push("## Documentation Sync");
+    lines.push(`Updated: ${details.docsSync.hasChanges ? "yes" : "no"}`);
+
+    lines.push("");
+    lines.push("## Completeness");
+    lines.push(`Result: ${details.completion.ok ? "PASS" : "FAIL"}`);
+    if (details.completion.issues.length > 0) {
+      for (const issue of details.completion.issues) {
+        lines.push(`- ${issue}`);
+      }
+    }
+
+    lines.push("");
+    return lines.join("\n");
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

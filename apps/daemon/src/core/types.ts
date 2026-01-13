@@ -262,6 +262,8 @@ export interface RepoFacts {
   hasTests: boolean;
   hasDocs: boolean;
   isEmptyRepo: boolean;
+  hasOnlyDocs?: boolean;
+  hasCode?: boolean;
   gitBranch?: string;
   packageManager?: string;
 }
@@ -437,6 +439,10 @@ export interface VerificationCompletedEvent extends VuhlpEventBase {
       durationMs: number;
       logArtifactId?: string;
     }>;
+    docsCheck?: {
+      ok: boolean;
+      missing: string[];
+    };
   };
 }
 

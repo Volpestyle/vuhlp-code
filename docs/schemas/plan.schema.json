@@ -46,6 +46,39 @@
           "instructions"
         ]
       }
+    },
+    "acceptanceCriteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "checkType": {
+            "type": "string",
+            "enum": [
+              "test",
+              "lint",
+              "build",
+              "manual",
+              "doc_exists",
+              "custom"
+            ]
+          },
+          "checkCommand": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "description",
+          "checkType"
+        ]
+      }
     }
   },
   "required": [

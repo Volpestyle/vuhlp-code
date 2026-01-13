@@ -84,6 +84,10 @@
         "maxIterations": {
           "type": "integer",
           "default": 3
+        },
+        "maxTurnsPerNode": {
+          "type": "integer",
+          "default": 2
         }
       }
     },
@@ -102,6 +106,10 @@
         "rootDir": {
           "type": "string",
           "default": ".vuhlp/workspaces"
+        },
+        "cleanupOnDone": {
+          "type": "boolean",
+          "default": false
         }
       }
     },

@@ -172,6 +172,8 @@ export class ContextPackBuilder {
       testCommands: facts.testCommands?.slice(0, 3),
       hasTests: facts.hasTests,
       hasDocs: facts.hasDocs,
+      hasOnlyDocs: facts.hasOnlyDocs,
+      hasCode: facts.hasCode,
       packageManager: facts.packageManager,
     };
   }
