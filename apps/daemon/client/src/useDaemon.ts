@@ -922,6 +922,47 @@ export function useDaemon() {
     [state.nodeTrackedState]
   );
 
+  const updateEdge = useCallback((runId: string, edgeId: string, updates: Partial<Edge>) => {
+    setState((s) => {
+      const run = s.runs[runId];
+      if (!run) return s;
+      const edges = run.edges;
+      if (!edges || !edges[edgeId]) return s;
+      const nextEdge = { ...edges[edgeId], ...updates };
+      const nextRun = {
+        ...run,
+        edges: {
+          ...edges,
+          [edgeId]: nextEdge,
+        },
+      };
+      return {
+        ...s,
+        runs: {
+          ...s.runs,
+          [runId]: nextRun,
+        },
+      };
+    });
+  }, []);
+
+  const createEdge = useCallback(async (runId: string, sourceId: string, targetId: string, type: string = 'handoff', label?: string) => {
+    await httpPost(`/api/runs/${runId}/edges`, { sourceId, targetId, type, label });
+  }, []);
+
+  const createNode = useCallback(async (
+    runId: string,
+    providerId: string,
+    params: {
+      parentNodeId?: string;
+      role?: string;
+      label?: string;
+      control?: 'AUTO' | 'MANUAL';
+    }
+  ) => {
+    return await httpPost(`/api/runs/${runId}/nodes`, { providerId, ...params });
+  }, []);
+
   return {
     ...state,
     isLoadingRuns,
@@ -943,6 +984,9 @@ export function useDaemon() {
     denyRequest,
     modifyRequest,
     getNodeTrackedState,
+    updateEdge,
+    createEdge,
+    createNode,
     // Chat methods
     sendChatMessage,
     queueChatMessage,

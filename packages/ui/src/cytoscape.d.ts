@@ -51,13 +51,18 @@ declare module 'cytoscape' {
   export interface EventObject {
     target: Core | NodeSingular | EdgeSingular;
     type: string;
+    originalEvent?: Event;
   }
 
   export interface NodeSingular {
     id(): string;
-    data(name?: string): unknown;
+    data(): ElementDataDefinition;
+    data(name: string): unknown;
+    data(name: string, value: unknown): void;
+    data(data: ElementDataDefinition): void;
     style(name: string, value?: string | number): NodeSingular;
     position(): Position;
+    position(pos: Position): void;
     neighborhood(selector?: string): CollectionReturn;
     connectedEdges(selector?: string): EdgeCollection;
     addClass(classes: string): NodeSingular;
@@ -67,7 +72,10 @@ declare module 'cytoscape' {
 
   export interface EdgeSingular {
     id(): string;
-    data(name?: string): unknown;
+    data(): ElementDataDefinition;
+    data(name: string): unknown;
+    data(name: string, value: unknown): void;
+    data(data: ElementDataDefinition): void;
     style(name: string, value?: string | number): EdgeSingular;
     source(): NodeSingular;
     target(): NodeSingular;
@@ -108,6 +116,12 @@ declare module 'cytoscape' {
     run(): void;
   }
 
+  export interface StyleManipulator {
+    selector(selector: string): StyleManipulator;
+    style(style: Record<string, string | number>): StyleManipulator;
+    update(): void;
+  }
+
   export interface Core {
     add(elements: ElementDefinition | ElementDefinition[]): void;
     remove(elements?: string): void;
@@ -117,6 +131,7 @@ declare module 'cytoscape' {
     getElementById(id: string): NodeSingular | EdgeSingular;
     on(event: string, handler: (evt: EventObject) => void): void;
     on(event: string, selector: string, handler: (evt: EventObject) => void): void;
+    style(): StyleManipulator;
     zoom(level?: number): number;
     fit(elements?: unknown, padding?: number): void;
     layout(options: LayoutOptions): LayoutManipulation;

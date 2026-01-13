@@ -49,6 +49,9 @@ export function clearSavedWindowStates(runId: string): void {
   }
 }
 
+// Debounce delay for localStorage writes (ms)
+const SAVE_DEBOUNCE_MS = 300;
+
 /**
  * Hook to manage window sizes for node windows.
  * Positions are managed by Cytoscape, sizes are managed here.
@@ -56,11 +59,17 @@ export function clearSavedWindowStates(runId: string): void {
 export function useNodeWindowState(runId: string | null) {
   const [sizes, setSizes] = useState<Record<string, Size>>({});
   const runIdRef = useRef(runId);
+  const saveTimeoutRef = useRef<number | null>(null);
 
   // Load saved sizes when run changes
   useEffect(() => {
     if (runId !== runIdRef.current) {
       runIdRef.current = runId;
+      // Clear any pending save when run changes
+      if (saveTimeoutRef.current) {
+        window.clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
       if (runId) {
         const saved = loadSavedStates(runId);
         if (saved?.sizes) {
@@ -74,11 +83,30 @@ export function useNodeWindowState(runId: string | null) {
     }
   }, [runId]);
 
-  // Save sizes when they change
+  // Save sizes when they change (debounced to avoid excessive localStorage writes during resize)
   useEffect(() => {
-    if (runId && Object.keys(sizes).length > 0) {
-      saveStates(runId, { sizes });
+    if (!runId || Object.keys(sizes).length === 0) return;
+
+    // Clear any pending save
+    if (saveTimeoutRef.current) {
+      window.clearTimeout(saveTimeoutRef.current);
     }
+
+    // Schedule debounced save
+    saveTimeoutRef.current = window.setTimeout(() => {
+      saveStates(runId, { sizes });
+      saveTimeoutRef.current = null;
+    }, SAVE_DEBOUNCE_MS);
+
+    // Cleanup on unmount or dependency change
+    return () => {
+      if (saveTimeoutRef.current) {
+        // Save immediately on cleanup to avoid losing changes
+        saveStates(runId, { sizes });
+        window.clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+    };
   }, [runId, sizes]);
 
   const getWindowSize = useCallback(

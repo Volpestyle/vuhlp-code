@@ -20,17 +20,25 @@ import {
   Size,
   cyToScreen,
   centerToTopLeft,
+  DEFAULT_WINDOW_SIZE,
   OVERVIEW_WINDOW_SIZE,
+  SNAP_SIZE,
 } from './coordinateUtils';
 import './GraphPane.css';
 
 // Storage key prefix for node positions
 const POSITION_STORAGE_PREFIX = 'vuhlp-graph-positions-';
-
-// Grid size for snapping
-const SNAP_SIZE = 20;
 const OVERVIEW_ZOOM_THRESHOLD = 0.6;
-const NEW_NODE_OFFSET_X = 260;
+const NEW_NODE_OFFSET_Y = 260;
+const NEW_NODE_ORPHAN_OFFSET_X = 80;
+const EDGE_HANDLE_RADIUS = 18;
+const BASE_LAYOUT_OPTIONS = {
+  name: 'breadthfirst',
+  directed: true,
+  padding: 200,
+  spacingFactor: 2.5,
+  orientation: 'vertical',
+};
 
 type ConnectionStyle = 'bezier' | 'taxi' | 'straight';
 
@@ -51,6 +59,17 @@ interface EdgeTooltipState {
   targetLabel: string;
   x: number;
   y: number;
+}
+
+type EdgeEndpoint = 'source' | 'target';
+type PortKind = 'input' | 'output';
+type CyNodeCollection = ReturnType<Core['nodes']>;
+
+interface EdgeDragState {
+  edgeId: string;
+  end: EdgeEndpoint;
+  fixedPosition: Position;
+  currentPosition: Position;
 }
 
 function getPositionStorageKey(runId: string): string {
@@ -86,22 +105,44 @@ function clearSavedPositions(runId: string): void {
 }
 
 function getFallbackPosition(nodeId: string, edges: Edge[], positions: SavedPositions): Position | null {
+  // Try to position based on incoming edge (below source)
   for (const edge of edges) {
     if (edge.target === nodeId) {
       const sourcePos = positions[edge.source];
       if (sourcePos) {
-        return { x: sourcePos.x + NEW_NODE_OFFSET_X, y: sourcePos.y };
+        return { x: sourcePos.x, y: sourcePos.y + NEW_NODE_OFFSET_Y };
       }
     }
   }
 
+  // Try to position based on outgoing edge (above target)
   for (const edge of edges) {
     if (edge.source === nodeId) {
       const targetPos = positions[edge.target];
       if (targetPos) {
-        return { x: targetPos.x - NEW_NODE_OFFSET_X, y: targetPos.y };
+        return { x: targetPos.x, y: targetPos.y - NEW_NODE_OFFSET_Y };
       }
     }
+  }
+
+  // Orphan node: position offset from the centroid of existing positioned nodes
+  const positionValues = Object.values(positions);
+  if (positionValues.length > 0) {
+    // Calculate centroid
+    let sumX = 0;
+    let sumY = 0;
+    for (const pos of positionValues) {
+      sumX += pos.x;
+      sumY += pos.y;
+    }
+    const centroidX = sumX / positionValues.length;
+    const centroidY = sumY / positionValues.length;
+
+    // Position below and slightly offset from the centroid
+    return {
+      x: centroidX + NEW_NODE_ORPHAN_OFFSET_X,
+      y: centroidY + NEW_NODE_OFFSET_Y,
+    };
   }
 
   return null;
@@ -126,10 +167,106 @@ function getPointerPosition(container: HTMLDivElement | null, evt: EventObject):
   };
 }
 
+function getPointerPositionFromMouseEvent(container: HTMLDivElement | null, evt: MouseEvent): Position | null {
+  if (!container) return null;
+  const rect = container.getBoundingClientRect();
+  return {
+    x: evt.clientX - rect.left,
+    y: evt.clientY - rect.top,
+  };
+}
+
+function getPortTargetFromPoint(clientX: number, clientY: number): { nodeId: string; port: PortKind } | null {
+  const element = document.elementFromPoint(clientX, clientY);
+  if (!(element instanceof HTMLElement)) return null;
+  const portElement = element.closest('.vuhlp-node-port');
+  if (!(portElement instanceof HTMLElement)) return null;
+  const nodeId = portElement.dataset.nodeId;
+  const port = portElement.dataset.port;
+  if (!nodeId) return null;
+  if (port !== 'input' && port !== 'output') return null;
+  return { nodeId, port };
+}
+
+function distanceBetween(a: Position, b: Position): number {
+  const deltaX = a.x - b.x;
+  const deltaY = a.y - b.y;
+  return Math.hypot(deltaX, deltaY);
+}
+
+function buildEdgePath(source: Position, target: Position, style: ConnectionStyle): string {
+  if (style === 'straight') {
+    return `M ${source.x} ${source.y} L ${target.x} ${target.y}`;
+  }
+
+  if (style === 'taxi') {
+    const midY = (source.y + target.y) / 2;
+    return `M ${source.x} ${source.y} L ${source.x} ${midY} L ${target.x} ${midY} L ${target.x} ${target.y}`;
+  }
+
+  const midY = (source.y + target.y) / 2;
+  return `M ${source.x} ${source.y} C ${source.x} ${midY} ${target.x} ${midY} ${target.x} ${target.y}`;
+}
+
+function getCyPortPosition(cy: Core, nodeId: string, port: PortKind): Position | null {
+  const element = cy.getElementById(nodeId);
+  if (!('position' in element)) return null;
+
+  const widthValue = element.data('width');
+  const heightValue = element.data('height');
+  const width = typeof widthValue === 'number' ? widthValue : DEFAULT_WINDOW_SIZE.width;
+  const height = typeof heightValue === 'number' ? heightValue : DEFAULT_WINDOW_SIZE.height;
+
+  const zoom = cy.zoom();
+  const pan = cy.pan();
+  const pos = element.position();
+  const center = {
+    x: pos.x * zoom + pan.x,
+    y: pos.y * zoom + pan.y,
+  };
+  const scaledHeight = height * zoom;
+  const yOffset = port === 'input' ? -scaledHeight / 2 : scaledHeight / 2;
+
+  return {
+    x: center.x,
+    y: center.y + yOffset,
+  };
+}
+
+function resolveRootNodes(
+  cy: Core,
+  edges: Edge[],
+  rootOrchestratorNodeId: string | null | undefined
+): CyNodeCollection | null {
+  if (rootOrchestratorNodeId) {
+    const rootNode = cy.nodes().filter((node) => node.id() === rootOrchestratorNodeId);
+    if (rootNode.length > 0) {
+      return rootNode;
+    }
+  }
+
+  const incomingTargets = new Set(edges.map((edge) => edge.target));
+  const rootCandidates = cy.nodes().filter((node) => !incomingTargets.has(node.id()));
+  return rootCandidates.length > 0 ? rootCandidates : null;
+}
+
+function runGraphLayout(
+  cy: Core,
+  edges: Edge[],
+  rootOrchestratorNodeId: string | null | undefined
+): void {
+  const roots = resolveRootNodes(cy, edges, rootOrchestratorNodeId);
+  const layoutOptions = { ...BASE_LAYOUT_OPTIONS, ...(roots ? { roots } : {}) };
+  cy.layout(layoutOptions).run();
+}
+
 export interface GraphPaneProps {
   run: Run | null;
   onNodeSelect: (nodeId: string | null) => void;
   selectedNodeId: string | null;
+  onEdgeUpdate?: (edgeId: string, updates: { source?: string; target?: string }) => void;
+  onEdgeCreate?: (sourceId: string, targetId: string) => void;
+  onNodeCreate?: (providerId: string, label: string) => void;
   onStop: () => void;
   onPause: () => void;
   onResume: (feedback?: string) => void;
@@ -194,6 +331,9 @@ export function GraphPane({
   run,
   onNodeSelect,
   selectedNodeId,
+  onEdgeUpdate,
+  onEdgeCreate,
+  onNodeCreate,
   onStop,
   onPause,
   onResume,
@@ -223,6 +363,8 @@ export function GraphPane({
   const [followRunning, setFollowRunning] = useState(false);
   const [edgeTooltip, setEdgeTooltip] = useState<EdgeTooltipState | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+  const [edgeDrag, setEdgeDrag] = useState<EdgeDragState | null>(null);
+  const [newEdgeDrag, setNewEdgeDrag] = useState<{ sourceId: string; currentPosition: Position } | null>(null);
 
   // Node positions from Cytoscape (model coordinates)
   const [nodePositions, setNodePositions] = useState<Record<string, Position>>({});
@@ -257,7 +399,7 @@ export function GraphPane({
     toggleStatusFilter,
     toggleProviderFilter,
     clearFilters,
-  } = useGraphFilters({ nodes, edges });
+  } = useGraphFilters({ nodes, edges, runId: run?.id || null });
 
   const {
     focusNodeIds,
@@ -329,25 +471,52 @@ export function GraphPane({
 
   const runningNodeId = useMemo(() => {
     let latestNode: Node | null = null;
-    nodes.forEach((node) => {
-      if (node.status !== 'running' || !node.startedAt) return;
+    for (const node of nodes) {
+      if (node.status !== 'running' || !node.startedAt) continue;
       if (!latestNode) {
         latestNode = node;
-        return;
+        continue;
       }
       const currentTime = new Date(node.startedAt).getTime();
       const latestTime = new Date(latestNode.startedAt || 0).getTime();
       if (currentTime > latestTime) {
         latestNode = node;
       }
-    });
-    return latestNode ? (latestNode as Node).id : null;
+    }
+    return latestNode ? latestNode.id : null;
   }, [nodes]);
 
   const getEffectiveWindowSize = useCallback((nodeId: string): Size => {
     if (isOverview) return OVERVIEW_WINDOW_SIZE;
     return getWindowSize(nodeId);
   }, [isOverview, getWindowSize]);
+
+  const getScaledSize = useCallback((nodeId: string): Size => {
+    const baseSize = getEffectiveWindowSize(nodeId);
+    return {
+      width: baseSize.width * viewport.zoom,
+      height: baseSize.height * viewport.zoom,
+    };
+  }, [getEffectiveWindowSize, viewport.zoom]);
+
+  const getScreenPosition = useCallback((nodeId: string, scaledSize: Size): Position => {
+    const modelPos = nodePositions[nodeId];
+    if (!modelPos) return { x: 0, y: 0 };
+    const screenCenter = cyToScreen(modelPos, viewport);
+    return centerToTopLeft(screenCenter, scaledSize);
+  }, [nodePositions, viewport]);
+
+  const getPortPosition = useCallback((nodeId: string, port: PortKind): Position | null => {
+    const modelPos = nodePositions[nodeId];
+    if (!modelPos) return null;
+    const center = cyToScreen(modelPos, viewport);
+    const scaledSize = getScaledSize(nodeId);
+    const yOffset = port === 'input' ? -scaledSize.height / 2 : scaledSize.height / 2;
+    return {
+      x: center.x,
+      y: center.y + yOffset,
+    };
+  }, [nodePositions, viewport, getScaledSize]);
 
   // Update node positions from Cytoscape
   const syncPositionsFromCy = useCallback(() => {
@@ -377,6 +546,38 @@ export function GraphPane({
       syncRef.current = null;
     });
   }, [syncPositionsFromCy]);
+
+  const handleEdgeMouseDown = useCallback((evt: EventObject) => {
+    if (!('source' in evt.target)) return;
+    const position = getPointerPosition(containerRef.current, evt);
+    if (!position) return;
+
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    const edge = evt.target;
+    const sourceId = edge.source().id();
+    const targetId = edge.target().id();
+    const sourcePort = getCyPortPosition(cy, sourceId, 'output');
+    const targetPort = getCyPortPosition(cy, targetId, 'input');
+    if (!sourcePort || !targetPort) return;
+
+    const sourceDistance = distanceBetween(position, sourcePort);
+    const targetDistance = distanceBetween(position, targetPort);
+    if (sourceDistance > EDGE_HANDLE_RADIUS && targetDistance > EDGE_HANDLE_RADIUS) return;
+
+    const end: EdgeEndpoint = sourceDistance <= targetDistance ? 'source' : 'target';
+    const fixedPosition = end === 'source' ? targetPort : sourcePort;
+
+    setEdgeDrag({
+      edgeId: edge.id(),
+      end,
+      fixedPosition,
+      currentPosition: position,
+    });
+    setEdgeTooltip(null);
+    setHoveredEdgeId(edge.id());
+  }, []);
 
   // Initialize Cytoscape
   useEffect(() => {
@@ -479,12 +680,7 @@ export function GraphPane({
           },
         },
       ],
-      layout: {
-        name: 'breadthfirst',
-        directed: true,
-        padding: 200,
-        spacingFactor: 2.5,
-      },
+      layout: { ...BASE_LAYOUT_OPTIONS },
       minZoom: 0.2,
       maxZoom: 2,
       wheelSensitivity: 0.3,
@@ -545,6 +741,7 @@ export function GraphPane({
     cy.on('mouseover', 'edge', handleEdgeOver);
     cy.on('mousemove', 'edge', handleEdgeMove);
     cy.on('mouseout', 'edge', handleEdgeOut);
+    cy.on('mousedown', 'edge', handleEdgeMouseDown);
 
     cyRef.current = cy;
     let offset = 0;
@@ -565,7 +762,7 @@ export function GraphPane({
       }
       cy.destroy();
     };
-  }, [onNodeSelect, throttledSync]);
+  }, [onNodeSelect, throttledSync, handleEdgeMouseDown]);
 
   // Update styles when connection style changes
   useEffect(() => {
@@ -576,6 +773,8 @@ export function GraphPane({
       .selector('edge')
       .style({
         'curve-style': connectionStyle,
+        'source-endpoint': '50% 100%',
+        'target-endpoint': '50% 0%',
       })
       .update();
   }, [connectionStyle]);
@@ -729,9 +928,23 @@ export function GraphPane({
         };
 
         if (existing.length > 0) {
+          let shouldRecreate = false;
           existing.forEach((currentEdge) => {
-            currentEdge.data(data);
+            const currentSource = currentEdge.source().id();
+            const currentTarget = currentEdge.target().id();
+            if (currentSource !== edge.source || currentTarget !== edge.target) {
+              shouldRecreate = true;
+            }
           });
+
+          if (shouldRecreate) {
+            cy.remove(`#${edge.id}`);
+            cy.add({ data });
+          } else {
+            existing.forEach((currentEdge) => {
+              currentEdge.data(data);
+            });
+          }
           return;
         }
 
@@ -742,12 +955,7 @@ export function GraphPane({
     if (isNewRun) {
       const hasPositions = nodes.some((node) => mergedPositions[node.id]);
       if (!hasPositions) {
-        cy.layout({
-          name: 'breadthfirst',
-          directed: true,
-          padding: 200,
-          spacingFactor: 2.5,
-        }).run();
+        runGraphLayout(cy, edges, run.rootOrchestratorNodeId ?? null);
       }
       cy.fit(undefined, 100);
       setTimeout(() => syncPositionsFromCy(), 50);
@@ -773,11 +981,106 @@ export function GraphPane({
     cy.fit(cy.getElementById(runningNodeId), 120);
   }, [followRunning, runningNodeId, selectedNodeId, visibleNodeIds]);
 
+  useEffect(() => {
+    if (!newEdgeDrag) return;
+
+    const handleMouseMove = (evt: MouseEvent) => {
+      const position = getPointerPositionFromMouseEvent(containerRef.current, evt);
+      if (!position) return;
+
+      const target = getPortTargetFromPoint(evt.clientX, evt.clientY);
+      // Snap to input port if hovering over one
+      if (target && target.port === 'input') {
+         const targetPosition = getPortPosition(target.nodeId, 'input');
+         if (targetPosition) {
+            setNewEdgeDrag(prev => prev ? { ...prev, currentPosition: targetPosition } : prev);
+            return;
+         }
+      }
+
+      setNewEdgeDrag(prev => prev ? { ...prev, currentPosition: position } : prev);
+    };
+
+    const handleMouseUp = (evt: MouseEvent) => {
+      const target = getPortTargetFromPoint(evt.clientX, evt.clientY);
+      if (target && target.port === 'input' && onEdgeCreate) {
+        onEdgeCreate(newEdgeDrag.sourceId, target.nodeId);
+      }
+      setNewEdgeDrag(null);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [newEdgeDrag, getPortPosition, onEdgeCreate]);
+
+  useEffect(() => {
+    if (!edgeDrag) return;
+
+    const isValidDrop = (end: EdgeEndpoint, port: PortKind) => {
+      if (end === 'source') return port === 'output';
+      return port === 'input';
+    };
+
+    const handleMouseMove = (evt: MouseEvent) => {
+      const position = getPointerPositionFromMouseEvent(containerRef.current, evt);
+      if (!position) return;
+
+      const target = getPortTargetFromPoint(evt.clientX, evt.clientY);
+      if (target && isValidDrop(edgeDrag.end, target.port)) {
+        const targetPosition = getPortPosition(target.nodeId, target.port);
+        if (targetPosition) {
+          setEdgeDrag((current) => (current ? {
+            ...current,
+            currentPosition: targetPosition,
+          } : current));
+          return;
+        }
+      }
+
+      setEdgeDrag((current) => (current ? {
+        ...current,
+        currentPosition: position,
+      } : current));
+    };
+
+    const handleMouseUp = (evt: MouseEvent) => {
+      const target = getPortTargetFromPoint(evt.clientX, evt.clientY);
+      if (target && isValidDrop(edgeDrag.end, target.port)) {
+        if (edgeDrag.end === 'source') {
+          onEdgeUpdate?.(edgeDrag.edgeId, { source: target.nodeId });
+        } else {
+          onEdgeUpdate?.(edgeDrag.edgeId, { target: target.nodeId });
+        }
+      }
+      setEdgeDrag(null);
+      setHoveredEdgeId(null);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [edgeDrag, getPortPosition, onEdgeUpdate]);
+
   // Handle window position change (from drag)
-  const handlePositionChange = useCallback((nodeId: string, deltaX: number, deltaY: number) => {
+  const handlePositionChange = useCallback((
+    nodeId: string,
+    deltaX: number,
+    deltaY: number,
+    options?: { snap?: boolean }
+  ) => {
     const cy = cyRef.current;
     if (!cy) return;
 
+    const shouldSnap = options?.snap ?? true;
     let updated = false;
     cy.nodes().forEach((node) => {
       if (node.id() === nodeId && !updated) {
@@ -788,8 +1091,10 @@ export function GraphPane({
         const currentPos = node.position();
         let newX = currentPos.x + modelDeltaX;
         let newY = currentPos.y + modelDeltaY;
-        newX = Math.round(newX / SNAP_SIZE) * SNAP_SIZE;
-        newY = Math.round(newY / SNAP_SIZE) * SNAP_SIZE;
+        if (shouldSnap) {
+          newX = Math.round(newX / SNAP_SIZE) * SNAP_SIZE;
+          newY = Math.round(newY / SNAP_SIZE) * SNAP_SIZE;
+        }
         node.position({ x: newX, y: newY });
       }
     });
@@ -809,6 +1114,27 @@ export function GraphPane({
 
     throttledSync();
   }, [throttledSync]);
+
+  const handlePositionCommit = useCallback((nodeId: string) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    const element = cy.getElementById(nodeId);
+    if (!('position' in element)) return;
+
+    syncPositionsFromCy();
+
+    const runId = runIdRef.current;
+    if (!runId) return;
+
+    const positions: SavedPositions = {};
+    cy.nodes().forEach((node) => {
+      const pos = node.position();
+      positions[node.id()] = { x: pos.x, y: pos.y };
+    });
+    savePositions(runId, positions);
+    savedPositionsRef.current = positions;
+  }, [syncPositionsFromCy]);
 
   // Handle window size change
   const handleSizeChange = useCallback((nodeId: string, size: Size) => {
@@ -838,6 +1164,21 @@ export function GraphPane({
     }
   }, []);
 
+  const handlePortMouseDown = useCallback((nodeId: string, port: 'input' | 'output', e: React.MouseEvent) => {
+    // Only allow dragging from output ports to start a new connection
+    if (port !== 'output') return;
+    
+    const position = getPointerPositionFromMouseEvent(containerRef.current, e.nativeEvent);
+    if (!position) return;
+
+    setNewEdgeDrag({
+      sourceId: nodeId,
+      currentPosition: position,
+    });
+    // Deselect potentially selected node to avoid dragging it
+    if (selectedNodeId) onNodeSelect(null);
+  }, [onNodeSelect, selectedNodeId]);
+
   const handleZoomIn = useCallback(() => {
     cyRef.current?.zoom(cyRef.current.zoom() * 1.2);
   }, []);
@@ -866,38 +1207,25 @@ export function GraphPane({
     resetWindowSizes();
     savedPositionsRef.current = null;
 
-    cy.layout({
-      name: 'breadthfirst',
-      directed: true,
-      padding: 200,
-      spacingFactor: 2.5,
-    }).run();
+    const rootNodeId = run?.rootOrchestratorNodeId ?? null;
+    runGraphLayout(cy, edges, rootNodeId);
 
     cy.fit(undefined, 100);
 
     setTimeout(() => {
       syncPositionsFromCy();
     }, 50);
-  }, [resetWindowSizes, syncPositionsFromCy]);
+  }, [edges, resetWindowSizes, run?.rootOrchestratorNodeId, syncPositionsFromCy]);
 
   const isRunning = run?.status === 'running';
   const isPaused = run?.status === 'paused';
   const canControl = isRunning || isPaused;
-
-  const getScreenPosition = useCallback((nodeId: string, scaledSize: Size): Position => {
-    const modelPos = nodePositions[nodeId];
-    if (!modelPos) return { x: 0, y: 0 };
-    const screenCenter = cyToScreen(modelPos, viewport);
-    return centerToTopLeft(screenCenter, scaledSize);
-  }, [nodePositions, viewport]);
-
-  const getScaledSize = useCallback((nodeId: string): Size => {
-    const baseSize = getEffectiveWindowSize(nodeId);
-    return {
-      width: baseSize.width * viewport.zoom,
-      height: baseSize.height * viewport.zoom,
-    };
-  }, [getEffectiveWindowSize, viewport.zoom]);
+  const edgeDragPoints = edgeDrag
+    ? {
+        source: edgeDrag.end === 'source' ? edgeDrag.currentPosition : edgeDrag.fixedPosition,
+        target: edgeDrag.end === 'source' ? edgeDrag.fixedPosition : edgeDrag.currentPosition,
+      }
+    : null;
 
   return (
     <div className="vuhlp-graph">
@@ -1037,6 +1365,20 @@ export function GraphPane({
             </div>
           )}
 
+          {/* Add Node Button */}
+          {run && onNodeCreate && (
+             <button
+                className="vuhlp-graph__control-btn"
+                onClick={() => onNodeCreate('mock', 'New Agent')} // Default to mock for now
+                title="Add Agent Node"
+                style={{ marginLeft: 8 }}
+              >
+                <svg viewBox="0 0 16 16" fill="currentColor">
+                   <path d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2Z"/>
+                </svg>
+             </button>
+          )}
+
           {/* Run Controls */}
           {canControl && (
             <div className="vuhlp-graph__run-controls">
@@ -1162,13 +1504,66 @@ export function GraphPane({
                   isDimmed={isDimmed}
                   isOverview={isOverview}
                   onPositionChange={handlePositionChange}
+                  onPositionCommit={handlePositionCommit}
                   onSizeChange={handleSizeChange}
                   onSelect={handleWindowSelect}
+                  onPortMouseDown={handlePortMouseDown}
                   zoom={viewport.zoom}
                 />
               );
             })}
           </div>
+        )}
+
+        {newEdgeDrag && (() => {
+          const sourcePort = getPortPosition(newEdgeDrag.sourceId, 'output');
+          if (!sourcePort) return null;
+          return (
+            <svg className="vuhlp-graph__edge-drag-layer" aria-hidden="true">
+              <defs>
+                 <marker
+                  id="vuhlp-edge-drag-arrow-new"
+                  markerWidth="8"
+                  markerHeight="6"
+                  refX="7"
+                  refY="3"
+                  orient="auto"
+                  markerUnits="strokeWidth"
+                >
+                  <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+                </marker>
+              </defs>
+              <path
+                className="vuhlp-graph__edge-drag"
+                d={buildEdgePath(sourcePort, newEdgeDrag.currentPosition, connectionStyle)}
+                markerEnd="url(#vuhlp-edge-drag-arrow-new)"
+                style={{ strokeDasharray: '5, 5' }}
+              />
+            </svg>
+          );
+        })()}
+
+        {edgeDragPoints && (
+          <svg className="vuhlp-graph__edge-drag-layer" aria-hidden="true">
+            <defs>
+              <marker
+                id="vuhlp-edge-drag-arrow"
+                markerWidth="8"
+                markerHeight="6"
+                refX="7"
+                refY="3"
+                orient="auto"
+                markerUnits="strokeWidth"
+              >
+                <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+              </marker>
+            </defs>
+            <path
+              className="vuhlp-graph__edge-drag"
+              d={buildEdgePath(edgeDragPoints.source, edgeDragPoints.target, connectionStyle)}
+              markerEnd="url(#vuhlp-edge-drag-arrow)"
+            />
+          </svg>
         )}
 
         {edgeTooltip && (

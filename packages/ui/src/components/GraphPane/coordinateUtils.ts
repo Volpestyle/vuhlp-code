@@ -68,6 +68,11 @@ export function clamp(value: number, min: number, max: number): number {
 }
 
 /**
+ * Grid snap size for positioning.
+ */
+export const SNAP_SIZE = 20;
+
+/**
  * Default window size.
  */
 export const DEFAULT_WINDOW_SIZE: Size = {
@@ -86,4 +91,9 @@ export const MIN_WINDOW_SIZE: Size = {
 export const MAX_WINDOW_SIZE: Size = {
   width: 600,
   height: 500,
+};
+
+export const OVERVIEW_WINDOW_SIZE: Size = {
+  width: 220,
+  height: 140,
 };

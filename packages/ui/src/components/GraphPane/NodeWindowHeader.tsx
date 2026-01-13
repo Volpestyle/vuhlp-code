@@ -1,5 +1,5 @@
 import React from 'react';
-import type { Node, NodeTrackedState } from '../../types';
+import type { Node, NodeTrackedState, NodeType } from '../../types';
 
 const PROVIDER_LOGOS: Record<string, string> = {
   claude: '/claude.svg',
@@ -33,42 +33,53 @@ function formatDuration(ms: number): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+function truncate(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 3)}...`;
+}
+
+const NODE_TYPE_LABELS: Record<NodeType, string> = {
+  orchestrator: 'Orch',
+  task: 'Task',
+  verification: 'Verify',
+  merge: 'Merge',
+};
+
+function getHeaderSubtitle(trackedState: NodeTrackedState | undefined): string | null {
+  if (!trackedState) return null;
+
+  for (let i = trackedState.tools.length - 1; i >= 0; i -= 1) {
+    const tool = trackedState.tools[i];
+    if (tool.status === 'started') {
+      return `Tool: ${tool.name}`;
+    }
+  }
+
+  const lastEvent = trackedState.events[trackedState.events.length - 1];
+  if (lastEvent?.message) {
+    return truncate(lastEvent.message, 46);
+  }
+
+  const lastMessage = trackedState.messages[trackedState.messages.length - 1];
+  if (lastMessage?.content) {
+    return truncate(lastMessage.content, 46);
+  }
+
+  return null;
+}
+
 /**
  * Window header component with provider logo, label, status, and timing info.
  * Acts as a drag handle for window repositioning.
  */
 export function NodeWindowHeader({ node, trackedState, onMouseDown }: NodeWindowHeaderProps) {
   const providerLogo = node.providerId ? PROVIDER_LOGOS[node.providerId] : undefined;
-
-  // Node Type Icon
-  const getTypeIcon = (type?: string) => {
-      switch(type) {
-          case 'orchestrator': return '🧠';
-          case 'task': return '⚡';
-          case 'verification': return '🛡️';
-          case 'merge': return '🔀';
-          default: return '📄';
-      }
-  };
-
-  // Activity Summary
-  const getSummary = () => {
-      if (node.status === 'running') {
-          // Check for active tool
-          const activeTool = trackedState?.tools?.find(t => t.status === 'started');
-          if (activeTool) return `Tool: ${activeTool.name}`;
-      }
-      return null;
-  };
-
-  const summary = getSummary();
+  const typeLabel = node.type ? NODE_TYPE_LABELS[node.type] : null;
+  const subtitle = getHeaderSubtitle(trackedState);
 
   return (
     <div className="vuhlp-node-window__header" onMouseDown={onMouseDown}>
       <div className="vuhlp-node-window__header-left">
-        <span className="vuhlp-node-window__type-icon" style={{ fontSize: '14px', marginRight: '4px' }} title={node.type}>
-            {getTypeIcon(node.type)}
-        </span>
         {providerLogo && (
           <img
             src={providerLogo}
@@ -76,13 +87,9 @@ export function NodeWindowHeader({ node, trackedState, onMouseDown }: NodeWindow
             className="vuhlp-node-window__provider-logo"
           />
         )}
-        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-             <span className="vuhlp-node-window__label">{node.label || node.id.slice(0, 8)}</span>
-             {summary && (
-                 <span style={{ fontSize: '10px', color: 'var(--vuhlp-text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                     {summary}
-                 </span>
-             )}
+        <div className="vuhlp-node-window__title">
+          <span className="vuhlp-node-window__label">{node.label || node.id.slice(0, 8)}</span>
+          {subtitle && <span className="vuhlp-node-window__subtitle">{subtitle}</span>}
         </div>
       </div>
 
@@ -90,6 +97,11 @@ export function NodeWindowHeader({ node, trackedState, onMouseDown }: NodeWindow
         <span className={`vuhlp-node-window__status vuhlp-node-window__status--${node.status}`}>
           {node.status}
         </span>
+        {typeLabel && (
+          <span className={`vuhlp-node-window__type vuhlp-node-window__type--${node.type}`}>
+            {typeLabel}
+          </span>
+        )}
       </div>
 
       <div className="vuhlp-node-window__header-right">

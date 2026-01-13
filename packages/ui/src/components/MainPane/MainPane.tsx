@@ -12,6 +12,9 @@ export interface MainPaneProps {
   run: Run | null;
   onNodeSelect: (nodeId: string | null) => void;
   selectedNodeId: string | null;
+  onEdgeUpdate?: (edgeId: string, updates: { source?: string; target?: string }) => void;
+  onEdgeCreate?: (sourceId: string, targetId: string) => void;
+  onNodeCreate?: (providerId: string, label: string) => void;
   onStop: () => void;
   onPause: () => void;
   onResume: (feedback?: string) => void;
@@ -36,6 +39,9 @@ export function MainPane({
   run,
   onNodeSelect,
   selectedNodeId,
+  onEdgeUpdate,
+  onEdgeCreate,
+  onNodeCreate,
   onStop,
   onPause,
   onResume,
@@ -90,6 +96,9 @@ export function MainPane({
             run={run}
             onNodeSelect={onNodeSelect}
             selectedNodeId={selectedNodeId}
+            onEdgeUpdate={onEdgeUpdate}
+            onEdgeCreate={onEdgeCreate}
+            onNodeCreate={onNodeCreate}
             onStop={onStop}
             onPause={onPause}
             onResume={onResume}

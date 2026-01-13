@@ -60,6 +60,9 @@ function App() {
     setInteractionMode,
     getInteractionMode,
     getChatMessages,
+    updateEdge,
+    createEdge,
+    createNode,
     // Run mode methods
     setRunMode,
     getRunMode,
@@ -628,6 +631,21 @@ function App() {
             run={activeRun}
             onNodeSelect={setActiveNodeId}
             selectedNodeId={activeNodeId}
+            onEdgeUpdate={(edgeId, updates) => {
+              if (activeRunId) {
+                updateEdge(activeRunId, edgeId, updates);
+              }
+            }}
+            onEdgeCreate={(sourceId, targetId) => {
+              if (activeRunId) {
+                createEdge(activeRunId, sourceId, targetId);
+              }
+            }}
+            onNodeCreate={(providerId, label) => {
+               if (activeRunId) {
+                 createNode(activeRunId, providerId, { label, control: 'MANUAL', role: 'implementer' });
+               }
+            }}
             onStop={() => activeRunId && stopRun(activeRunId)}
             onPause={() => activeRunId && pauseRun(activeRunId)}
             onResume={(feedback?: string) => activeRunId && resumeRun(activeRunId, feedback)}
