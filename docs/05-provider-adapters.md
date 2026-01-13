@@ -39,10 +39,17 @@ See `docs/10-config.md` and `docs/examples/vuhlp.config.sample.json`.
 The adapter spawns a command like:
 
 ```bash
-codex exec --json "<prompt>"
+codex exec --json --ask-for-approval never "<prompt>"
 ```
 
-It expects JSONL output and turns each JSON line into a `node.progress` event (best-effort).
+It expects JSONL output and parses events through `codexMapper.ts`:
+- `thread.started` → session ID captured
+- `item.message` → assistant messages
+- `item.reasoning` → chain-of-thought
+- `item.command_execution` → tool events
+- `item.file_change` → diff artifacts
+
+**Session resumption:** `codex exec resume <thread_id>`
 
 Notes:
 - Different Codex versions may emit different event shapes.
@@ -53,10 +60,16 @@ Notes:
 The adapter spawns:
 
 ```bash
-claude -p "<prompt>" --output-format stream-json
+claude -p "<prompt>" --output-format stream-json --include-partial-messages
 ```
 
-The adapter parses each JSON line as a progress event.
+Events are parsed through `claudeMapper.ts`:
+- `init` → session ID captured
+- `assistant_partial` → streaming deltas
+- `assistant` / `tool_use` → tool proposals
+- `tool_result` → tool completions
+
+**Session resumption:** `--session-id <uuid>` or `--resume <id>`
 
 If your Claude Code version does not support `stream-json`,
 switch to `--output-format json` and v0 will parse a single JSON object.
@@ -66,8 +79,16 @@ switch to `--output-format json` and v0 will parse a single JSON object.
 The adapter spawns:
 
 ```bash
-gemini -p "<prompt>" --output-format json
+gemini -p "<prompt>" --output-format stream-json
 ```
+
+Events are parsed through `geminiMapper.ts`:
+- `init` → session ID captured
+- `delta` → streaming text
+- `thinking` → reasoning output
+- `tool_use` / `tool_result` → tool events
+
+**Session resumption:** `--resume <session_id>`
 
 Gemini CLI output formats can vary; v0 stores raw output.
 
