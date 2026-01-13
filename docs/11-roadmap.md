@@ -1,71 +1,58 @@
 # Roadmap
 
-## v0 (this zip)
+## v0 (Current)
 
-- Local daemon + static web UI
-- Canonical event model and run state
-- Simple investigation → planning → implement → verify loop
-- Provider adapters:
-  - mock (works out of the box)
-  - codex-cli / claude-cli / gemini-cli (best-effort parsing)
-- Workspace manager (shared + optional worktree/copy)
-- Deterministic verification commands
+### Graph-First Orchestration
+- **Flexible Graph Engine**: Build and connect nodes dynamically in the UI
+- **No Fixed Pipeline**: Sessions start with a single node; users build workflows visually
+- **Roles as Templates**: Orchestrator, Coder, Planner, Verifier are presets, not constraints
+- **Custom Instructions**: Every node can have user-defined system prompts and capabilities
 
-## v1 (near-term)
+### Hybrid Autonomy
+- **Per-node Auto/Interactive**: Each node independently loops or waits for user input
+- **Global Auto/Interactive Toggle**: Control all nodes at once
+- **Auto Mode Looping**: Nodes re-execute their prompt until goals are met
 
-### Orchestration
-- Multi-orchestrator nesting (subgraphs per domain: frontend/backend/infra)
-- Step-level dependency scheduling (true DAG execution)
-- “Race” and “Consensus” strategies:
-  - race implementers
-  - consensus planning across providers
-- Merge automation:
-  - merge worktrees
-  - conflict-resolution nodes
+### Global Workflow Modes
+- **Planning Mode**: Agents research, ask questions, write to /docs/ only
+- **Implementation Mode**: Agents apply code changes with orchestrator oversight
 
-### Provider integration
-- Richer parsing of Codex/Claude/Gemini streaming events
-- Support provider “resume session” features more explicitly
-- Tool-permission routing to UI:
-  - Claude `--permission-prompt-tool`
-  - Codex approvals
-  - Gemini approval modes
+### Provider Support
+- **Claude CLI**: Full streaming and session continuity
+- **Codex CLI**: Full streaming and session continuity
+- **Gemini CLI**: Full streaming and session continuity
+- **Mock Provider**: For testing and demos
 
-### UI
-- Timeline view (spans)
-- Diff viewer inline
-- Live command output tails
-- Filters and search across runs/nodes
+### Local-First Architecture
+- Daemon + Web UI
+- Event-sourced state
+- Real-time WebSocket updates
 
-### DevEx
-- Run export/import (bundle of state + artifacts)
-- Run templates (prompt + config presets)
+## v1 (Fast Follow)
 
-## v2 (mid-term)
+### Workflow Templates
+- **Save/Load Patterns**: Capture effective workflows for reuse
+- **Template Library**: Pre-built patterns (Code Review Loop, Feature Pipeline, etc.)
+- **Shareable Configurations**: Export/import workflow definitions
 
-### Distributed + team mode
-- Remote runners (LAN / cloud)
-- Shared run dashboard, role-based access
-- Integrations:
-  - GitHub PR creation/update
-  - Linear/Jira issue sync
-  - Slack updates
+### Enhanced Graph Features
+- **Merge Automation**: Smart conflict resolution for parallel agents
+- **Consensus Strategies**: Run multiple agents on same task, pick best result
+- **Dependency Gates**: Fine-grained control over execution order
 
-### Reliability
-- Deterministic replay
-- Crash recovery and resumable runs
-- Stronger invariants for event sourcing
+### UI Improvements
+- **Timeline View**: Visualize execution over time
+- **Diff Viewer**: Inline syntax highlighting for patches
+- **Node Toolbox**: Drag-and-drop agent templates
 
-### Policy + compliance
-- Policy packs:
-  - allowed commands
-  - path allowlists
-  - network restrictions
-- Audit views and redaction
+## v2 (Collaborative)
 
-## v3 (stretch)
+- **Remote Runners**: Distributed agent execution
+- **Team Mode**: Shared dashboards and workflows
+- **Integrations**: GitHub, Linear, Slack
 
-- “Orchestration IDE” features:
-  - graph editing (manual rewiring)
-  - time-travel debugging
-  - agent skill libraries
+## v3 (Advanced)
+
+- **Time-travel Debugging**: Replay and fork execution states
+- **Skill Libraries**: Shareable agent capabilities
+- **Multi-tenant**: Enterprise deployment options

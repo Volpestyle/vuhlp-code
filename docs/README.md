@@ -7,7 +7,7 @@ This folder contains the **product + technical spec** plus implementation notes 
 - [01. Quickstart](./01-quickstart.md)
 - [02. Concepts](./02-concepts.md)
 - [03. Architecture](./03-architecture.md)
-- [04. Orchestration loop](./04-orchestration-loop.md)
+- [04. Orchestration Patterns](./04-orchestration-patterns.md)
 - [05. Provider adapters](./05-provider-adapters.md)
 - [06. Authentication](./06-auth.md)
 - [07. Workspaces and patches](./07-workspaces.md)

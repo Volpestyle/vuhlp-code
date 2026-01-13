@@ -1,67 +1,68 @@
 # Architecture
 
-v0 is split into:
+v0 is composed of three main layers:
 
-1. **Daemon (control plane)**
-2. **Provider adapters (execution plane)**
-3. **UI (observability plane)**
+1. **Daemon (Control Plane)**: The core engine that manages the graph state, data flow, and node life-cycles.
+2. **Provider Adapters (Execution Plane)**: The translation layer that interfaces with external AI agents and tool interfaces.
+3. **UI (Observability & Interaction)**: The frontend for building graphs, chatting with agents, and monitoring progress.
 
 ## Components
 
 ### Daemon
 
-- REST API for run creation + inspection
-- WebSocket for live event streaming
-- Orchestrator engine (planning, scheduling, looping)
-- Workspace manager (shared, copy, or git worktree)
-- Verifier (runs deterministic commands)
+- **Graph Engine**: Responisble for instantiating nodes, managing connections, and routing data/events between nodes based on the graph topology.
+- **Role Registry**: Manages the available templates (instructions/capabilities) that can be assigned to nodes.
+- **Workspace Manager**: Controls access to the file system, handling Worktrees or Shared Workspace modes.
+- **API/WebSocket**: Exposes real-time state and control endpoints to the UI.
 
-### Provider adapters
+### Provider Adapters
 
-Each adapter:
-
-- checks provider availability
-- spawns the provider harness (CLI)
-- translates raw output to canonical vuhlp events
-- writes raw logs/artifacts for auditability
+Adapters isolate the specific implementation details of different AI tools. Each adapter:
+- Launches the provider process (e.g., spawning a CLI).
+- Normalizes output streams into canonical vuhlp events.
+- Captures raw logs and artifacts for auditing.
 
 ### UI
 
-- Graph view (nodes + edges)
-- Node inspector:
-  - inputs
-  - logs
-  - artifacts
-  - “reasoning summary” (when available)
-- Run controls:
-  - start/stop
-  - retry a node (v0: minimal)
-  - export run (v0: stubbed in docs)
+- **Graph Canvas**: A drag-and-drop interface for creating nodes and wiring them together.
+- **Node Window**: A unified interface for each agent, featuring:
+  - **Chat Area**: For direct interaction.
+  - **Config Panel**: For setting Roles, Modes, and Instructions.
+  - **Inspector**: For viewing internal state, logs, and artifacts.
+- **Global Toolbar**: Controls for system-wide settings like the "Planning / Implementation" mode toggle.
 
-## Data flow
+## Data Flow
 
 ```mermaid
-flowchart LR
-  UI[Web UI] <-- WS events --> DAEMON
-  UI <-- REST --> DAEMON
+flowchart TB
+  subgraph User_Interface
+    UI_Graph[Graph Canvas]
+    UI_Chat[Node Chat]
+  end
 
-  DAEMON -->|spawn| CODEX[Codex CLI]
-  DAEMON -->|spawn| CLAUDE[Claude Code CLI]
-  DAEMON -->|spawn| GEMINI[Gemini CLI]
+  subgraph Daemon
+    Engine[Graph Engine]
+    Store[State Store]
+  end
 
-  DAEMON --> FS[(Artifacts + events.jsonl)]
+  subgraph Providers
+    Claude[Claude CLI]
+    Codex[Codex CLI]
+  end
+
+  UI_Graph <-->|WS Events| Engine
+  UI_Chat <-->|WS Events| Engine
+
+  Engine -- Updates --> Store
+  Engine -- Spawns --> Claude
+  Engine -- Spawns --> Codex
+
+  Claude -->|Events| Engine
+  Codex -->|Events| Engine
 ```
 
-## Design goals
+## Design Principles
 
-- Local-first (no server required)
-- Use provider harnesses “as-is”
-- Canonical event model for visualization
-- Deterministic verification loop
-- Safe-by-default permissions (no yolo unless opted-in)
-
-## Known gaps (v0)
-
-- Provider output parsing is best-effort and will vary by installed version.
-- No first-class remote execution / multi-user collaboration.
-- Multi-orchestrator nesting exists as a data model concept; v0 mainly runs a single root orchestrator per run.
+- **Graph-First Orchestration**: The system behavior is defined by the topology of the graph, not a hardcoded state machine.
+- **Hybrid Autonomy**: Every node can independently be set to "Auto" (autonomous loop) or "Interactive" (human-driven), allowing for granular human-in-the-loop control.
+- **Safety by Design**: Global modes (Planning vs. Implementation) constrain agent capabilities to prevent accidental destructive changes during exploration phases.

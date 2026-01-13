@@ -1,62 +1,71 @@
 # Concepts
 
-## Run
+## Session
 
-A **Run** is a single orchestration attempt from an input prompt/spec through completion.
-
-A run has:
-
-- id
-- prompt
-- configuration snapshot
-- nodes, edges, artifacts
-- iteration count
-- status: `queued | running | completed | failed | stopped`
+A **Session** represents your active workspace and the state of your orchestration graph. Unlike a linear pipeline, a session allows you to build, modify, and interact with a dynamic graph of agents in real-time.
 
 ## Node
 
-A **Node** is a unit of work visualized in the graph.
+A **Node** is the fundamental unit of work in the graph. Nodes are versatile containers that host an agent or tool interface.
 
-Node types in v0:
+Key properties:
+- **Provider**: The underlying AI model or CLI tool (e.g., Claude, Codex, Mock).
+- **Context**: The conversation history and current working state.
+- **Configuration**: Roles, instructions, and tool access.
 
-- `orchestrator` — the controller (root brain) for a run
-- `task` — a worker execution (Codex/Claude/Gemini/Mock)
-- `verification` — deterministic checks (tests/lint/build/etc.)
-- `merge` — (reserved) consolidation/conflict-resolution step
+By default, a Node acts as a standard CLI terminal for its provider.
 
-Node status:
+## Role
 
-- `queued | running | completed | failed | skipped`
+A **Role** is a template applied to a Node to specialize its behavior. It defines:
+- **System Instructions**: "You are a senior architect..."
+- **Capabilities**: Access to specific tools (e.g., file writing, subagent spawning).
+- **Loop Behavior**: How the agent behaves in 'Auto' mode.
+
+Common Roles:
+- **Orchestrator**: Oversees a task, spawns subagents, reconciles disparate changes, and manages high-risk operations.
+- **Planner**: Analyses requests, identifies gaps, and writes to the `/docs/` folder.
+- **Coder**: Focuses on implementation details and code generation.
+- **Verifier**: Runs commands (tests, lint) and critiques outputs.
+
+## Modes
+
+### Node Mode (Per-Node)
+- **Interactive**: The node waits for user input. You chat with the specific agent instance directly.
+- **Auto**: The node operates in a loop.
+  - If connected: It processes inputs from upstream nodes automatically.
+  - If standalone: It continuously works on its assigned goal (e.g., "Fix this bug") until verified.
+
+### Global Workflow Mode (System-wide)
+- **Planning Mode**:
+  - Focus: Investigation, design, and documentation.
+  - Constraints: Agents write ONLY to `/docs/`. Codebase is treated as read-only.
+  - Behavior: Agents ask clarifying questions and identify risks.
+- **Implementation Mode**:
+  - Focus: Execution and code application.
+  - Behavior: Agents propose and apply changes.
+  - Safety: Subagents usually apply low-risk scaffolding changes. High-risk/complex changes are routed to the Orchestrator for reconciliation and application.
 
 ## Edge
 
-An **Edge** represents a relationship:
+An **Edge** defines the flow of information between nodes.
 
-- `handoff` — orchestrator → task
-- `dependency` — task A must finish before task B
-- `report` — task → orchestrator
-- `gate` — verification gating further work
+- **Connection**: `Node A (Output) -> Node B (Input)`
+- **Data Flow**: When Node A produces an output (e.g., a code block, a plan, or a message), it is forwarded to Node B.
+- This allows for **Chains** (Start -> Architect -> Coder) and **Loops** (Coder -> Verifier -> Coder).
 
 ## Artifact
 
-An **Artifact** is any persistent output attached to a node:
-
-- logs (`stdout`, `stderr`)
-- JSON outputs (plan, review report)
-- diffs / patches
-- verification reports
-
-Artifacts are stored on disk under:
-
-- `.vuhlp/runs/<runId>/artifacts/...`
-
-and referenced in run state as metadata.
+An **Artifact** is a persistent object generated during a session:
+- Reusable metadata (plans, reports).
+- File patches/diffs.
+- Execution logs.
+- Verification results.
 
 ## Provider
 
-A **Provider** is a worker agent implementation. In v0:
-
-- `mock` — built-in fake agent for testing
-- `codex-cli` — spawns `codex` CLI and parses JSONL output best-effort
-- `claude-cli` — spawns `claude` CLI and parses JSON stream best-effort
-- `gemini-cli` — spawns `gemini` CLI and parses JSON output best-effort
+A **Provider** connects the system to an external agent runner:
+- `mock`: Internal test provider.
+- `codex-cli`: Interface to OpenAI Codex.
+- `claude-cli`: Interface to Anthropic Claude.
+- `gemini-cli`: Interface to Google Gemini.

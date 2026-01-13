@@ -26,14 +26,11 @@ See `docs/10-config.md` and `docs/examples/vuhlp.config.sample.json`.
     "claude": { "kind": "claude-cli", "command": "claude" },
     "gemini": { "kind": "gemini-cli", "command": "gemini" }
   },
-  "roles": {
-    "investigator": "mock",
-    "planner": "mock",
-    "implementer": "mock",
-    "reviewer": "mock"
-  }
+  "defaultProvider": "claude"
 }
 ```
+
+When creating nodes, users select which provider to use. The `defaultProvider` is used for new nodes.
 
 ---
 
@@ -188,7 +185,7 @@ Gemini CLI output formats can vary; v0 stores raw output as artifacts.
 
 ## Mock Provider
 
-The mock provider requires no external dependencies. It returns simulated responses for testing the orchestration loop without real AI calls.
+The mock provider requires no external dependencies. It returns simulated responses for testing orchestration workflows without real AI calls.
 
 Useful for:
 - Development and testing

@@ -1,49 +1,86 @@
 # Verification
 
-Verification is the key to the self-looping behavior.
+Verification enables self-correcting loops in the graph. When a Verifier node runs, its output can feed back into upstream nodes to trigger fixes.
 
-## Deterministic verifier (v0)
+## Verifier Node Role
 
-Configured commands run in order:
+A Verifier node executes configured commands and produces structured reports. Use this role in:
+- **Feedback Loops**: `Coder <-> Verifier` - failures route back to Coder
+- **Gate Patterns**: Verifier output determines if workflow continues
+- **Quality Checks**: Final validation before marking work complete
+
+## Deterministic Commands (v0)
+
+Configure verification commands per node or globally:
 
 ```json
 {
   "verification": {
     "commands": [
       "npm test",
-      "npm run lint"
+      "npm run lint",
+      "npm run build"
     ]
   }
 }
 ```
 
-The daemon runs each command and captures:
-
+The Verifier node runs each command and captures:
 - exit code
 - stdout/stderr
 - duration
 
-Then produces a `VerificationReport` artifact.
+Output is a `VerificationReport` artifact.
 
-## AI reviewer (v0)
+## Verification in Global Modes
 
-v0 includes a “reviewer” role hook, but is minimal by default.
+### Implementation Mode
 
-In v1:
-- add a dedicated reviewer node after implementation
-- have it compare acceptance criteria vs diffs
-- output structured report (pass/fail + issues)
+Verifier runs actual commands:
+- Tests (unit, integration)
+- Linters
+- Build processes
+- Type checks
 
-## Completeness contract
+Pass/fail determines loop continuation.
 
-At run creation time, derive a checklist:
+### Planning Mode
 
-- tests pass
-- lint passes
-- build passes
-- docs updated (optional)
-- no TODO added (optional)
+Verifier checks for **Plan Completeness**:
+- Required docs exist
+- No contradictions in specs
+- Acceptance criteria defined
+- Architecture documented
 
-This checklist is displayed and checked off in the UI.
+## Example Patterns
 
-v0 exposes the structure in the run state but does not fully enforce all items beyond commands.
+### Self-Correcting Loop
+
+```
+Coder (Auto) <-> Verifier (Auto)
+```
+
+1. Coder writes implementation
+2. Verifier runs tests
+3. If fail: Output routes back to Coder with error context
+4. Coder fixes and re-outputs
+5. Loop continues until pass
+
+### Gated Pipeline
+
+```
+Coder -> Verifier -> DocWriter
+```
+
+1. Coder outputs implementation
+2. Verifier validates
+3. Only on pass: DocWriter receives handoff
+
+## AI Reviewer
+
+The Verifier role can also use AI for subjective checks:
+- Code quality assessment
+- Security review
+- Best practices compliance
+
+Configure via custom instructions on the Verifier node.

@@ -10,51 +10,38 @@
     "codex": {
       "kind": "codex-cli",
       "command": "codex",
-      "args": [
-        "exec",
-        "--json"
-      ]
+      "sandboxMode": "read-only",
+      "askForApproval": "never",
+      "injectAgentsMd": true
     },
     "claude": {
       "kind": "claude-cli",
       "command": "claude",
-      "args": [
-        "-p",
-        "{prompt}",
-        "--output-format",
-        "stream-json"
-      ]
+      "includePartialMessages": true,
+      "injectClaudeMd": true
     },
     "gemini": {
       "kind": "gemini-cli",
-      "command": "gemini",
-      "args": [
-        "-p",
-        "{prompt}",
-        "--output-format",
-        "json"
-      ]
+      "command": "gemini"
     }
   },
-  "roles": {
-    "investigator": "mock",
-    "planner": "mock",
-    "implementer": "mock",
-    "reviewer": "mock"
-  },
+  "defaultProvider": "claude",
   "scheduler": {
     "maxConcurrency": 3
   },
-  "orchestration": {
-    "maxIterations": 3
+  "node": {
+    "maxTurnsPerLoop": 10,
+    "defaultMode": "interactive"
   },
   "workspace": {
     "mode": "shared",
-    "rootDir": ".vuhlp/workspaces"
+    "rootDir": ".vuhlp/workspaces",
+    "cleanupOnDone": false
   },
   "verification": {
-    "commands": [
-      "echo \"No verification configured\" && exit 0"
-    ]
+    "commands": []
+  },
+  "planning": {
+    "docsDirectory": "/docs/"
   }
 }

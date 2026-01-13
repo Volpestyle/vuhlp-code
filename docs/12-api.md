@@ -100,8 +100,8 @@ Response:
       "name": "My Task",
       "prompt": "...",
       "status": "running",
-      "phase": "EXECUTE",
       "mode": "AUTO",
+      "workflowMode": "implementation",
       "createdAt": "2024-01-01T00:00:00Z"
     }
   ]
@@ -907,7 +907,7 @@ Events streamed via WebSocket include:
 **Run lifecycle:**
 - `run.created`, `run.started`, `run.updated`, `run.completed`, `run.failed`, `run.stopped`, `run.paused`, `run.resumed`
 - `run.mode.changed` (AUTO/INTERACTIVE toggle)
-- `run.phase.changed` (phase transitions)
+- `run.workflow_mode.changed` (Planning/Implementation toggle)
 
 **Node lifecycle:**
 - `node.created`, `node.started`, `node.progress`, `node.completed`, `node.failed`

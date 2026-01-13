@@ -1,10 +1,12 @@
-# Workspaces and patches
+# Workspaces and Patches
 
-v0 supports these workspace modes:
+## Workspace Modes
 
-- `shared` (default) — run tasks in the existing repo folder
-- `worktree` — use `git worktree` to create an isolated workspace per node
-- `copy` — copy repo into `.vuhlp/workspaces/...` (slow, but works without git worktrees)
+When multiple nodes run in parallel with Auto mode, they may edit files concurrently. Workspace modes control how this is handled:
+
+- `shared` (default) — All nodes work in the same directory
+- `worktree` — Each node gets an isolated git worktree
+- `copy` — Each node gets a full copy (slow but safe without git)
 
 Configure in `vuhlp.config.json`:
 
@@ -12,32 +14,52 @@ Configure in `vuhlp.config.json`:
 {
   "workspace": {
     "mode": "worktree",
-    "rootDir": ".vuhlp/workspaces"
+    "rootDir": ".vuhlp/workspaces",
+    "cleanupOnDone": false
   }
 }
 ```
 
-## Why worktrees?
+## When to Use Worktrees
 
-Parallel agent work is easiest when each agent edits in a separate workspace.
-This avoids merge conflicts and allows safe diffs.
+Use `worktree` mode when:
+- Multiple Coder nodes work in parallel
+- Orchestrator delegates to subagents that apply changes
+- You want clean diffs per agent
 
-## Patch capture
+Use `shared` mode when:
+- Single node workflows
+- Read-only or Planning mode workflows
+- Sequential node execution
 
-After a task completes, v0 tries to capture diffs:
+## Patch Capture
 
-- If git is available:
-  - `git diff` and `git status --porcelain`
-- Otherwise:
-  - store file modification list only (v0)
+When a node completes, v0 captures diffs:
+
+- With git: `git diff` and `git status --porcelain`
+- Without git: File modification list only
 
 Artifacts saved:
 - `diff.patch`
 - `git-status.txt`
 
-## Merge (v1)
+These patches can be:
+- Reviewed in the Inspector
+- Applied by the Orchestrator
+- Merged in v1 automatically
 
-v0 includes the node type `merge`, but does not implement automatic merges yet.
-v1 should:
-- merge worktrees into a dedicated integration branch
-- resolve conflicts by spawning conflict-resolution nodes
+## Orchestrator Reconciliation
+
+In Implementation mode, the Orchestrator can:
+1. Receive patches from multiple subagents
+2. Review for conflicts
+3. Apply patches in sequence or merge them
+
+This is the recommended pattern for high-risk changes where subagents report back rather than applying directly.
+
+## Merge Automation (v1)
+
+v1 will add:
+- Automatic worktree merging into integration branches
+- Conflict detection and resolution nodes
+- Smart patch ordering
