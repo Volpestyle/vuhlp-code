@@ -29,21 +29,61 @@ Create cycles in the graph to enable self-healing and iteration.
 1. **Coder Node**: Writes the initial implementation.
 2. **Verifier Node**: Runs the test suite.
    - **If Pass**: Flow stops or continues downstream.
-   - **If Fail**: Output (Error Logs) is sent back to the Coder.
-3. **Coder Node (Auto)**: Receives the error logs, analyzes the failure, patches the code, and outputs the result back to the Verifier.
+   - **If Fail**: Output (Error Logs) is sent back to the Coder via a "Tick" payload.
+3. **Coder Node (Auto)**: 
+   - Receives the error logs "tick". 
+   - Does *not* re-plan from scratch; instead, it analyzes the specific failure diff and patches the code.
+   - Outputs the result back to the Verifier.
 
-## 4. The Orchestrator (Supervisor)
+**Safety**: Loops are protected by:
+- **Max Iterations**: Preventing infinite cycles.
+- **Stall Detection**: Halting if 3 consecutive failures produce identical verification logs.
 
-For high-complexity tasks, use a Supervisor pattern.
+## 4. Fan-In and Synchronization (Join)
+
+When multiple agents work in parallel, you need a way to combine their outputs.
+
+**Example**: `(Frontend, Backend) -> IntegrationVerifier`
+
+1. **Orchestrator**: Spawns two parallel tasks: `Frontend Task` and `Backend Task`.
+2. **Outputs**: Both tasks produce diffs/artifacts independently.
+3. **JoinGate (IntegrationVerifier)**:
+   - **Trigger Mode**: `On All Inputs`.
+   - It waits until *both* upstream tasks have emitted their "Done" payloads.
+   - It merges the artifacts (resolving non-conflicting files automatically) and runs integration tests.
+4. **Router**:
+   - If Merge Fails -> Sends "Merge Conflict" payload back to Orchestrator.
+   - If Tests Fail -> Sends "Bug Report" back to respective Implementers.
+   - If Success -> Merges to main workspace.
+
+## 5. The Docs-First Lifecycle
+
+To prevent documentation drift, the graph enforces a documentation contract.
+
+**Example**: `Planner -> DocContract -> Implementer -> DocReviewer`
+
+1. **Planner**: Analyzes the request and drafts a "Docs Contract" (empty files or updated specs in `/docs/`).
+2. **DocContract Gate**:
+   - A logic check that prevents the Implementer from starting until the contract exists.
+3. **Implementer**: writes code to fulfill the contract.
+4. **DocReviewer (Auto)**:
+   - Triggered after Implementation.
+   - Scans the new code and the old docs.
+   - Generates a "Docs Sync" patch to ensure they match.
+   - Fails the pipeline if a major contradiction is found.
+
+## 6. The Orchestrator (Supervisor)
+
+For high-complexity tasks, use a Supervisor pattern to manage the above patterns.
 
 **Structure**:
 - **Hub**: Orchestrator Node.
 - **Spokes**: Multiple specialized Maker/Researcher nodes.
 
 **Workflow**:
-1. **Delegation**: The Orchestrator breaks down the user prompt and prompts specific sub-nodes (e.g., "FrontendAgent", "BackendAgent") with sub-tasks.
+1. **Delegation**: The Orchestrator breaks down the user prompt and prompts specific sub-nodes.
 2. **Parallel Execution**: Sub-nodes work in parallel (in Auto mode).
-3. **Reconciliation**: Sub-nodes report back their findings or patches. The Orchestrator reviews the combined result, resolves conflicts, and finalizes the work.
+3. **Reconciliation**: Sub-nodes report back their findings or patches. The Orchestrator reviews the combined result, resolves conflicts (functioning as a manual JoinGate), and finalizes the work.
 
 ## Impact of Global Modes
 

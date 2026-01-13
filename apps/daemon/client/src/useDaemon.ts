@@ -950,6 +950,24 @@ export function useDaemon() {
     await httpPost(`/api/runs/${runId}/edges`, { sourceId, targetId, type, label });
   }, []);
 
+  const deleteEdge = useCallback(async (runId: string, edgeId: string) => {
+    await httpDelete(`/api/runs/${runId}/edges/${edgeId}`);
+    // Optimistic update
+    setState((s) => {
+      const run = s.runs[runId];
+      if (!run) return s;
+      const edges = { ...run.edges };
+      delete edges[edgeId];
+      return {
+        ...s,
+        runs: {
+          ...s.runs,
+          [runId]: { ...run, edges },
+        },
+      };
+    });
+  }, []);
+
   const createNode = useCallback(async (
     runId: string,
     providerId: string,
@@ -986,6 +1004,7 @@ export function useDaemon() {
     getNodeTrackedState,
     updateEdge,
     createEdge,
+    deleteEdge,
     createNode,
     // Chat methods
     sendChatMessage,

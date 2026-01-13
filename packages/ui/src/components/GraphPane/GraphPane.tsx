@@ -327,6 +327,13 @@ const EDGE_FOCUS_COLORS = {
   downstream: '#a7c7e7',
 };
 
+const EDGE_HIGHLIGHT_COLOR = '#d946ef';
+
+interface PortTooltipState {
+  nodeId: string;
+  port: 'input' | 'output';
+}
+
 export function GraphPane({
   run,
   onNodeSelect,
@@ -363,14 +370,16 @@ export function GraphPane({
   const [followRunning, setFollowRunning] = useState(false);
   const [edgeTooltip, setEdgeTooltip] = useState<EdgeTooltipState | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+  const [portTooltip, setPortTooltip] = useState<PortTooltipState | null>(null);
   const [edgeDrag, setEdgeDrag] = useState<EdgeDragState | null>(null);
   const [newEdgeDrag, setNewEdgeDrag] = useState<{ sourceId: string; currentPosition: Position } | null>(null);
+  const [highlightedPort, setHighlightedPort] = useState<{ nodeId: string; port: 'input' | 'output' } | null>(null);
 
   // Node positions from Cytoscape (model coordinates)
   const [nodePositions, setNodePositions] = useState<Record<string, Position>>({});
 
   // Window sizes
-  const { getWindowSize, updateWindowSize, resetWindowSizes } = useNodeWindowState(run?.id || null);
+  const { getWindowSize, resetWindowSizes } = useNodeWindowState(run?.id || null);
 
   const isOverview = viewport.zoom < OVERVIEW_ZOOM_THRESHOLD;
 
@@ -469,6 +478,41 @@ export function GraphPane({
     };
   }, [selectedNodeId, edges]);
 
+  const {
+    portHighlightedNodeIds,
+    portHighlightedEdgeIds,
+  } = useMemo(() => {
+    if (!highlightedPort) {
+      return {
+        portHighlightedNodeIds: new Set<string>(),
+        portHighlightedEdgeIds: new Set<string>(),
+      };
+    }
+
+    const { nodeId, port } = highlightedPort;
+    const highlightNodes = new Set<string>();
+    const highlightEdges = new Set<string>();
+
+    edges.forEach((edge) => {
+      if (port === 'output') {
+        if (edge.source === nodeId) {
+          highlightEdges.add(edge.id);
+          highlightNodes.add(edge.target);
+        }
+      } else {
+        if (edge.target === nodeId) {
+          highlightEdges.add(edge.id);
+          highlightNodes.add(edge.source);
+        }
+      }
+    });
+
+    return {
+      portHighlightedNodeIds: highlightNodes,
+      portHighlightedEdgeIds: highlightEdges,
+    };
+  }, [highlightedPort, edges]);
+
   const runningNodeId = useMemo(() => {
     let latestNode: Node | null = null;
     for (const node of nodes) {
@@ -538,14 +582,87 @@ export function GraphPane({
     });
   }, []);
 
+  const updateAllEdgeCurves = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    cy.batch(() => {
+      cy.edges().forEach((edge) => {
+        if (connectionStyle !== 'bezier') return;
+
+        const source = edge.source();
+        const target = edge.target();
+        
+        // Get positions (center)
+        const sPos = source.position();
+        const tPos = target.position();
+        
+        const dx = tPos.x - sPos.x;
+        const dy = tPos.y - sPos.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dist === 0) return;
+
+        // Calculate control points for vertical flow (S down, T up)
+        // K is the vertical offset for control points
+        // Dynamic K: minimum 30px, max 600px, scaled by distance (0.25)
+        // Less dramatic curves for short lines, but still enough to see direction
+        const K = Math.min(600, Math.max(30, dist * 0.25));
+
+        // Vector math to project (0, K) and (0, -K) onto the line vector
+        // Line vector L = (dx, dy)
+        // We need w (weights, 0..1 along line) and d (distances, perpendicular)
+        // Reference: Cytoscape documentation for unbundled-bezier
+        
+        // CP1 absolute: (sPos.x, sPos.y + K)
+        // CP2 absolute: (tPos.x, tPos.y - K)
+        
+        // Project CP1 onto line S->T
+        // Vector S->CP1 = (0, K)
+        // Projection p1 = ((0*dx) + (K*dy)) / dist
+        // w1 = p1 / dist = (K*dy) / (dist*dist)
+        
+        // Perpendicular distance d1
+        // (0, K) - (w1*dx, w1*dy) ... magnitude?
+        // Or simpler: Cross product / dot with normal
+        // Normal N = (-dy, dx) normalized?
+        // Let's use scalar cross product for distance to line
+        // Dist = (Vector dot Normal)
+        // Normal = (-dy, dx) / dist
+        // d1 = ((0 * -dy) + (K * dx)) / dist = (K*dx) / dist
+
+        const w1 = (K * dy) / (dist * dist);
+        const d1 = (K * dx) / dist;
+
+        // Project CP2 onto line S->T
+        // CP2 is T + (0, -K). Calculations relative to SOURCE line S->T.
+        // Vector S->CP2 = L + (0, -K) = (dx, dy - K)
+        // Projection p2 = ((dx*dx) + ((dy-K)*dy)) / dist = (dist*dist - K*dy) / dist
+        // w2 = p2 / dist = 1 - (K*dy)/(dist*dist)
+        
+        // d2: Vector (dx, dy-K) dot Normal (-dy, dx) / dist
+        // (dx*-dy + (dy-K)*dx) / dist = (-dx*dy + dx*dy - K*dx) / dist = (-K*dx) / dist
+        
+        const w2 = 1 - (K * dy) / (dist * dist);
+        const d2 = (-K * dx) / dist;
+
+        edge.data({
+          cpDistances: [d1, d2],
+          cpWeights: [w1, w2]
+        });
+      });
+    });
+  }, [connectionStyle]);
+
   // Throttled sync for high-frequency events
   const throttledSync = useCallback(() => {
     if (syncRef.current) return;
     syncRef.current = requestAnimationFrame(() => {
       syncPositionsFromCy();
+      updateAllEdgeCurves();
       syncRef.current = null;
     });
-  }, [syncPositionsFromCy]);
+  }, [syncPositionsFromCy, updateAllEdgeCurves]);
 
   const handleEdgeMouseDown = useCallback((evt: EventObject) => {
     if (!('source' in evt.target)) return;
@@ -579,6 +696,8 @@ export function GraphPane({
     setHoveredEdgeId(edge.id());
   }, []);
 
+
+
   // Initialize Cytoscape
   useEffect(() => {
     if (!containerRef.current) return;
@@ -609,13 +728,15 @@ export function GraphPane({
             'line-color': EDGE_COLORS.dependency,
             'target-arrow-color': EDGE_COLORS.dependency,
             'target-arrow-shape': 'triangle',
-            'curve-style': connectionStyle,
+            'curve-style': connectionStyle === 'bezier' ? 'unbundled-bezier' : connectionStyle,
             'taxi-direction': 'vertical',
             'taxi-turn': 20,
             'arrow-scale': 1,
             'opacity': 0.85,
             'source-endpoint': '0% 50%',
             'target-endpoint': '0% -50%',
+            'control-point-distances': 'data(cpDistances)',
+            'control-point-weights': 'data(cpWeights)',
           },
         },
         {
@@ -686,12 +807,26 @@ export function GraphPane({
       wheelSensitivity: 0.3,
     });
 
+    // Add highlight style
+    cy.style()
+      .selector('edge.vuhlp-edge--port-highlight')
+      .style({
+        'line-color': EDGE_HIGHLIGHT_COLOR,
+        'target-arrow-color': EDGE_HIGHLIGHT_COLOR,
+        'width': 3,
+        'opacity': 1,
+        'z-index': 999,
+      })
+      .update();
+
     // Click on canvas to deselect
     cy.on('tap', (evt: EventObject) => {
       if (evt.target === cy) {
         onNodeSelect(null);
         setHoveredEdgeId(null);
         setEdgeTooltip(null);
+        setPortTooltip(null);
+        setHighlightedPort(null);
       }
     });
 
@@ -772,9 +907,11 @@ export function GraphPane({
     cy.style()
       .selector('edge')
       .style({
-        'curve-style': connectionStyle,
+        'curve-style': connectionStyle === 'bezier' ? 'unbundled-bezier' : connectionStyle,
         'source-endpoint': '0% 50%',
         'target-endpoint': '0% -50%',
+        'control-point-distances': 'data(cpDistances)',
+        'control-point-weights': 'data(cpWeights)',
       })
       .update();
   }, [connectionStyle]);
@@ -827,7 +964,24 @@ export function GraphPane({
     downstreamEdgeIds,
     hoveredEdgeId,
     selectedNodeId,
+    portHighlightedEdgeIds,
   ]);
+
+  // Apply port highlight styles
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    cy.batch(() => {
+      cy.edges().forEach((edge) => {
+        if (portHighlightedEdgeIds.has(edge.id())) {
+          edge.addClass('vuhlp-edge--port-highlight');
+        } else {
+          edge.removeClass('vuhlp-edge--port-highlight');
+        }
+      });
+    });
+  }, [portHighlightedEdgeIds]);
 
   useEffect(() => {
     if (!selectedNodeId) return;
@@ -841,6 +995,123 @@ export function GraphPane({
     setEdgeTooltip(null);
     setHoveredEdgeId(null);
   }, [edgeTooltip, visibleEdgeIds]);
+
+  const centerStage = useCallback((nodeId: string) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    const node = cy.getElementById(nodeId);
+    if (node.empty()) return;
+
+    cy.animate({
+      fit: {
+        eles: node,
+        padding: 50,
+      },
+      duration: 500,
+      easing: 'ease-in-out-cubic',
+    });
+  }, []);
+
+  // Cycle state refs
+  const inputCycleIndexRef = useRef<number>(-1);
+  const outputCycleIndexRef = useRef<number>(-1);
+
+  // Reset cycle state when selection changes
+  useEffect(() => {
+    inputCycleIndexRef.current = -1;
+    outputCycleIndexRef.current = -1;
+  }, [selectedNodeId]);
+
+  const getSortedNeighbors = useCallback((nodeId: string, direction: 'input' | 'output') => {
+    const cy = cyRef.current;
+    if (!cy) return [];
+
+    const neighborIds = new Set<string>();
+    edges.forEach((edge) => {
+      if (direction === 'input') {
+        if (edge.target === nodeId) neighborIds.add(edge.source);
+      } else {
+        if (edge.source === nodeId) neighborIds.add(edge.target);
+      }
+    });
+
+    const neighbors = Array.from(neighborIds).flatMap((id) => {
+      const node = cy.getElementById(id);
+      if (node.empty()) return [];
+      return [{ id, pos: node.position() }];
+    });
+
+    // Sort top-to-bottom, then left-to-right
+    neighbors.sort((a, b) => {
+      if (Math.abs(a.pos.y - b.pos.y) > 5) return a.pos.y - b.pos.y;
+      return a.pos.x - b.pos.x;
+    });
+
+    return neighbors.map(n => n.id);
+  }, [edges]);
+
+  const lastCenteredNodeIdRef = useRef<string | null>(null);
+
+  // Reset last centered node when selection changes (optional, maybe we want to keep it strict)
+  // Actually, if I select B, I want 'f' to center B immediately.
+  useEffect(() => {
+     lastCenteredNodeIdRef.current = null;
+  }, [selectedNodeId]);
+
+  // Keyboard shortcut for center stage and cycling
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Only trigger if not typing in an input
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+
+      if (!selectedNodeId) return;
+
+      if (e.key === 'f') {
+        // Toggle logic: If we just centered this node, zoom out to fit all.
+        // Otherwise (or if we panned away/selected new), center it.
+        // NOTE: This simple boolean toggle resets effectively if you pan away? 
+        // No, manual panning doesn't clear this ref. 
+        // But the user request is "when looking at 'center stage' ... zoom out".
+        // Use a heuristic + ref? OR just the ref is fine? 
+        // "Pressing F when looking at center stage" implies state.
+        // Let's use the ref. It's predictable.
+        if (lastCenteredNodeIdRef.current === selectedNodeId) {
+            // Zoom out
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (cyRef.current as any)?.animate({
+                fit: { padding: 50 },
+                duration: 500,
+                easing: 'ease-in-out-cubic',
+            });
+            lastCenteredNodeIdRef.current = null; 
+        } else {
+            // Center stage
+            centerStage(selectedNodeId);
+            lastCenteredNodeIdRef.current = selectedNodeId;
+        }
+      } else if (e.key === 'i') {
+        const neighbors = getSortedNeighbors(selectedNodeId, 'input');
+        if (neighbors.length === 0) return;
+        
+        inputCycleIndexRef.current = (inputCycleIndexRef.current + 1) % neighbors.length;
+        centerStage(neighbors[inputCycleIndexRef.current]);
+        // Cycling breaks the "center toggle" state for the original node effectively
+        lastCenteredNodeIdRef.current = null; 
+      } else if (e.key === 'o') {
+        const neighbors = getSortedNeighbors(selectedNodeId, 'output');
+        if (neighbors.length === 0) return;
+
+        outputCycleIndexRef.current = (outputCycleIndexRef.current + 1) % neighbors.length;
+        centerStage(neighbors[outputCycleIndexRef.current]);
+        lastCenteredNodeIdRef.current = null;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedNodeId, centerStage, getSortedNeighbors]);
 
   // Update graph when run changes (Incremental)
   useEffect(() => {
@@ -1114,6 +1385,10 @@ export function GraphPane({
     }
 
     throttledSync();
+    // Immediate curve update for smooth drag
+    if (connectionStyle === 'bezier') {
+      updateAllEdgeCurves();
+    }
   }, [throttledSync]);
 
   const handlePositionCommit = useCallback((nodeId: string) => {
@@ -1138,20 +1413,7 @@ export function GraphPane({
   }, [syncPositionsFromCy]);
 
   // Handle window size change
-  const handleSizeChange = useCallback((nodeId: string, size: Size) => {
-    if (isOverview) return;
-    updateWindowSize(nodeId, size);
-    const cy = cyRef.current;
-    if (cy) {
-      const node = cy.getElementById(nodeId);
-      if ('position' in node) {
-        node.data({
-          width: size.width,
-          height: size.height,
-        });
-      }
-    }
-  }, [isOverview, updateWindowSize]);
+
 
   // Handle window select
   const handleWindowSelect = useCallback((nodeId: string) => {
@@ -1180,6 +1442,23 @@ export function GraphPane({
     if (selectedNodeId) onNodeSelect(null);
   }, [onNodeSelect, selectedNodeId]);
 
+  const handlePortClick = useCallback((nodeId: string, port: 'input' | 'output', _e: React.MouseEvent) => {
+    // If clicking the same port, toggle off
+    if (portTooltip?.nodeId === nodeId && portTooltip?.port === port) {
+      setPortTooltip(null);
+      return;
+    }
+
+    // Toggle highlight
+    if (highlightedPort?.nodeId === nodeId && highlightedPort?.port === port) {
+      setHighlightedPort(null);
+      setPortTooltip(null);
+    } else {
+      setHighlightedPort({ nodeId, port });
+      setPortTooltip({ nodeId, port });
+    }
+  }, [portTooltip, highlightedPort]);
+
   const handleZoomIn = useCallback(() => {
     cyRef.current?.zoom(cyRef.current.zoom() * 1.2);
   }, []);
@@ -1194,9 +1473,9 @@ export function GraphPane({
   
   const handleCenterSelection = useCallback(() => {
       if (selectedNodeId) {
-          cyRef.current?.fit(cyRef.current.getElementById(selectedNodeId), 50);
+          centerStage(selectedNodeId);
       }
-  }, [selectedNodeId]);
+  }, [selectedNodeId, centerStage]);
 
   const handleResetLayout = useCallback(() => {
     const cy = cyRef.current;
@@ -1502,13 +1781,16 @@ export function GraphPane({
                   screenPosition={screenPos}
                   size={scaledSize}
                   isSelected={selectedNodeId === node.id}
+                  isHighlighted={portHighlightedNodeIds.has(node.id)}
                   isDimmed={isDimmed}
                   isOverview={isOverview}
                   onPositionChange={handlePositionChange}
                   onPositionCommit={handlePositionCommit}
-                  onSizeChange={handleSizeChange}
+
                   onSelect={handleWindowSelect}
                   onPortMouseDown={handlePortMouseDown}
+                  onPortClick={handlePortClick}
+                  onDoubleClick={centerStage}
                   zoom={viewport.zoom}
                 />
               );
@@ -1578,6 +1860,44 @@ export function GraphPane({
             </div>
           </div>
         )}
+
+        {portTooltip && (() => {
+          const position = getPortPosition(portTooltip.nodeId, portTooltip.port);
+          if (!position) return null;
+
+          // Filter edges connected to this port
+          const connectedEdges = edges.filter((edge) => {
+            if (portTooltip.port === 'output') {
+              return edge.source === portTooltip.nodeId;
+            } else {
+              return edge.target === portTooltip.nodeId;
+            }
+          });
+
+          if (connectedEdges.length === 0) return null;
+
+          return (
+             <div
+              className="vuhlp-graph__edge-tooltip"
+              style={{ left: position.x + 12, top: position.y + 12 }}
+            >
+              <div className="vuhlp-graph__edge-tooltip-title">
+                {portTooltip.port === 'output' ? 'Outbound Connections' : 'Inbound Connections'}
+              </div>
+              <div className="vuhlp-graph__edge-tooltip-meta">
+                {connectedEdges.map((edge) => {
+                   const otherNodeId = portTooltip.port === 'output' ? edge.target : edge.source;
+                   const label = nodeLabelRef.current[otherNodeId] || otherNodeId;
+                   return (
+                     <div key={edge.id}>
+                       {portTooltip.port === 'output' ? '-> ' : '<- '} {label}
+                     </div>
+                   );
+                })}
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Empty State */}

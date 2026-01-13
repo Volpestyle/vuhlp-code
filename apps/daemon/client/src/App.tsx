@@ -62,6 +62,7 @@ function App() {
     getChatMessages,
     updateEdge,
     createEdge,
+    deleteEdge,
     createNode,
     // Run mode methods
     setRunMode,
@@ -689,6 +690,18 @@ function App() {
             onQueueMessage={(content: string) => {
               if (activeRunId) {
                 queueChatMessage(activeRunId, content, activeNodeId || undefined);
+              }
+            }}
+            nodes={activeRun ? Object.values(activeRun.nodes || {}) : []}
+            edges={activeRun ? Object.values(activeRun.edges || {}) : []}
+            onAddConnection={(sourceId, targetId) => {
+              if (activeRunId) {
+                createEdge(activeRunId, sourceId, targetId);
+              }
+            }}
+            onRemoveConnection={(edgeId) => {
+              if (activeRunId) {
+                deleteEdge(activeRunId, edgeId);
               }
             }}
           />

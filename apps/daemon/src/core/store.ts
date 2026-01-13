@@ -303,4 +303,11 @@ export class RunStore {
     }
     return all.filter((run) => !run.archived);
   }
+
+  addEdge(runId: string, edge: EdgeRecord): void {
+    const run = this.getRun(runId);
+    if (!run) return;
+    run.edges[edge.id] = edge;
+    this.persistRun(run);
+  }
 }

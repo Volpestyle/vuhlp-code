@@ -20,6 +20,7 @@ import {
   TaskDagRecord,
   TaskStep,
   AutoPausePolicy,
+  Envelope,
 } from "./types.js";
 import { ContextPackBuilder } from "./contextPackBuilder.js";
 import { PromptQueue } from "./promptQueue.js";
@@ -172,14 +173,14 @@ export class OrchestratorEngine {
     if (!this.controllers.has(runId)) return false;
     if (this.pauseSignals.has(runId)) return true; // already paused
 
-    let resolve: () => void = () => {};
+    let resolve: () => void = () => { };
     const promise = new Promise<void>((r) => { resolve = r; });
     this.pauseSignals.set(runId, { resolve, promise });
 
     // We abort the current step execution to "interrupt" immediately.
     // The run loop will catch the abort, check if it's a pause, and then wait.
     const c = this.controllers.get(runId);
-    if (c) c.abort(); 
+    if (c) c.abort();
 
     // Re-create controller for the resume phase, because the old one is now aborted.
     // But we need to keep the entry in the map so isRunning returns true.
@@ -188,12 +189,12 @@ export class OrchestratorEngine {
     // We catch that error, check if pauseSignals[runId] exists.
     // If so, we enter wait mode.
     // After wait, we need a fresh AbortController for the next steps.
-    
+
     // NOTE: Swapping the controller mid-flight in runLoop is tricky. 
     // Instead of aborting immediately, we can let the current step finish if we want "safe" pause.
     // But user asked for "interrupt at anytime".
     // So we DO abort. The runLoop needs to be robust to this.
-    
+
     this.bus.emitRunPatch(runId, { id: runId, status: "paused" }, "run.paused");
     return true;
   }
@@ -378,18 +379,156 @@ export class OrchestratorEngine {
    * - Run is in INTERACTIVE mode (unless this is a manual trigger)
    * - Node control is MANUAL
    */
-  private canAutoScheduleNode(runId: string, nodeId: string): boolean {
+  /**
+   * Check if a node can be scheduled based on TriggerMode and Inputs.
+   */
+  private canScheduleNode(runId: string, nodeId: string): boolean {
     const run = this.store.getRun(runId);
     if (!run) return false;
 
-    // If run is in INTERACTIVE mode, no auto-scheduling
+    // 1. Global/Node Control Checks
     if (run.mode === "INTERACTIVE") return false;
-
-    // If node control is MANUAL, no auto-scheduling
     const node = run.nodes[nodeId];
-    if (node?.control === "MANUAL") return false;
+    if (!node || node.control === "MANUAL") return false;
 
-    return true;
+    // 2. Trigger Logic
+    const triggerMode = node.triggerMode ?? "any_input";
+
+    // Find incoming edges
+    const incomingEdges = Object.values(run.edges).filter(e => e.to === nodeId);
+
+    if (triggerMode === "scheduled") {
+      const lastRun = node.completedAt ? new Date(node.completedAt).getTime() : 0;
+      const now = Date.now();
+      // Default to 60s if not specified in config/metadata
+      const intervalMs = (node.input as any)?.intervalSeconds ? (node.input as any).intervalSeconds * 1000 : 60000;
+      return now - lastRun >= intervalMs;
+    }
+
+    if (triggerMode === "manual") {
+      return false; // Handled by manualTurn
+    }
+
+    if (triggerMode === "any_input") {
+      // Run if ANY incoming edge has pending envelopes
+      // If no incoming edges, it's a root/source node - potentially always ready?
+      // For v0, we assume source nodes without inputs are manual or single-shot.
+      // But if it has inputs, we wait for data.
+      if (incomingEdges.length === 0) return false;
+      return incomingEdges.some(e => e.pendingEnvelopes && e.pendingEnvelopes.length > 0);
+    }
+
+    if (triggerMode === "all_inputs") {
+      // Run if ALL incoming edges have pending envelopes (Join)
+      if (incomingEdges.length === 0) return false;
+      return incomingEdges.every(e => e.pendingEnvelopes && e.pendingEnvelopes.length > 0);
+    }
+
+    return false;
+  }
+
+  /**
+   * Consumes input envelopes from upstream nodes based on Edge Delivery Policy.
+   * Returns the envelopes to be processed and updates the Edges in the store.
+   */
+  private consumeInputEnvelopes(runId: string, nodeId: string): Envelope[] {
+    const run = this.store.getRun(runId);
+    if (!run) return [];
+
+    const incomingEdges = Object.values(run.edges).filter(e => e.to === nodeId);
+    const resultEnvelopes: Envelope[] = [];
+    let edgesUpdated = false;
+
+    for (const edge of incomingEdges) {
+      if (!edge.pendingEnvelopes || edge.pendingEnvelopes.length === 0) continue;
+
+      const policy = edge.deliveryPolicy ?? "queue";
+      let consumed: Envelope[] = [];
+
+      if (policy === "queue") {
+        // Consume ALL pending
+        consumed = [...edge.pendingEnvelopes];
+        edge.pendingEnvelopes = [];
+      } else if (policy === "latest") {
+        // Consume only the LAST one, discard others
+        const last = edge.pendingEnvelopes[edge.pendingEnvelopes.length - 1];
+        consumed = [last];
+        edge.pendingEnvelopes = [];
+      } else if (policy === "debounce") {
+        // Simplistic debounce: consume only if N seconds passed since last arrival? 
+        // For v0, let's treat debounce as "consume 1, keep rest"? 
+        // Or "consume all but treat as one"? 
+        // Let's implement as "Queue" for now effectively, or strict "Latest".
+        // Reverting to Queue for safety in v0.
+        consumed = [...edge.pendingEnvelopes];
+        edge.pendingEnvelopes = [];
+      }
+
+      for (const env of consumed) {
+        resultEnvelopes.push(env);
+      }
+      edgesUpdated = true;
+    }
+
+    if (edgesUpdated) {
+      // Persist edge updates
+      this.store.persistRun(run);
+    }
+
+    return resultEnvelopes;
+  }
+
+  /**
+   * Dispatch node output as Envelopes to all outgoing edges.
+   */
+  private dispatchOutputToEdges(runId: string, nodeId: string, output: unknown, summary?: string, artifacts?: string[]): void {
+    const run = this.store.getRun(runId);
+    if (!run) return;
+
+    const outgoingEdges = Object.values(run.edges).filter(e => e.from === nodeId);
+    if (outgoingEdges.length === 0) return;
+
+    // Create Envelope
+    const envelope: Envelope = {
+      kind: "handoff",
+      fromNodeId: nodeId,
+      toNodeId: "broadcast", // resolved per edge
+      payload: {
+        message: typeof output === "string" ? output : (summary ?? "Task completed."),
+        structured: this.isRecord(output) ? output : undefined,
+        artifacts: artifacts?.map(ref => ({ type: "ref", ref })) ?? [],
+      }
+    };
+
+    for (const edge of outgoingEdges) {
+      // Customize target per edge
+      const edgeEnvelope = { ...envelope, toNodeId: edge.to };
+
+      if (!edge.pendingEnvelopes) edge.pendingEnvelopes = [];
+      edge.pendingEnvelopes.push(edgeEnvelope);
+
+      // Emit event
+      this.bus.emitHandoffSent(runId, nodeId, edge.to, edge.id, {
+        promptPreview: String(edgeEnvelope.payload.message).slice(0, 100)
+      });
+
+      // WAKE UP DOWNSTREAM NODES
+      // If the target node is 'completed' (waiting), we need to set it back to 'queued' so the scheduler picks it up.
+      // This enables Loops and Chains to continue automatically.
+      const targetNode = run.nodes[edge.to];
+      if (
+        targetNode &&
+        (targetNode.status === "completed" || targetNode.status === "failed") &&
+        targetNode.control !== "MANUAL"
+      ) {
+        targetNode.status = "queued";
+        // Reset error if it was failed? Maybe not, keep history? 
+        // For now, just re-queueing is enough.
+        this.bus.emitNodePatch(runId, targetNode.id, { status: "queued" }, "node.progress");
+      }
+    }
+
+    this.store.persistRun(run);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1422,6 +1561,149 @@ export class OrchestratorEngine {
     });
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // GRAPH SCHEDULER
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Main Graph Scheduler Loop.
+   * Replaces the fixed phase state machine with a dynamic graph execution engine.
+   */
+  private async runGraphScheduler(
+    runId: string,
+    rootNodeId: string,
+    getSignal: () => AbortSignal
+  ): Promise<void> {
+    this.bus.emitNodeProgress(runId, rootNodeId, "Starting Graph Scheduler...");
+
+    // Ensure root node is available and ready
+    const run = this.store.getRun(runId);
+    if (!run) return;
+
+    // Main Loop
+    while (true) {
+      await this.checkPause(runId);
+      if (getSignal().aborted && !this.pauseSignals.has(runId)) break;
+
+      // 1. Check Global Mode (Auto vs Interactive)
+      if (this.shouldStopScheduling(runId)) {
+        this.bus.emitNodeProgress(runId, rootNodeId, "Scheduler paused (Interactive Mode). Waiting for Auto...");
+        const shouldContinue = await this.waitForAutoMode(runId);
+        if (!shouldContinue) break;
+      }
+
+      // 2. Scan for Ready Nodes
+      const currentRun = this.store.getRun(runId);
+      if (!currentRun) break;
+
+      const nodes = Object.values(currentRun.nodes);
+      const activeNodes = nodes.filter(n => n.status === "running");
+      const readyNodes = nodes.filter(n => n.status === "queued");
+
+      // 3. Process Queued Nodes
+      for (const node of readyNodes) {
+        if (!this.canScheduleNode(runId, node.id)) continue;
+
+        // Start execution asynchronously
+        // We don't await here so multiple nodes can run in parallel
+        this.executeNode(runId, node.id, getSignal).catch(err => {
+          console.error(`Node ${node.id} failed:`, err);
+        });
+      }
+
+      // If we have no active nodes and root node is idle, we might want to ensure Root Node is running
+      // if it's in Auto mode.
+      const rootNode = currentRun.nodes[rootNodeId];
+      if (rootNode && rootNode.status !== "running" && this.canScheduleNode(runId, rootNodeId)) {
+        // Auto-start root node if it's not doing anything?
+        // Only if it's the very first start 
+        if (!rootNode.startedAt) {
+          this.bus.emitNodePatch(runId, rootNodeId, { status: "queued" }, "node.progress");
+          continue; // Loop again to pick it up in readyNodes
+        }
+      }
+
+      // Wait a tick
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+
+  /**
+   * Execute a single node execution cycle.
+   */
+  private async executeNode(
+    runId: string,
+    nodeId: string,
+    getSignal: () => AbortSignal
+  ): Promise<void> {
+    const run = this.store.getRun(runId);
+    if (!run) return;
+    const node = run.nodes[nodeId];
+    if (!node) return;
+
+    // Mark as running
+    this.bus.emitNodePatch(runId, nodeId, { status: "running", startedAt: nowIso() }, "node.started");
+
+    try {
+      // Determine Provider
+      const providerId = node.providerId ?? this.cfg.roles[node.role ?? "implementer"] ?? "mock";
+      const provider = this.providers.get(providerId);
+
+      if (!provider) {
+        throw new Error(`Provider not found: ${providerId}`);
+      }
+
+      // 1. Consume Inputs
+      const inputEnvelopes = this.consumeInputEnvelopes(runId, nodeId);
+
+      // Prepare Prompt/Context
+      let prompt = "";
+
+      // If this is the Root Node and it's the *first* execution
+      if (nodeId === run.rootOrchestratorNodeId && (!node.turnCount || node.turnCount === 0) && inputEnvelopes.length === 0) {
+        prompt = run.prompt || "Ready for instructions.";
+      } else if (inputEnvelopes.length > 0) {
+        // Build prompt from envelopes
+        prompt = "Incoming transmissions:\n\n";
+        for (const env of inputEnvelopes) {
+          prompt += `--- From Node ${env.fromNodeId} ---\n`;
+          prompt += `${env.payload.message ?? "(No message)"}\n`;
+          if (env.payload.structured) {
+            prompt += `Data: ${JSON.stringify(env.payload.structured, null, 2)}\n`;
+          }
+          if (env.payload.artifacts?.length) {
+            prompt += `Artifacts: ${env.payload.artifacts.map(a => a.ref).join(", ")}\n`;
+          }
+          prompt += "\n";
+        }
+        prompt += "\nBased on the above inputs, proceed with your task.";
+      } else {
+        prompt = "Continue execution.";
+      }
+
+      this.bus.emitNodeProgress(runId, nodeId, "Executing...");
+
+      const output = await this.runProviderNode(node, provider, {
+        prompt,
+      }, getSignal());
+
+      // On success: Dispatch Outputs
+      // We need to collect artifact list if any were created in runProviderNode run
+      // For now, we don't track *which* artifacts were created in that specific call easily without return value change
+      // But runProviderNode returns `output`.
+      this.dispatchOutputToEdges(runId, nodeId, output);
+
+      this.bus.emitNodePatch(runId, nodeId, { status: "completed", completedAt: nowIso() }, "node.completed");
+
+    } catch (error: any) {
+      if (error.message === "PAUSED_INTERRUPT") {
+        this.bus.emitNodePatch(runId, nodeId, { status: "queued" }, "node.progress");
+      } else {
+        this.bus.emitNodePatch(runId, nodeId, { status: "failed", error: { message: error.message } }, "node.failed");
+      }
+    }
+  }
+
   private async runLoop(runId: string): Promise<void> {
     const run = this.store.getRun(runId);
     if (!run) throw new Error(`Run not found: ${runId}`);
@@ -1457,16 +1739,11 @@ export class OrchestratorEngine {
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DOCS_ITERATION PHASE - Section 7 (conditional)
+    // GRAPH EXECUTION
     // ═══════════════════════════════════════════════════════════════════════════
-    if (this.shouldEnterDocsIteration(run)) {
-      this.transitionPhase(runId, "DOCS_ITERATION", "Missing required documentation");
-      await this.runDocsIterationPhase(runId, rootNodeId, getSignal);
-    }
+    this.transitionPhase(runId, "EXECUTE", "Ready for graph execution");
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // SESSION INIT - Wait for user input if prompt is generic
-    // ═══════════════════════════════════════════════════════════════════════════
+    // Session Init - Wait for user input if prompt is generic
     if (run.prompt === "(Session Started)") {
       this.bus.emitNodeProgress(runId, rootNodeId, "Waiting for user instructions...");
       const realPrompt = await this.waitForFirstUserMessage(runId);
@@ -1476,511 +1753,7 @@ export class OrchestratorEngine {
       this.bus.emitNodeProgress(runId, rootNodeId, "Received instructions. Starting...");
     }
 
-    let iteration = 0;
-    let plan: TaskDagRecord | null = null;
-    let lastFixContext = "";
-
-    while (true) {
-      // Check pause at top of loop
-      await this.checkPause(runId);
-      if (getSignal().aborted && !this.pauseSignals.has(runId)) break; // truly stopped
-
-      // Check run mode - if INTERACTIVE, wait for AUTO to resume
-      if (this.shouldStopScheduling(runId)) {
-        const shouldContinue = await this.waitForAutoMode(runId);
-        if (!shouldContinue) break; // Run was stopped while waiting
-      }
-
-      if (iteration >= run.maxIterations) {
-        this.bus.emitNodeProgress(runId, rootNodeId, `Max iterations reached (${run.maxIterations}). Failing run.`);
-        this.bus.emitRunPatch(runId, { id: runId, status: "failed" }, "run.failed");
-        this.bus.emitNodePatch(runId, rootNodeId, { status: "failed", completedAt: nowIso() }, "node.failed");
-        return;
-      }
-
-      try {
-        // ═══════════════════════════════════════════════════════════════════════
-        // INVESTIGATE PHASE - Section 2.1
-        // ═══════════════════════════════════════════════════════════════════════
-        if (iteration === 0) {
-          this.transitionPhase(runId, "INVESTIGATE", "Starting investigation");
-          await this.checkPause(runId);
-          if (getSignal().aborted && !this.pauseSignals.has(runId)) break;
-
-          this.bus.emitNodeProgress(runId, rootNodeId, "INVESTIGATE: Scanning repo and identifying verification commands...");
-
-          const invNode = this.createTaskNode({
-            runId,
-            parentNodeId: rootNodeId,
-            label: "Investigate",
-            role: "investigator",
-            providerId: this.cfg.roles["investigator"] ?? "mock",
-          });
-          this.createEdge(runId, rootNodeId, invNode.id, "handoff", "investigate");
-          await this.runProviderNode(invNode, this.roleProvider("investigator"), {
-            prompt: this.buildInvestigationPrompt(run.prompt, run.repoPath),
-            outputSchemaName: "repo-brief",
-          }, getSignal());
-          this.createEdge(runId, invNode.id, rootNodeId, "report", "investigation report");
-        }
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // PLAN PHASE - Section 2.1
-        // ═══════════════════════════════════════════════════════════════════════
-        if (iteration === 0) {
-          this.transitionPhase(runId, "PLAN", "Starting planning");
-          await this.checkPause(runId);
-          if (getSignal().aborted && !this.pauseSignals.has(runId)) break;
-
-          this.bus.emitNodeProgress(runId, rootNodeId, "PLAN: Creating task DAG and acceptance criteria...");
-
-          const planNode = this.createTaskNode({
-            runId,
-            parentNodeId: rootNodeId,
-            label: "Plan",
-            role: "planner",
-            providerId: this.cfg.roles["planner"] ?? "mock",
-          });
-          this.createEdge(runId, rootNodeId, planNode.id, "handoff", "plan");
-
-          const userFeedback = this.collectUserFeedback(runId);
-          const planOutput = await this.runProviderNode(planNode, this.roleProvider("planner"), {
-            prompt: this.buildPlanningPrompt(run.prompt, lastFixContext, userFeedback),
-            outputSchemaName: "plan",
-          }, getSignal());
-          this.createEdge(runId, planNode.id, rootNodeId, "report", "plan report");
-
-          const normalizedPlan = this.normalizePlanOutput(planOutput, run.prompt);
-          plan = normalizedPlan.taskDag;
-
-          const runForPlan = this.store.getRun(runId);
-          if (runForPlan) {
-            runForPlan.taskDag = plan;
-            runForPlan.acceptanceCriteria = normalizedPlan.acceptanceCriteria;
-            this.store.persistRun(runForPlan);
-          }
-
-          if (normalizedPlan.usedFallback) {
-            this.bus.emitNodeProgress(runId, rootNodeId, "PLAN: Falling back to minimal plan due to invalid output.");
-          }
-
-          this.writePlanningArtifacts(run.repoPath, plan, normalizedPlan.acceptanceCriteria);
-          const runAfterDocs = this.store.getRun(runId);
-          if (runAfterDocs) {
-            runAfterDocs.docsInventory = this.detectDocsInventory(runAfterDocs.repoPath);
-            this.store.persistRun(runAfterDocs);
-          }
-        }
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // EXECUTE PHASE - Section 2.1
-        // ═══════════════════════════════════════════════════════════════════════
-        this.transitionPhase(runId, "EXECUTE", "Starting execution");
-        this.bus.emitNodeProgress(runId, rootNodeId, "EXECUTE: Scheduling and executing tasks...");
-
-        // IMPLEMENT steps
-        const steps = this.extractSteps(plan, run.prompt, iteration, lastFixContext);
-        const semaphore = new Semaphore(this.cfg.scheduler.maxConcurrency);
-
-        // Map stepId -> nodeId
-        const stepNodes: Array<{ step: TaskStep; node: NodeRecord }> = [];
-        for (const step of steps) {
-          const providerId = this.pickProviderForStep(step);
-          const node = this.createTaskNode({
-            runId,
-            parentNodeId: rootNodeId,
-            label: step.title ?? step.id ?? "Step",
-            role: "implementer",
-            providerId,
-            input: { step },
-          });
-          stepNodes.push({ step, node });
-          this.createEdge(runId, rootNodeId, node.id, "handoff", "step");
-        }
-
-        // dependencies edges
-        const byStepId = new Map<string, string>();
-        for (const sn of stepNodes) {
-          if (sn.step.id) byStepId.set(String(sn.step.id), sn.node.id);
-        }
-        for (const sn of stepNodes) {
-          const deps: string[] = Array.isArray(sn.step.deps) ? sn.step.deps : [];
-          for (const dep of deps) {
-            const depNodeId = byStepId.get(dep);
-            if (depNodeId) this.createEdge(runId, depNodeId, sn.node.id, "dependency", "depends on");
-          }
-        }
-
-        this.updateTaskDagNodeLinks(runId, stepNodes);
-
-        // Execute DAG-ish
-        const completed = new Set<string>();
-        const running = new Map<string, Promise<void>>();
-        let stepsOk = true;
-
-        const startStep = async (sn: { step: TaskStep; node: NodeRecord }) => {
-          const release = await semaphore.acquire();
-          try {
-            await this.checkPause(runId); // check before starting
-
-            const provider = this.providers.get(sn.node.providerId ?? "mock") ?? this.roleProvider("implementer");
-            const userFeedback = this.collectUserFeedback(runId);
-            const stepPrompt = this.buildStepPrompt(runId, sn.node.id, run.prompt, sn.step, iteration, lastFixContext, userFeedback);
-
-            // Check if we should queue the prompt in INTERACTIVE mode (Section 3.4)
-            const currentRun = this.store.getRun(runId);
-            if (currentRun?.mode === "INTERACTIVE") {
-              // Build context pack for the queued prompt
-              const contextPack = this.contextPackBuilder.buildForStep({
-                run: currentRun,
-                step: sn.step,
-                repoPath: currentRun.repoPath,
-              });
-
-              // Queue the prompt for user review
-              const pendingPrompt = this.promptQueue.addOrchestratorPrompt({
-                runId,
-                targetNodeId: sn.node.id,
-                content: stepPrompt,
-                contextPack,
-              });
-
-              // Set node to blocked_manual_input
-              this.bus.emitNodePatch(runId, sn.node.id, {
-                status: "blocked_manual_input",
-              }, "node.progress");
-
-              this.bus.emitNodeProgress(
-                runId,
-                sn.node.id,
-                `INTERACTIVE: Prompt queued for review (${pendingPrompt.id.slice(0, 8)})`
-              );
-
-              // Wait for mode switch back to AUTO or manual trigger
-              const shouldContinue = await this.waitForAutoMode(runId);
-              if (!shouldContinue) throw new Error("Run aborted");
-
-              // Re-check if prompt was sent (by user)
-              const prompt = this.promptQueue.getPrompt(pendingPrompt.id);
-              if (prompt?.status !== "sent") {
-                // Prompt was cancelled or still pending - skip this step
-                this.bus.emitNodePatch(runId, sn.node.id, {
-                  status: "skipped",
-                  completedAt: nowIso(),
-                  summary: "Prompt was cancelled by user",
-                }, "node.completed");
-                return;
-              }
-            }
-
-            await this.runProviderNode(sn.node, provider, { prompt: stepPrompt }, getSignal());
-            this.createEdge(runId, sn.node.id, rootNodeId, "report", "step report");
-          } finally {
-            release();
-            completed.add(sn.node.id);
-          }
-        };
-
-        const canRun = (sn: { step: TaskStep; node: NodeRecord }) => {
-          const deps: string[] = Array.isArray(sn.step.deps) ? sn.step.deps : [];
-          for (const dep of deps) {
-            const depNodeId = byStepId.get(dep);
-            if (depNodeId && !completed.has(depNodeId)) return false;
-          }
-          return true;
-        };
-
-        // Check if node control allows auto-scheduling
-        const canAutoSchedule = (sn: { step: TaskStep; node: NodeRecord }) => {
-          // Check node-level control override
-          if (sn.node.control === "MANUAL") {
-            // Set to blocked_manual_input
-            this.bus.emitNodePatch(runId, sn.node.id, {
-              status: "blocked_manual_input",
-            }, "node.progress");
-            return false;
-          }
-          return true;
-        };
-
-        // Main scheduling loop
-        while (completed.size < stepNodes.length) {
-          if (getSignal().aborted) {
-             // If aborted but NOT paused, throw. If paused, we handle it in catch.
-             if (!this.pauseSignals.has(runId)) throw new Error("Run aborted");
-             // If paused, we should throw to exit the Promise.race, catch, wait, and loop.
-             throw new Error("PAUSED_INTERRUPT");
-          }
-
-          // Check for INTERACTIVE mode - wait if needed
-          if (this.shouldStopScheduling(runId)) {
-            const shouldContinue = await this.waitForAutoMode(runId);
-            if (!shouldContinue) throw new Error("Run aborted");
-          }
-
-          // launch ready steps
-          for (const sn of stepNodes) {
-            if (completed.has(sn.node.id)) continue;
-            if (running.has(sn.node.id)) continue;
-            if (!canRun(sn)) continue;
-            if (!canAutoSchedule(sn)) continue; // Skip MANUAL nodes
-            const p = startStep(sn).catch((e) => {
-              if (e.message === "PAUSED_INTERRUPT" || e.message === "aborted" || e.message === "MODE_INTERACTIVE") throw e; // bubble up
-              // mark node failed
-              this.bus.emitNodePatch(runId, sn.node.id, {
-                status: "failed",
-                completedAt: nowIso(),
-                error: { message: e?.message ?? String(e), stack: e?.stack },
-              }, "node.failed");
-            });
-            running.set(sn.node.id, p);
-          }
-
-          // await something to finish
-          if (running.size === 0) {
-            // Deadlock: deps cycle or missing dep
-            this.bus.emitNodeProgress(runId, rootNodeId, "Deadlock in step scheduling. Check plan deps.");
-            break;
-          }
-          
-          try {
-            await Promise.race([...running.values()]);
-          } catch (e: unknown) {
-             const errMessage = e instanceof Error ? e.message : String(e);
-             if (errMessage === "PAUSED_INTERRUPT" || errMessage === "aborted" || errMessage === "MODE_INTERACTIVE") throw e;
-             // otherwise ignore step failure here, handled in catch
-          }
-          
-          // cleanup resolved
-          for (const [nodeId, p] of [...running.entries()]) {
-            if (completed.has(nodeId)) running.delete(nodeId);
-          }
-        }
-
-        this.updateTaskDagStatuses(runId);
-        stepsOk = this.allStepsCompleted(runId, stepNodes);
-
-        // REVIEW (optional) - minimal in v0
-        const reviewerId = this.cfg.roles["reviewer"];
-        if (reviewerId) {
-          await this.checkPause(runId);
-          const reviewNode = this.createTaskNode({
-            runId,
-            parentNodeId: rootNodeId,
-            label: "Review",
-            role: "reviewer",
-            providerId: reviewerId,
-          });
-          this.createEdge(runId, rootNodeId, reviewNode.id, "handoff", "review");
-          await this.runProviderNode(reviewNode, this.roleProvider("reviewer"), {
-            prompt: this.buildReviewPrompt(run.prompt),
-          }, getSignal());
-          this.createEdge(runId, reviewNode.id, rootNodeId, "report", "review report");
-        }
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // VERIFY PHASE - Section 2.1
-        // ═══════════════════════════════════════════════════════════════════════
-        this.transitionPhase(runId, "VERIFY", "Starting verification");
-        this.bus.emitNodeProgress(runId, rootNodeId, "VERIFY: Running checks, tests, and builds...");
-
-        await this.checkPause(runId);
-        const verifyNode = this.createVerificationNode(runId, rootNodeId, rootWs);
-        this.createEdge(runId, rootNodeId, verifyNode.id, "gate", "verify");
-
-        const verifyResult = await this.runVerificationNode(verifyNode, getSignal());
-
-        if (verifyResult.ok) {
-          // ═══════════════════════════════════════════════════════════════════════
-          // DOCS_SYNC PHASE - Section 2.1 (before DONE)
-          // ═══════════════════════════════════════════════════════════════════════
-          const docsSyncResult = await this.runDocsSyncPhase(runId, rootNodeId, getSignal);
-
-          const acceptanceResult = this.evaluateAcceptanceCriteria({
-            runId,
-            repoPath: run.repoPath,
-            verification: verifyResult.report,
-          });
-
-          const completionIssues: string[] = [];
-          if (!stepsOk) completionIssues.push("One or more plan steps did not complete successfully.");
-          if (!acceptanceResult.ok) {
-            const failedIds = acceptanceResult.failures.map((c) => c.id).join(", ");
-            completionIssues.push(`Acceptance criteria failed: ${failedIds || "unspecified"}.`);
-          }
-          if (!docsSyncResult.ok) completionIssues.push("Documentation sync did not complete successfully.");
-
-          const completionReport: CompletionReport = {
-            ok: completionIssues.length === 0,
-            stepsOk,
-            acceptanceOk: acceptanceResult.ok,
-            docsSynced: docsSyncResult.ok,
-            issues: completionIssues,
-            acceptanceFailures: acceptanceResult.failures,
-          };
-
-          const completionArtifact = this.store.createArtifact({
-            runId,
-            nodeId: rootNodeId,
-            kind: "json",
-            name: "completeness.report.json",
-            mimeType: "application/json",
-            content: JSON.stringify(completionReport, null, 2),
-          });
-          this.bus.emitArtifact(runId, completionArtifact);
-
-          if (!completionReport.ok) {
-            const changesSummary = this.collectChangesSummary(runId);
-            const fixContextSections: string[] = [];
-            if (acceptanceResult.failures.length > 0) {
-              fixContextSections.push("## Acceptance Failures");
-              for (const failure of acceptanceResult.failures) {
-                fixContextSections.push(`- ${failure.id}: ${failure.description}`);
-              }
-            }
-            if (changesSummary.hasChanges) {
-              fixContextSections.push("## Last Patch Summary");
-              fixContextSections.push(changesSummary.summary || "No summary available.");
-              if (changesSummary.filesChanged.length > 0) {
-                fixContextSections.push(`Files: ${changesSummary.filesChanged.join(", ")}`);
-              }
-            }
-            lastFixContext = fixContextSections.join("\n");
-
-            iteration++;
-            this.bus.emitRunPatch(runId, { id: runId, iterations: iteration }, "run.updated");
-            this.bus.emitNodeProgress(runId, rootNodeId, `COMPLETENESS: Failed. Starting fix iteration ${iteration}...`);
-
-            plan = {
-              summary: "auto-fix (v0)",
-              steps: [
-                {
-                  id: `fix-${iteration}`,
-                  title: `Fix completeness issues (iteration ${iteration})`,
-                  instructions: [
-                    "Resolve the completion issues listed below.",
-                    "",
-                    lastFixContext,
-                  ].join("\n"),
-                  agentHint: "any",
-                  deps: [],
-                },
-              ],
-            };
-
-            const runForFixPlan = this.store.getRun(runId);
-            if (runForFixPlan) {
-              runForFixPlan.taskDag = plan;
-              this.store.persistRun(runForFixPlan);
-            }
-
-            continue;
-          }
-
-          // ═══════════════════════════════════════════════════════════════════════
-          // DONE PHASE - Section 2.1
-          // ═══════════════════════════════════════════════════════════════════════
-          this.transitionPhase(runId, "DONE", "All checks passed");
-          this.bus.emitNodeProgress(runId, rootNodeId, "DONE: Run completed successfully.");
-
-          const finalReport = this.buildFinalReport(runId, {
-            verification: verifyResult.report,
-            docsSync: docsSyncResult,
-            completion: completionReport,
-            iterations: iteration + 1,
-          });
-          const reportArtifact = this.store.createArtifact({
-            runId,
-            nodeId: rootNodeId,
-            kind: "report",
-            name: "final.report.md",
-            mimeType: "text/markdown",
-            content: finalReport,
-          });
-          this.bus.emitArtifact(runId, reportArtifact);
-
-          if (this.cfg.workspace?.cleanupOnDone) {
-            try {
-              await this.workspace.cleanupRunWorkspaces(run.repoPath, runId);
-            } catch {
-              this.bus.emitNodeProgress(runId, rootNodeId, "DONE: Workspace cleanup failed.");
-            }
-          }
-
-          this.bus.emitNodePatch(runId, rootNodeId, { status: "completed", completedAt: nowIso() }, "node.completed");
-          this.bus.emitRunPatch(runId, { id: runId, status: "completed", iterations: iteration + 1 }, "run.completed");
-          return;
-        } else {
-          // collect last verify logs for fix prompt
-          if (!verifyResult.report.docsCheck.ok) {
-            this.transitionPhase(runId, "DOCS_ITERATION", "Missing required documentation");
-            await this.runDocsIterationPhase(runId, rootNodeId, getSignal);
-          }
-          const logText = this.collectLatestVerificationLog(runId, verifyNode.id);
-          const changesSummary = this.collectChangesSummary(runId);
-          const reportText = JSON.stringify(verifyResult.report, null, 2);
-          const fixContext = [
-            logText ? "## Verification Logs" : "",
-            logText,
-            "## Verification Report",
-            "```json",
-            reportText,
-            "```",
-            changesSummary.hasChanges ? "## Last Patch Summary" : "",
-            changesSummary.summary,
-          ].filter((section) => section.trim().length > 0).join("\n\n");
-          lastFixContext = fixContext;
-          iteration++;
-          this.bus.emitRunPatch(runId, { id: runId, iterations: iteration }, "run.updated");
-          this.bus.emitNodeProgress(runId, rootNodeId, `VERIFY: Failed. Starting fix iteration ${iteration}...`);
-
-          // In v0, we do not re-plan; we just run a single fix step next iteration.
-          plan = {
-            summary: "auto-fix (v0)",
-            steps: [
-              {
-                id: `fix-${iteration}`,
-                title: `Fix verification failures (iteration ${iteration})`,
-                instructions: [
-                  "Fix the verification failures described below.",
-                  "",
-                  lastFixContext,
-                ].join("\n"),
-                agentHint: "any",
-                deps: [],
-              },
-            ],
-          };
-
-          const runForFixPlan = this.store.getRun(runId);
-          if (runForFixPlan) {
-            runForFixPlan.taskDag = plan;
-            this.store.persistRun(runForFixPlan);
-          }
-        }
-
-      } catch (e: unknown) {
-        const errMessage = e instanceof Error ? e.message : String(e);
-        if (this.pauseSignals.has(runId)) {
-          // It was a pause interrupt. Loop around to wait.
-          this.bus.emitNodeProgress(runId, rootNodeId, "Run interrupted for pause.");
-          continue;
-        } else if (errMessage === "MODE_INTERACTIVE") {
-          // Mode switched to INTERACTIVE. Loop around to wait for AUTO.
-          this.bus.emitNodeProgress(runId, rootNodeId, "Run paused - switched to INTERACTIVE mode.");
-          continue;
-        } else if (errMessage === "aborted") {
-          // Standard stop
-          break;
-        } else {
-           throw e; // Crash
-        }
-      }
-    }
-
-    // aborted
-    this.bus.emitRunPatch(runId, { id: runId, status: "stopped" }, "run.stopped");
-    this.bus.emitNodePatch(runId, rootNodeId, { status: "skipped", completedAt: nowIso() }, "node.completed");
+    await this.runGraphScheduler(runId, rootNodeId, getSignal);
   }
 
   private createTaskNode(params: {
@@ -2003,6 +1776,7 @@ export class OrchestratorEngine {
       status: "queued",
       createdAt: nowIso(),
       input: params.input,
+      triggerMode: "any_input", // Default
     };
     this.bus.emitNodePatch(params.runId, id, node, "node.created");
     return node;
@@ -2015,25 +1789,30 @@ export class OrchestratorEngine {
       runId,
       parentNodeId,
       type: "verification",
-      label: "Verify",
+      label: "Verification",
       status: "queued",
       createdAt: nowIso(),
       workspacePath,
+      triggerMode: "any_input",
     };
     this.bus.emitNodePatch(runId, id, node, "node.created");
     return node;
   }
 
   public createEdge(runId: string, from: string, to: string, type: EdgeRecord["type"], label?: string): void {
+    const id = randomUUID();
     const edge: EdgeRecord = {
-      id: randomUUID(),
+      id,
       runId,
       from,
       to,
       type,
       label,
       createdAt: nowIso(),
+      deliveryPolicy: "queue",
+      pendingEnvelopes: [],
     };
+    this.store.addEdge(runId, edge);
     this.bus.emitEdge(runId, edge);
   }
 
@@ -2352,7 +2131,7 @@ export class OrchestratorEngine {
     const feedback = Object.values(run.artifacts)
       .filter((a) => a.kind === "user_feedback")
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-    
+
     if (!feedback.length) return "";
 
     let combined = "";

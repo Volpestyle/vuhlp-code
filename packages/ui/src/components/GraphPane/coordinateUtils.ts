@@ -76,8 +76,8 @@ export const SNAP_SIZE = 20;
  * Default window size.
  */
 export const DEFAULT_WINDOW_SIZE: Size = {
-  width: 320,
-  height: 240,
+  width: 600,
+  height: 500,
 };
 
 /**

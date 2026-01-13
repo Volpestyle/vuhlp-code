@@ -23,6 +23,13 @@ export type RunPhase =
   | "DONE";          // Export final report + updated docs + artifacts
 
 /**
+ * Global workflow context mode.
+ * - PLANNING: Agents investigate, ask questions, and write to /docs only.
+ * - IMPLEMENTATION: Agents can apply code changes.
+ */
+export type GlobalMode = "PLANNING" | "IMPLEMENTATION";
+
+/**
  * Run-level orchestration mode.
  * - AUTO: Orchestrator schedules nodes, triggers agent turns, runs verification, retries/fix-loops automatically.
  * - INTERACTIVE: Orchestrator pauses scheduling; user manually drives prompts/approvals.
@@ -59,7 +66,26 @@ export type NodeStatus =
   | "blocked_approval"
   | "blocked_manual_input";
 
+export type TriggerMode = "any_input" | "all_inputs" | "manual" | "scheduled";
+
 export type EdgeType = "handoff" | "dependency" | "report" | "gate";
+
+export type DeliveryPolicy = "queue" | "latest" | "debounce";
+
+/**
+ * Structured payload envelope for edges.
+ */
+export interface Envelope {
+  kind: "handoff" | "signal";
+  fromNodeId: string;
+  toNodeId: string;
+  payload: {
+    message?: string;
+    structured?: Record<string, unknown>;
+    artifacts?: Array<{ type: string; ref: string }>;
+    status?: { ok: boolean; reason?: string };
+  };
+}
 
 export type ProviderId = string; // e.g. "mock", "codex", "claude", "gemini"
 export type RoleId = "investigator" | "planner" | "implementer" | "reviewer";
@@ -153,6 +179,8 @@ export interface RunRecord {
   phase: RunPhase;
   /** Orchestration mode: AUTO (automated) or INTERACTIVE (manual control). */
   mode: RunMode;
+  /** Global business logic mode: PLANNING or IMPLEMENTATION. */
+  globalMode?: GlobalMode;
   createdAt: string;
   updatedAt: string;
   iterations: number;
@@ -303,6 +331,8 @@ export interface NodeRecord {
 
   // Human-readable summary.
   summary?: string;
+  triggerMode?: TriggerMode;
+  stallCount?: number;
 
   workspacePath?: string;
   error?: {
@@ -318,6 +348,8 @@ export interface EdgeRecord {
   to: string;
   type: EdgeType;
   label?: string;
+  deliveryPolicy?: DeliveryPolicy;
+  pendingEnvelopes?: Envelope[];
   createdAt: string;
 }
 
@@ -393,24 +425,24 @@ export interface VuhlpEventBase {
 
 export interface RunEvent extends VuhlpEventBase {
   type:
-    | "run.created"
-    | "run.started"
-    | "run.updated"
-    | "run.completed"
-    | "run.failed"
-    | "run.stopped"
-    | "run.paused"
-    | "run.resumed";
+  | "run.created"
+  | "run.started"
+  | "run.updated"
+  | "run.completed"
+  | "run.failed"
+  | "run.stopped"
+  | "run.paused"
+  | "run.resumed";
   run: Partial<RunRecord> & { id: string };
 }
 
 export interface NodeEvent extends VuhlpEventBase {
   type:
-    | "node.created"
-    | "node.started"
-    | "node.progress"
-    | "node.completed"
-    | "node.failed";
+  | "node.created"
+  | "node.started"
+  | "node.progress"
+  | "node.completed"
+  | "node.failed";
   nodeId: string;
   patch?: Partial<NodeRecord>;
   message?: string;

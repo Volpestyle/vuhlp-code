@@ -5,6 +5,7 @@ import type {
   NodeTrackedState,
   ChatMessage,
   ChatTarget,
+  Edge,
 } from '../../types';
 import { Button } from '../Button';
 import './Inspector.css';
@@ -20,13 +21,19 @@ export interface InspectorProps {
   chatMessages?: ChatMessage[];
   onSendMessage?: (content: string, interrupt: boolean) => void;
   onQueueMessage?: (content: string) => void;
+  // Connection Management
+  nodes?: Node[];
+  edges?: Edge[];
+  onAddConnection?: (sourceId: string, targetId: string) => void;
+  onRemoveConnection?: (edgeId: string) => void;
 }
 
-type TabId = 'overview' | 'conversation' | 'tools' | 'files' | 'context' | 'events' | 'console';
+type TabId = 'overview' | 'conversation' | 'graph' | 'tools' | 'files' | 'context' | 'events' | 'console';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'conversation', label: 'Conversation' },
+  { id: 'graph', label: 'Graph' },
   { id: 'tools', label: 'Tools' },
   { id: 'files', label: 'Files' },
   { id: 'context', label: 'Context' },
@@ -45,10 +52,16 @@ export function Inspector({
   chatMessages: _chatMessages = [],
   onSendMessage,
   onQueueMessage,
+  nodes = [],
+  edges = [],
+  onAddConnection,
+  onRemoveConnection,
 }: InspectorProps) {
   const [activeTab, setActiveTab] = useState<TabId>('conversation');
   const [chatInput, setChatInput] = useState('');
   const [eventFilter, setEventFilter] = useState('');
+  const [newInputNodeId, setNewInputNodeId] = useState('');
+  const [newOutputNodeId, setNewOutputNodeId] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Scroll chat to bottom on new messages
@@ -84,6 +97,55 @@ export function Inspector({
   const fileArtifacts = useMemo(() => {
     return artifacts.filter((a) => a.type === 'diff' || a.type === 'file_changes');
   }, [artifacts]);
+
+  // Graph connections
+  const { inboundEdges, outboundEdges, availableInputNodes, availableOutputNodes } = useMemo(() => {
+    if (!node) {
+      return {
+        inboundEdges: [],
+        outboundEdges: [],
+        availableInputNodes: [],
+        availableOutputNodes: [],
+      };
+    }
+
+    const inbound = edges.filter((e) => e.target === node.id);
+    const outbound = edges.filter((e) => e.source === node.id);
+
+    const connectedInputIds = new Set(inbound.map((e) => e.source));
+    const connectedOutputIds = new Set(outbound.map((e) => e.target));
+    
+    // Nodes that can be inputs (not self, not already connected)
+    const availableInputs = nodes.filter(
+      (n) => n.id !== node.id && !connectedInputIds.has(n.id)
+    );
+
+    // Nodes that can be outputs (not self, not already connected)
+    const availableOutputs = nodes.filter(
+      (n) => n.id !== node.id && !connectedOutputIds.has(n.id)
+    );
+
+    return {
+      inboundEdges: inbound,
+      outboundEdges: outbound,
+      availableInputNodes: availableInputs,
+      availableOutputNodes: availableOutputs,
+    };
+  }, [node, nodes, edges]);
+
+  const handleAddInput = () => {
+    if (newInputNodeId && onAddConnection && node) {
+      onAddConnection(newInputNodeId, node.id);
+      setNewInputNodeId('');
+    }
+  };
+
+  const handleAddOutput = () => {
+    if (newOutputNodeId && onAddConnection && node) {
+      onAddConnection(node.id, newOutputNodeId);
+      setNewOutputNodeId('');
+    }
+  };
 
   if (!node) {
     return (
@@ -249,6 +311,123 @@ export function Inspector({
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Graph Tab */}
+        {activeTab === 'graph' && (
+          <div className="vuhlp-inspector__overview">
+            <div className="vuhlp-inspector__section">
+              <h3 className="vuhlp-inspector__section-title">Inbound Connections</h3>
+              
+              <div className="vuhlp-inspector__connections-list">
+                {inboundEdges.length === 0 && (
+                  <div className="vuhlp-inspector__empty-text">No inbound connections</div>
+                )}
+                {inboundEdges.map((edge) => {
+                  const sourceNode = nodes.find(n => n.id === edge.source);
+                  return (
+                    <div key={edge.id} className="vuhlp-inspector__connection-item">
+                      <div className="vuhlp-inspector__connection-info">
+                        <span className="vuhlp-inspector__connection-node">
+                          {sourceNode?.label || edge.source}
+                        </span>
+                        <span className="vuhlp-inspector__connection-type">{edge.type}</span>
+                      </div>
+                      {onRemoveConnection && (
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => onRemoveConnection(edge.id)}
+                          className="vuhlp-inspector__connection-remove"
+                        >
+                          Disconnect
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {onAddConnection && availableInputNodes.length > 0 && (
+                <div className="vuhlp-inspector__add-connection">
+                  <select
+                    value={newInputNodeId}
+                    onChange={(e) => setNewInputNodeId(e.target.value)}
+                    className="vuhlp-inspector__select"
+                  >
+                    <option value="">Select source node...</option>
+                    {availableInputNodes.map((n) => (
+                      <option key={n.id} value={n.id}>{n.label}</option>
+                    ))}
+                  </select>
+                  <Button 
+                    variant="secondary" 
+                    size="sm"
+                    disabled={!newInputNodeId}
+                    onClick={handleAddInput}
+                  >
+                    Add Input
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            <div className="vuhlp-inspector__section">
+              <h3 className="vuhlp-inspector__section-title">Outbound Connections</h3>
+
+              <div className="vuhlp-inspector__connections-list">
+                {outboundEdges.length === 0 && (
+                  <div className="vuhlp-inspector__empty-text">No outbound connections</div>
+                )}
+                {outboundEdges.map((edge) => {
+                  const targetNode = nodes.find(n => n.id === edge.target);
+                  return (
+                    <div key={edge.id} className="vuhlp-inspector__connection-item">
+                      <div className="vuhlp-inspector__connection-info">
+                        <span className="vuhlp-inspector__connection-node">
+                          {targetNode?.label || edge.target}
+                        </span>
+                        <span className="vuhlp-inspector__connection-type">{edge.type}</span>
+                      </div>
+                      {onRemoveConnection && (
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => onRemoveConnection(edge.id)}
+                          className="vuhlp-inspector__connection-remove"
+                        >
+                          Disconnect
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {onAddConnection && availableOutputNodes.length > 0 && (
+                <div className="vuhlp-inspector__add-connection">
+                  <select
+                    value={newOutputNodeId}
+                    onChange={(e) => setNewOutputNodeId(e.target.value)}
+                    className="vuhlp-inspector__select"
+                  >
+                    <option value="">Select target node...</option>
+                    {availableOutputNodes.map((n) => (
+                      <option key={n.id} value={n.id}>{n.label}</option>
+                    ))}
+                  </select>
+                  <Button 
+                    variant="secondary" 
+                    size="sm"
+                    disabled={!newOutputNodeId}
+                    onClick={handleAddOutput}
+                  >
+                    Add Output
+                  </Button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
