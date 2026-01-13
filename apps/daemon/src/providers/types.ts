@@ -1,4 +1,4 @@
-import { RoleId } from "../core/types.js";
+import { RoleId, ToolProposal, ToolRiskLevel } from "../core/types.js";
 
 export interface ProviderHealth {
   ok: boolean;
@@ -23,16 +23,42 @@ export interface ProviderTask {
    * Not all providers can enforce it; v0 uses it mainly as an instruction.
    */
   outputSchemaJson?: string;
+  /** Provider-specific session ID for resuming conversations. */
+  sessionId?: string;
   /** A few extra hints for adapters. */
   meta?: Record<string, unknown>;
 }
 
+/** Console stream type for raw output capture. */
+export type ConsoleStreamType = "stdout" | "stderr";
+
+/** Tool proposal from provider for approval workflow. */
+export interface ProviderToolProposal {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  riskLevel?: ToolRiskLevel;
+}
+
 export type ProviderOutputEvent =
+  // Standard events
   | { type: "progress"; message: string; raw?: unknown }
   | { type: "log"; name: string; content: string }
   | { type: "json"; name: string; json: unknown }
   | { type: "diff"; name: string; patch: string }
-  | { type: "final"; output?: unknown; summary?: string };
+  | { type: "final"; output?: unknown; summary?: string }
+  // Console events (raw output for terminal viewer)
+  | { type: "console"; stream: ConsoleStreamType; data: string; timestamp: string }
+  // Session events (for session registry)
+  | { type: "session"; sessionId: string }
+  // Message events (for conversation view)
+  | { type: "message.delta"; delta: string; index?: number }
+  | { type: "message.final"; content: string; tokenCount?: number }
+  | { type: "message.reasoning"; content: string }
+  // Tool events (for tool panel and approval workflow)
+  | { type: "tool.proposed"; tool: ProviderToolProposal }
+  | { type: "tool.started"; toolId: string }
+  | { type: "tool.completed"; toolId: string; result?: unknown; error?: { message: string }; durationMs?: number };
 
 export interface ProviderAdapter {
   id: string;

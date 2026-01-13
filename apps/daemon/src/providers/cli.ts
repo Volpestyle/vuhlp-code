@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { ProviderOutputEvent, ProviderTask } from "./types.js";
+import { ProviderOutputEvent, ProviderTask, ConsoleStreamType } from "./types.js";
 
 export interface CliSpawnOptions {
   command: string;
@@ -13,6 +13,8 @@ export interface CliSpawnOptions {
   prompt: string;
   /** Max bytes to keep in memory for stdout/stderr (logs are also streamed). */
   maxBufferBytes?: number;
+  /** Emit raw console chunks (for real-time terminal display). Default true. */
+  emitConsoleChunks?: boolean;
 }
 
 export interface CliRunResult {
@@ -29,6 +31,7 @@ export async function* runCliStreaming(
   abortSignal: AbortSignal
 ): AsyncIterable<ProviderOutputEvent> {
   const maxBufferBytes = opts.maxBufferBytes ?? 5_000_000; // 5MB
+  const emitConsoleChunks = opts.emitConsoleChunks ?? true;
   const args = opts.args.map((a) => (a.includes("{prompt}") ? a.replaceAll("{prompt}", opts.prompt) : a));
   const usesPromptArg = opts.args.some((a) => a.includes("{prompt}"));
 
@@ -76,10 +79,19 @@ export async function* runCliStreaming(
     }
   };
 
-  const lineIter = async function* (stream: NodeJS.ReadableStream, kind: "stdout" | "stderr") {
+  const lineIter = async function* (
+    stream: NodeJS.ReadableStream,
+    kind: ConsoleStreamType
+  ): AsyncIterable<ProviderOutputEvent> {
     let buf = "";
     for await (const chunk of stream as any as AsyncIterable<Buffer>) {
       const s = chunk.toString("utf-8");
+
+      // Emit raw console chunk for real-time terminal display
+      if (emitConsoleChunks) {
+        yield { type: "console", stream: kind, data: s, timestamp: new Date().toISOString() };
+      }
+
       buf += s;
       while (true) {
         const idx = buf.indexOf("\n");
