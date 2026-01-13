@@ -4,9 +4,6 @@
   },
   "dataDir": ".vuhlp",
   "providers": {
-    "mock": {
-      "kind": "mock"
-    },
     "codex": {
       "kind": "codex-cli",
       "command": "codex",
@@ -22,7 +19,8 @@
         "-p",
         "{prompt}",
         "--output-format",
-        "stream-json"
+        "stream-json",
+        "--dangerously-skip-permissions"
       ]
     },
     "gemini": {
@@ -37,10 +35,10 @@
     }
   },
   "roles": {
-    "investigator": "mock",
-    "planner": "mock",
-    "implementer": "mock",
-    "reviewer": "mock"
+    "investigator": "claude",
+    "planner": "claude",
+    "implementer": "claude",
+    "reviewer": "claude"
   },
   "scheduler": {
     "maxConcurrency": 3
