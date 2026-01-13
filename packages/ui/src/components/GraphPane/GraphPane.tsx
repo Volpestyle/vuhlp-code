@@ -614,8 +614,8 @@ export function GraphPane({
             'taxi-turn': 20,
             'arrow-scale': 1,
             'opacity': 0.85,
-            'source-endpoint': '50% 100%',
-            'target-endpoint': '50% 0%',
+            'source-endpoint': '0 1',
+            'target-endpoint': '0 -1',
           },
         },
         {
@@ -773,8 +773,8 @@ export function GraphPane({
       .selector('edge')
       .style({
         'curve-style': connectionStyle,
-        'source-endpoint': '50% 100%',
-        'target-endpoint': '50% 0%',
+        'source-endpoint': '0 1',
+        'target-endpoint': '0 -1',
       })
       .update();
   }, [connectionStyle]);
@@ -958,7 +958,8 @@ export function GraphPane({
         runGraphLayout(cy, edges, run.rootOrchestratorNodeId ?? null);
       }
       cy.fit(undefined, 100);
-      setTimeout(() => syncPositionsFromCy(), 50);
+      syncPositionsFromCy(); // Sync immediately after fit
+      setTimeout(() => syncPositionsFromCy(), 50); // Also sync after animation settles
       return;
     }
 
@@ -1211,10 +1212,10 @@ export function GraphPane({
     runGraphLayout(cy, edges, rootNodeId);
 
     cy.fit(undefined, 100);
-
+    syncPositionsFromCy(); // Sync immediately after fit
     setTimeout(() => {
       syncPositionsFromCy();
-    }, 50);
+    }, 50); // Also sync after animation settles
   }, [edges, resetWindowSizes, run?.rootOrchestratorNodeId, syncPositionsFromCy]);
 
   const isRunning = run?.status === 'running';
