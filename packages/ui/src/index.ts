@@ -66,6 +66,7 @@ export {
   FileExplorer,
   FileViewer,
   MainPane,
+  Toast,
 } from './components';
 
 export type {
@@ -86,4 +87,5 @@ export type {
   FileViewerProps,
   MainPaneProps,
   MainTab,
+  ToastProps,
 } from './components';

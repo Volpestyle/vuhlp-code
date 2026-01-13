@@ -38,3 +38,6 @@ export type { FileViewerProps } from './FileViewer';
 
 export { MainPane } from './MainPane';
 export type { MainPaneProps, MainTab } from './MainPane';
+
+export { Toast } from './Toast';
+export type { ToastProps } from './Toast';

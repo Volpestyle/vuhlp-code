@@ -1,0 +1,75 @@
+.vuhlp-toast {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: var(--vuhlp-radius-md, 6px);
+  background: var(--vuhlp-bg-surface, #ffffff);
+  color: var(--vuhlp-text-primary, #000000);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  z-index: 9999;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  border: 1px solid var(--vuhlp-border-subtle, #e0e0e0);
+  font-family: var(--vuhlp-font-sans, system-ui, sans-serif);
+  font-size: 0.9rem;
+}
+
+/* Dark mode overrides if needed - assuming variables handle it, but adding safety */
+@media (prefers-color-scheme: dark) {
+  .vuhlp-toast {
+    background: var(--vuhlp-bg-surface, #1e1e1e);
+    color: var(--vuhlp-text-primary, #ffffff);
+    border-color: var(--vuhlp-border-subtle, #333333);
+  }
+}
+
+.vuhlp-toast.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.vuhlp-toast.hidden {
+  opacity: 0;
+  transform: translateY(1rem);
+  pointer-events: none;
+}
+
+.vuhlp-toast-success {
+  border-left: 4px solid var(--vuhlp-color-success, #10b981);
+}
+
+.vuhlp-toast-error {
+  border-left: 4px solid var(--vuhlp-color-error, #ef4444);
+}
+
+.vuhlp-toast-info {
+  border-left: 4px solid var(--vuhlp-color-primary, #3b82f6);
+}
+
+.vuhlp-toast-icon {
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+}
+
+.vuhlp-toast-success .vuhlp-toast-icon {
+  color: var(--vuhlp-color-success, #10b981);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.vuhlp-toast-error .vuhlp-toast-icon {
+  color: var(--vuhlp-color-error, #ef4444);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.vuhlp-toast-info .vuhlp-toast-icon {
+  color: var(--vuhlp-color-primary, #3b82f6);
+  background: rgba(59, 130, 246, 0.1);
+}
