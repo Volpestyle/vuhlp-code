@@ -50,3 +50,44 @@ export function loadConfig(): VuhlpConfig {
 
   return cfg;
 }
+
+export function saveConfig(updates: Partial<VuhlpConfig>): void {
+  const defaultPath = path.resolve(process.cwd(), "vuhlp.config.json");
+  const configPath = process.env.VUHLP_CONFIG
+    ? path.resolve(process.env.VUHLP_CONFIG)
+    : defaultPath;
+
+  let currentFile: VuhlpConfig = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      currentFile = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    } catch {
+      // ignore
+    }
+  }
+
+  // Deep merge would be better, but top-level merge is a start. 
+  // Actually, let's do a simple merge for the known nested objects to avoid wiping others.
+  
+  const merge = (target: any, source: any) => {
+    for (const key of Object.keys(source)) {
+      if (source[key] instanceof Object && !Array.isArray(source[key]) && target[key]) {
+        Object.assign(source[key], merge(target[key], source[key]));
+      }
+    }
+    Object.assign(target || {}, source);
+    return target;
+  };
+
+  // We want to merge updates INTO currentFile.
+  // Simple Object.assign for top level sections is safer for now given the structure.
+  // e.g. updates.roles should replace currentFile.roles? Or merge?
+  // Usually config UIs replace the whole section.
+  
+  // Let's assume updates contains the full sections that were edited.
+  const next = { ...currentFile, ...updates };
+
+  // Special handling for nested partials if needed, but the UI will likely send full objects for sections.
+
+  fs.writeFileSync(configPath, JSON.stringify(next, null, 2), "utf-8");
+}

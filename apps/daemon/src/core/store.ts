@@ -7,6 +7,9 @@ import {
   VuhlpEvent,
   NodeRecord,
   EdgeRecord,
+  RunMode,
+  RunPolicy,
+  RunPhase,
 } from "./types.js";
 import { nowIso } from "./time.js";
 
@@ -75,6 +78,10 @@ export class RunStore {
     repoPath: string;
     maxIterations: number;
     config: Record<string, unknown>;
+    /** Initial run mode. Defaults to AUTO. */
+    mode?: RunMode;
+    /** Run-level policy configuration. */
+    policy?: RunPolicy;
   }): RunRecord {
     const id = randomUUID();
     const createdAt = nowIso();
@@ -90,11 +97,14 @@ export class RunStore {
       prompt: params.prompt,
       repoPath: params.repoPath,
       status: "queued",
+      phase: "BOOT",
+      mode: params.mode ?? "AUTO",
       createdAt,
       updatedAt: createdAt,
       iterations: 0,
       maxIterations: params.maxIterations,
       config: params.config,
+      policy: params.policy,
       rootOrchestratorNodeId,
       nodes: {},
       edges: {},
@@ -190,5 +200,107 @@ export class RunStore {
 
   eventsFilePath(runId: string): string {
     return path.join(this.runDir(runId), "events.jsonl");
+  }
+
+  /**
+   * Delete a run from memory and disk.
+   */
+  deleteRun(runId: string): boolean {
+    // Remove from memory
+    this.runs.delete(runId);
+
+    // Remove from disk
+    const dir = this.runDir(runId);
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Delete multiple runs.
+   */
+  deleteRuns(runIds: string[]): number {
+    let count = 0;
+    for (const runId of runIds) {
+      if (this.deleteRun(runId)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Clear all runs from memory and disk.
+   */
+  clearAllRuns(): number {
+    const runs = this.listRuns();
+    let count = 0;
+    for (const run of runs) {
+      if (this.deleteRun(run.id)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Archive a run (soft-delete).
+   */
+  archiveRun(runId: string): RunRecord | null {
+    const run = this.getRun(runId);
+    if (!run) return null;
+
+    run.archived = true;
+    run.archivedAt = nowIso();
+    run.updatedAt = nowIso();
+
+    this.runs.set(runId, run);
+    this.persistRun(run);
+    return run;
+  }
+
+  /**
+   * Unarchive a run.
+   */
+  unarchiveRun(runId: string): RunRecord | null {
+    const run = this.getRun(runId);
+    if (!run) return null;
+
+    run.archived = false;
+    run.archivedAt = undefined;
+    run.updatedAt = nowIso();
+
+    this.runs.set(runId, run);
+    this.persistRun(run);
+    return run;
+  }
+
+  /**
+   * Rename a run.
+   * Pass empty string or undefined to clear the name.
+   */
+  renameRun(runId: string, name: string | undefined): RunRecord | null {
+    const run = this.getRun(runId);
+    if (!run) return null;
+
+    run.name = name?.trim() || undefined;
+    run.updatedAt = nowIso();
+
+    this.runs.set(runId, run);
+    this.persistRun(run);
+    return run;
+  }
+
+  /**
+   * List runs with optional archived filter.
+   */
+  listRunsFiltered(includeArchived: boolean = false): RunRecord[] {
+    const all = this.listRuns();
+    if (includeArchived) {
+      return all;
+    }
+    return all.filter((run) => !run.archived);
   }
 }
