@@ -1,0 +1,7 @@
+{"ts": "2026-01-13T00:00:00Z", "type": "run.created", "run_id": "run_2026-01-13T00-00-00Z_demo", "data": {"prompt": "Demo run"}}
+{"ts": "2026-01-13T00:00:01Z", "type": "node.added", "run_id": "run_2026-01-13T00-00-00Z_demo", "node_id": "orch", "data": {"type": "orchestrator"}}
+{"ts": "2026-01-13T00:00:02Z", "type": "node.added", "run_id": "run_2026-01-13T00-00-00Z_demo", "node_id": "impl-a", "data": {"type": "agent.codex"}}
+{"ts": "2026-01-13T00:00:03Z", "type": "edge.added", "run_id": "run_2026-01-13T00-00-00Z_demo", "data": {"from": "orch", "to": "impl-a"}}
+{"ts": "2026-01-13T00:00:10Z", "type": "turn.started", "run_id": "run_2026-01-13T00-00-00Z_demo", "node_id": "impl-a", "data": {"turn_id": "turn-001", "input": "Implement X"}}
+{"ts": "2026-01-13T00:01:20Z", "type": "turn.completed", "run_id": "run_2026-01-13T00-00-00Z_demo", "node_id": "impl-a", "data": {"turn_id": "turn-001", "status": "ok", "summary": "Implemented X; added tests"}}
+{"ts": "2026-01-13T00:01:21Z", "type": "artifact.written", "run_id": "run_2026-01-13T00-00-00Z_demo", "node_id": "impl-a", "data": {"type": "diff", "path": "artifacts/impl-a/turn-001.patch"}}
