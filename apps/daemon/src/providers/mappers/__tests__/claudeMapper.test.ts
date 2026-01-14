@@ -173,6 +173,45 @@ describe("claudeMapper", () => {
       });
     });
 
+    it("maps result event with text content to message.final", () => {
+      const events = Array.from(
+        mapClaudeEvent({
+          type: "result",
+          session_id: "sess-123",
+          result: "Final answer",
+          cost: { input_tokens: 100, output_tokens: 50 },
+          duration_ms: 1500,
+        })
+      );
+      // Should have 2 events: message.final and session_result.json
+      expect(events).toHaveLength(2);
+      expect(events[0]).toEqual({
+        type: "message.final",
+        content: "Final answer",
+      });
+      expect(events[1]).toMatchObject({
+        type: "json",
+        name: "session_result.json",
+      });
+    });
+
+    it("maps result event with content field to message.final", () => {
+      const events = Array.from(
+        mapClaudeEvent({
+          type: "result",
+          session_id: "sess-124",
+          content: "Alternative content field",
+          cost: { input_tokens: 100, output_tokens: 50 },
+          duration_ms: 1500,
+        })
+      );
+      expect(events).toHaveLength(2);
+      expect(events[0]).toEqual({
+        type: "message.final",
+        content: "Alternative content field",
+      });
+    });
+
     it("maps error event to progress event", () => {
       const events = Array.from(
         mapClaudeEvent({
@@ -226,6 +265,87 @@ describe("claudeMapper", () => {
       expect(Array.from(mapClaudeEvent(null))).toEqual([]);
       expect(Array.from(mapClaudeEvent(undefined))).toEqual([]);
       expect(Array.from(mapClaudeEvent("string"))).toEqual([]);
+    });
+
+    it("does not emit duplicate message.final when assistant and result both have content", () => {
+      // Claude Code sends both 'assistant' event (with message content) and
+      // 'result' event (with same content as 'result' field)
+      // We should only emit message.final once
+
+      // First, process the assistant event
+      const assistantEvents = Array.from(
+        mapClaudeEvent({
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Hello from Claude" }],
+          },
+        })
+      );
+      expect(assistantEvents).toHaveLength(1);
+      expect(assistantEvents[0]).toEqual({
+        type: "message.final",
+        content: "Hello from Claude",
+      });
+
+      // Now process the result event with the same content
+      const resultEvents = Array.from(
+        mapClaudeEvent({
+          type: "result",
+          session_id: "sess-123",
+          result: "Hello from Claude",
+          cost: { input_tokens: 100, output_tokens: 50 },
+          duration_ms: 1500,
+        })
+      );
+
+      // Should only have the json event, NOT another message.final
+      expect(resultEvents).toHaveLength(1);
+      expect(resultEvents[0]).toMatchObject({
+        type: "json",
+        name: "session_result.json",
+      });
+    });
+
+    it("emits message.final from result if assistant had no text content", () => {
+      // If assistant only had tool_use (no text), result should emit message.final
+      const assistantEvents = Array.from(
+        mapClaudeEvent({
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-1",
+                name: "Read",
+                input: { file_path: "/test.txt" },
+              },
+            ],
+          },
+        })
+      );
+      // Only tool events, no message.final
+      expect(assistantEvents.every(e => e.type !== "message.final")).toBe(true);
+
+      // Now result should emit message.final since assistant didn't
+      const resultEvents = Array.from(
+        mapClaudeEvent({
+          type: "result",
+          session_id: "sess-123",
+          result: "Task completed",
+          cost: { input_tokens: 100, output_tokens: 50 },
+          duration_ms: 1500,
+        })
+      );
+
+      expect(resultEvents).toHaveLength(2);
+      expect(resultEvents[0]).toEqual({
+        type: "message.final",
+        content: "Task completed",
+      });
+      expect(resultEvents[1]).toMatchObject({
+        type: "json",
+        name: "session_result.json",
+      });
     });
   });
 });
