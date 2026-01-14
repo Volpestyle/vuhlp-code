@@ -161,8 +161,9 @@ describe("claudeMapper", () => {
           duration_ms: 1500,
         })
       );
-      expect(events).toHaveLength(1);
-      expect(events[0]).toMatchObject({
+      expect(events).toHaveLength(2);
+      expect(events[0]).toEqual({ type: "session", sessionId: "sess-123" });
+      expect(events[1]).toMatchObject({
         type: "json",
         name: "session_result.json",
         json: {
@@ -171,6 +172,7 @@ describe("claudeMapper", () => {
           duration_ms: 1500,
         },
       });
+
     });
 
     it("maps result event with text content to message.final", () => {
@@ -183,13 +185,14 @@ describe("claudeMapper", () => {
           duration_ms: 1500,
         })
       );
-      // Should have 2 events: message.final and session_result.json
-      expect(events).toHaveLength(2);
+      // Should have 3 events: message.final, session, and session_result.json
+      expect(events).toHaveLength(3);
       expect(events[0]).toEqual({
         type: "message.final",
         content: "Final answer",
       });
-      expect(events[1]).toMatchObject({
+      expect(events[1]).toEqual({ type: "session", sessionId: "sess-123" });
+      expect(events[2]).toMatchObject({
         type: "json",
         name: "session_result.json",
       });
@@ -205,11 +208,12 @@ describe("claudeMapper", () => {
           duration_ms: 1500,
         })
       );
-      expect(events).toHaveLength(2);
+      expect(events).toHaveLength(3);
       expect(events[0]).toEqual({
         type: "message.final",
         content: "Alternative content field",
       });
+      expect(events[1]).toEqual({ type: "session", sessionId: "sess-124" });
     });
 
     it("maps error event to progress event", () => {
@@ -299,8 +303,10 @@ describe("claudeMapper", () => {
       );
 
       // Should only have the json event, NOT another message.final
-      expect(resultEvents).toHaveLength(1);
-      expect(resultEvents[0]).toMatchObject({
+      // But will have session event now
+      expect(resultEvents).toHaveLength(2);
+      expect(resultEvents[0]).toEqual({ type: "session", sessionId: "sess-123" });
+      expect(resultEvents[1]).toMatchObject({
         type: "json",
         name: "session_result.json",
       });
@@ -337,15 +343,18 @@ describe("claudeMapper", () => {
         })
       );
 
-      expect(resultEvents).toHaveLength(2);
+      expect(resultEvents).toHaveLength(3);
       expect(resultEvents[0]).toEqual({
         type: "message.final",
         content: "Task completed",
       });
-      expect(resultEvents[1]).toMatchObject({
+      expect(resultEvents[1]).toEqual({ type: "session", sessionId: "sess-123" });
+      expect(resultEvents[2]).toMatchObject({
         type: "json",
         name: "session_result.json",
       });
     });
   });
 });
+
+

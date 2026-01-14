@@ -15,6 +15,7 @@ describe("ClaudeCliProvider", () => {
         role: "implementer",
         prompt: "Hello",
         skipPermissions: true,
+        workspacePath: "/tmp/workspace",
     };
 
     it("should add --resume when sessionId is provided with default args", () => {

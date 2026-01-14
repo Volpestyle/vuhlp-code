@@ -159,6 +159,7 @@ export function* mapClaudeEvent(raw: unknown): Generator<ProviderOutputEvent> {
       emittedFinalContent = false;
 
       if (typeof sessionId === "string") {
+        yield { type: "session", sessionId };
         yield {
           type: "json",
           name: "session_result.json",

@@ -64,7 +64,16 @@ export class MockProvider implements ProviderAdapter {
     }
 
     // implementer (or other)
+    // implementer (or other)
     yield { type: "progress", message: "[mock] generating patch (placeholder)" };
+
+    // Simulate streaming text
+    const streamContent = "This is a simulated streaming response from the Mock Provider.\nIt should appear character by character in the UI.\n\n```typescript\nconsole.log('Hello from Mock!');\n```\n";
+    for (const char of streamContent) {
+      yield { type: "message.delta", delta: char };
+      await sleep(20); // 20ms delay per char (~50 chars/sec)
+    }
+
     await sleep(50);
     const patch = [
       "diff --git a/README.md b/README.md",
