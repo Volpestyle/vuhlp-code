@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ProviderAdapter, ProviderTask, ProviderOutputEvent } from "./types.js";
-import { buildCliPrompt, runCliStreaming } from "./cli.js";
+import { buildCliPrompt, runCliStreaming, StdinWriter } from "./cli.js";
 import { mapClaudeEvent, clearClaudePendingTools } from "./mappers/index.js";
 
 export interface ClaudeCliConfig {
@@ -28,11 +28,40 @@ export class ClaudeCliProvider implements ProviderAdapter {
   };
 
   private cfg: ClaudeCliConfig;
+  /** Active stdin writers keyed by nodeId for bidirectional communication */
+  private stdinWriters = new Map<string, StdinWriter>();
 
   constructor(id: string, cfg: ClaudeCliConfig) {
     this.id = id;
     this.displayName = "Claude Code (CLI)";
     this.cfg = cfg;
+  }
+
+  /**
+   * Send an approval response to the CLI process for a specific node.
+   * Used in INTERACTIVE mode to approve/deny tool calls.
+   */
+  sendApprovalResponse(nodeId: string, toolUseId: string, approved: boolean, modifiedArgs?: Record<string, unknown>): boolean {
+    const writer = this.stdinWriters.get(nodeId);
+    if (!writer) {
+      return false;
+    }
+
+    // Format the tool_result message for Claude CLI stream-json input
+    const response = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: approved ? (modifiedArgs ? JSON.stringify(modifiedArgs) : "approved") : "denied",
+          is_error: !approved,
+        }],
+      },
+    };
+
+    return writer(JSON.stringify(response));
   }
 
   async healthCheck() {
@@ -58,43 +87,55 @@ export class ClaudeCliProvider implements ProviderAdapter {
     // Build args with session support
     const args = this.buildArgs(task, prompt);
 
-    for await (const event of runCliStreaming(
-      {
-        command: this.cfg.command,
-        args,
-        env: this.cfg.env,
-        cwd: task.workspacePath,
-        prompt,
-        emitConsoleChunks: true,
-      },
-      signal
-    )) {
-      // Pass through console, log, diff, and final events
-      if (
-        event.type === "console" ||
-        event.type === "log" ||
-        event.type === "diff" ||
-        event.type === "final"
-      ) {
-        yield event;
-        continue;
-      }
+    // Use bidirectional mode when not skipping permissions (INTERACTIVE mode)
+    const useBidirectional = !task.skipPermissions;
 
-      // For progress events with raw JSON, map through Claude mapper
-      if (event.type === "progress" && event.raw) {
-        let hasMapping = false;
-        for (const mapped of mapClaudeEvent(event.raw)) {
-          hasMapping = true;
-          yield mapped;
+    try {
+      for await (const event of runCliStreaming(
+        {
+          command: this.cfg.command,
+          args,
+          env: this.cfg.env,
+          cwd: task.workspacePath,
+          prompt,
+          emitConsoleChunks: true,
+          keepStdinOpen: useBidirectional,
+          onStdinReady: useBidirectional
+            ? (writer) => this.stdinWriters.set(task.nodeId, writer)
+            : undefined,
+        },
+        signal
+      )) {
+        // Pass through console, log, diff, and final events
+        if (
+          event.type === "console" ||
+          event.type === "log" ||
+          event.type === "diff" ||
+          event.type === "final"
+        ) {
+          yield event;
+          continue;
         }
-        // If mapper didn't produce anything, yield the original progress
-        if (!hasMapping) {
+
+        // For progress events with raw JSON, map through Claude mapper
+        if (event.type === "progress" && event.raw) {
+          let hasMapping = false;
+          for (const mapped of mapClaudeEvent(event.raw)) {
+            hasMapping = true;
+            yield mapped;
+          }
+          // If mapper didn't produce anything, yield the original progress
+          if (!hasMapping) {
+            yield event;
+          }
+        } else {
+          // Pass through other events
           yield event;
         }
-      } else {
-        // Pass through other events
-        yield event;
       }
+    } finally {
+      // Cleanup stdin writer when task completes
+      this.stdinWriters.delete(task.nodeId);
     }
   }
 
@@ -141,9 +182,41 @@ export class ClaudeCliProvider implements ProviderAdapter {
   }
 
   private buildArgs(task: ProviderTask, prompt: string): string[] {
-    // Use custom args if provided
+    // Use custom args if provided, but handle skipPermissions and session dynamically
     if (this.cfg.args?.length) {
-      return this.cfg.args.map((a) =>
+      // Start with config args
+      const baseArgs = [...this.cfg.args];
+
+      // Ensure we don't have conflicting permissions flags if we need to force one
+      // But usually we just append what's needed if missing.
+
+      // 1. Handle Permissions / Bidirectional Mode
+      const hasSkip = baseArgs.includes("--dangerously-skip-permissions");
+      if (task.skipPermissions) {
+        if (!hasSkip) baseArgs.push("--dangerously-skip-permissions");
+      } else {
+        // INTERACTIVE mode needs stream-json input
+        if (!baseArgs.includes("--input-format")) {
+          baseArgs.push("--input-format", "stream-json");
+        }
+      }
+
+      // 2. Handle Session Resumption (CRITICAL FIX)
+      if (task.sessionId && !baseArgs.includes("--resume")) {
+        baseArgs.push("--resume", task.sessionId);
+      }
+
+      // 3. Handle Output Format (CRITICAL for parsing)
+      if (!baseArgs.includes("--output-format")) {
+        baseArgs.push("--output-format", "stream-json");
+      }
+
+      // 4. Handle Partial Messages (CRITICAL for streaming)
+      if (this.cfg.includePartialMessages !== false && !baseArgs.includes("--include-partial-messages")) {
+        baseArgs.push("--include-partial-messages");
+      }
+
+      return baseArgs.map((a) =>
         a.includes("{prompt}") ? a.replaceAll("{prompt}", prompt) : a
       );
     }
@@ -162,6 +235,14 @@ export class ClaudeCliProvider implements ProviderAdapter {
     // Include partial messages for streaming deltas
     if (this.cfg.includePartialMessages !== false) {
       args.push("--include-partial-messages");
+    }
+
+    // Skip permissions in AUTO mode, otherwise use bidirectional streaming
+    if (task.skipPermissions) {
+      args.push("--dangerously-skip-permissions");
+    } else {
+      // INTERACTIVE mode: add input-format for bidirectional streaming
+      args.push("--input-format", "stream-json");
     }
 
     // Add the prompt placeholder

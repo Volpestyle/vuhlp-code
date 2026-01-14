@@ -37,6 +37,10 @@ function toolRiskLevel(name: string, input: Record<string, unknown>): "low" | "m
 // Track tool use IDs to correlate with results
 const pendingTools = new Map<string, { name: string; startTime: number }>();
 
+// Track if we've already emitted message.final for this conversation turn
+// to avoid duplicate emissions from both 'assistant' and 'result' events
+let emittedFinalContent = false;
+
 /**
  * Maps a raw Claude stream-json event to canonical ProviderOutputEvents.
  */
@@ -48,6 +52,8 @@ export function* mapClaudeEvent(raw: unknown): Generator<ProviderOutputEvent> {
 
   switch (eventType) {
     case "init": {
+      // Reset state for new session
+      emittedFinalContent = false;
       const sessionId = event.session_id;
       if (typeof sessionId === "string") {
         yield { type: "session", sessionId };
@@ -73,6 +79,7 @@ export function* mapClaudeEvent(raw: unknown): Generator<ProviderOutputEvent> {
 
         if (textContent) {
           yield { type: "message.final", content: textContent };
+          emittedFinalContent = true;
         }
 
         for (const block of message.content as Array<Record<string, unknown>>) {
@@ -136,6 +143,21 @@ export function* mapClaudeEvent(raw: unknown): Generator<ProviderOutputEvent> {
 
     case "result": {
       const sessionId = event.session_id;
+
+      // Claude Code sends final text in either 'content' or 'result' field
+      const content = typeof event.content === "string" ? event.content : undefined;
+      const resultText = typeof event.result === "string" ? event.result : undefined;
+
+      const finalContent = resultText ?? content;
+
+      // Only emit message.final if we haven't already from the 'assistant' event
+      // Claude Code sends both 'assistant' (with message content) and 'result' (with same content)
+      if (finalContent && !emittedFinalContent) {
+        yield { type: "message.final", content: finalContent };
+      }
+      // Reset for next turn
+      emittedFinalContent = false;
+
       if (typeof sessionId === "string") {
         yield {
           type: "json",
@@ -183,4 +205,5 @@ export function isClaudeEvent(raw: unknown): boolean {
  */
 export function clearPendingTools(): void {
   pendingTools.clear();
+  emittedFinalContent = false;
 }

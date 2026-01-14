@@ -27,6 +27,8 @@ export interface ProviderTask {
   sessionId?: string;
   /** A few extra hints for adapters. */
   meta?: Record<string, unknown>;
+  /** Skip provider's built-in permission system (for AUTO mode). */
+  skipPermissions?: boolean;
 }
 
 /** Console stream type for raw output capture. */
@@ -69,4 +71,15 @@ export interface ProviderAdapter {
   healthCheck(): Promise<ProviderHealth>;
 
   runTask(task: ProviderTask, signal: AbortSignal): AsyncIterable<ProviderOutputEvent>;
+
+  /**
+   * Send an approval response for a tool call (INTERACTIVE mode only).
+   * Returns true if the response was sent, false if the node is not active.
+   */
+  sendApprovalResponse?(
+    nodeId: string,
+    toolUseId: string,
+    approved: boolean,
+    modifiedArgs?: Record<string, unknown>
+  ): boolean;
 }

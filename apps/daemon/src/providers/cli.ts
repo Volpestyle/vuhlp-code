@@ -1,5 +1,9 @@
+import treeKill from "tree-kill";
 import { spawn } from "node:child_process";
 import { ProviderOutputEvent, ProviderTask, ConsoleStreamType } from "./types.js";
+
+/** Function to write messages to CLI stdin */
+export type StdinWriter = (message: string) => boolean;
 
 export interface CliSpawnOptions {
   command: string;
@@ -15,6 +19,10 @@ export interface CliSpawnOptions {
   maxBufferBytes?: number;
   /** Emit raw console chunks (for real-time terminal display). Default true. */
   emitConsoleChunks?: boolean;
+  /** Keep stdin open for bidirectional communication (INTERACTIVE mode). */
+  keepStdinOpen?: boolean;
+  /** Called when stdin is ready for writing. Use this to send approval responses. */
+  onStdinReady?: (write: StdinWriter) => void;
 }
 
 export interface CliRunResult {
@@ -48,23 +56,51 @@ export async function* runCliStreaming(
   let stderrBuf = "";
 
   const kill = () => {
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // ignore
+    if (child.pid) {
+      treeKill(child.pid, "SIGTERM", (err) => {
+        if (err) {
+          // Fallback to simple kill if tree-kill fails
+          try {
+            child.kill("SIGTERM");
+          } catch {
+            // ignore
+          }
+        }
+      });
+    } else {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
     }
   };
 
   const onAbort = () => kill();
   abortSignal.addEventListener("abort", onAbort);
 
+  // Handle stdin based on mode
   if (!usesPromptArg) {
     try {
       child.stdin.write(opts.prompt);
-      child.stdin.end();
+      if (!opts.keepStdinOpen) {
+        child.stdin.end();
+      }
     } catch {
       // ignore
     }
+  }
+
+  // Provide stdin writer for bidirectional communication (INTERACTIVE mode)
+  if (opts.keepStdinOpen && opts.onStdinReady) {
+    const stdinWriter: StdinWriter = (message: string) => {
+      try {
+        return child.stdin.write(message + "\n");
+      } catch {
+        return false;
+      }
+    };
+    opts.onStdinReady(stdinWriter);
   }
 
   const parseLine = (line: string) => {
@@ -141,7 +177,7 @@ export async function* runCliStreaming(
       doneCount++;
       // replace with a never-resolving iterator to keep race stable
       iters[idx] = {
-        next: async () => new Promise<any>(() => {}),
+        next: async () => new Promise<any>(() => { }),
       } as any;
     } else {
       yield res.value;
