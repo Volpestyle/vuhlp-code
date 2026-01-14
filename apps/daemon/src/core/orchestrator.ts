@@ -64,9 +64,15 @@ function parseGraphCommand(text: string): GraphCommand | null {
       text.match(/(\{[\s\S]*?"command"\s*:\s*"spawn_node"[\s\S]*?\})/);
 
     if (match) {
-      const json = JSON.parse(match[1]);
-      if (json.command === "spawn_node" && json.args) {
-        return json as GraphCommand;
+      console.log(`[NodeExecutor] Parsed graph command block found.`);
+      try {
+        const json = JSON.parse(match[1]);
+        if (json.command === "spawn_node" && json.args) {
+          console.log(`[NodeExecutor] Valid spawn_node command detected:`, json.args.label);
+          return json as GraphCommand;
+        }
+      } catch (e) {
+        console.error(`[NodeExecutor] Failed to parse graph command JSON:`, e);
       }
     }
   } catch (e) {
@@ -544,6 +550,7 @@ export class OrchestratorEngine {
       this.createEdge(runId, newNode.id, parentNodeId, "report", "reports-to");
 
       this.bus.emitNodeProgress(runId, parentNodeId, `[GRAPH] Spawned node '${label}' (${newNode.id})`);
+      console.log(`[Orchestrator] Successfully spawned node '${label}' (${newNode.id}) from parent ${parentNodeId}`);
       return `[SYSTEM] Graph Command Executed: Node '${label}' (${newNode.id}) created and connected.\n`;
     }
     return "";

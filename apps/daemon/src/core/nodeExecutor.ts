@@ -55,12 +55,14 @@ function parseGraphCommand(text: string): GraphCommand | null {
     // Helper to validate and return the command
     const validate = (json: any): GraphCommand | null => {
         if (json && typeof json === 'object' && json.command === "spawn_node" && json.args) {
+            console.log(`[NodeExecutor] Valid spawn_node command detected:`, json.args.label);
             return json as GraphCommand;
         }
         return null;
     };
 
     try {
+        console.log(`[NodeExecutor] Parsing graph command (text length: ${text.length})...`);
         // 1. Try parsing Markdown Code Blocks
         // Relaxed regex to allow optional language tag
         const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
@@ -118,7 +120,7 @@ function parseGraphCommand(text: string): GraphCommand | null {
             }
         }
     } catch (e) {
-        // safety net
+        console.error(`[NodeExecutor] Parse error:`, e);
     }
     return null;
 }
@@ -213,8 +215,18 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
             }
 
             // Prompt Construction logic
-            if (nodeId === run.rootOrchestratorNodeId && (!node.turnCount || node.turnCount === 0) && inputEnvelopes.length === 0) {
-                prompt = (run.prompt || "Ready for instructions.") + "\n" + contextBlock;
+            const initialInstructions = (node.input as any)?.initialInstructions as string | undefined;
+
+            if ((!node.turnCount || node.turnCount === 0) && inputEnvelopes.length === 0) {
+                // First turn / Boot checks
+                if (initialInstructions) {
+                    prompt = `### Role: ${node.role}\n\nTasks:\n${initialInstructions}\n\n` + contextBlock;
+                } else if (nodeId === run.rootOrchestratorNodeId) {
+                    prompt = (run.prompt || "Ready for instructions.") + "\n" + contextBlock;
+                } else {
+                    // Fallback for sub-agents without explicit instructions (shouldn't happen often if spawned correctly)
+                    prompt = `You have been spawned as ${node.role} (${node.label}).\nWaiting for specific instructions via Handoff.` + "\n" + contextBlock;
+                }
             } else if (inputEnvelopes.length > 0) {
                 // Build prompt from envelopes
                 prompt = "Incoming transmissions:\n\n";
@@ -406,7 +418,12 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
             await this.handleProviderEvent(ev, runId, node, provider);
 
             if (ev.type === "final") {
-                finalOutput = ev.output;
+                // Only use 'final' event output if we haven't already captured content from 'message.final'
+                // This prevents the CLI's cleanup/exit event (which might be an object) from overwriting 
+                // the actual agent response text we gathered earlier.
+                if (finalOutput === undefined) {
+                    finalOutput = ev.output;
+                }
             } else if (ev.type === "message.final") {
                 finalOutput = ev.content;
             }
@@ -512,6 +529,27 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
             case "tool.proposed": {
                 // Emit tool proposed event for UI visibility
                 this.bus.emitToolProposed(runId, node.id, ev.tool);
+
+                // --- SPECIAL HANDLING: Intercept spawn_node ---
+                // If the agent uses a native tool call for spawn_node, we intercept it here
+                // and execute it as a Graph Command immediately.
+                if (ev.tool.name === "spawn_node") {
+                    console.log(`[NodeExecutor] Intercepting native tool call: spawn_node`, ev.tool.args);
+                    const cmd: GraphCommand = {
+                        command: "spawn_node",
+                        args: ev.tool.args as any
+                    };
+                    const result = this.onGraphCommand(runId, node.id, cmd);
+
+                    // Respond to the tool immediately (simulated success)
+                    // We treat this as "auto-approved" because it's a system primitive
+                    this.bus.emitToolStarted(runId, node.id, ev.tool.id);
+                    this.bus.emitToolCompleted(runId, node.id, ev.tool.id, { result });
+
+                    // We do NOT want to request user approval for this specific tool if intercepted
+                    return;
+                }
+                // ----------------------------------------------
 
                 // Check if CLI permissions are enabled (not skipped)
                 const run = this.store.getRun(runId);

@@ -145,15 +145,14 @@ export class GraphScheduler {
             if (isInteractive) {
                 // In interactive mode, we ONLY proceed if we have pending messages OR if we have explicitly queued nodes 
                 // that might have been queued by a previous step (handoffs).
-                // But strictly speaking, if we want to "Wait for User", we might only want to run if messages exist?
-                // However, avoiding a deadlock is better. If there are ready nodes, we generally want to run them 
-                // UNLESS we want to force a pause. 
-                // For now, let's UNBLOCK if there are pending messages.
-                // If there are NO pending messages, we pause.
 
+                // If there are NO pending messages AND NO ready nodes, we pause.
                 if (pendingMessages.length === 0) {
-                    await new Promise(r => setTimeout(r, 500));
-                    continue;
+                    const queuedNodes = this.getReadyNodes(runId);
+                    if (queuedNodes.length === 0) {
+                        await new Promise(r => setTimeout(r, 500));
+                        continue;
+                    }
                 }
             }
 

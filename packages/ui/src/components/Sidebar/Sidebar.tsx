@@ -392,9 +392,7 @@ export function Sidebar({
                           className="vuhlp-sidebar__run-action vuhlp-sidebar__run-delete"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (confirm('Permanently delete this session? This cannot be undone.')) {
-                              onDeleteRun(run.id);
-                            }
+                            onDeleteRun(run.id);
                           }}
                           title="Delete permanently"
                         >
