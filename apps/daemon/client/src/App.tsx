@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, useEffect } from 'react';
 import { useDaemon } from './useDaemon';
 import { httpGet } from './api';
 import type {
@@ -7,6 +7,7 @@ import type {
   InteractionMode,
   NodeTrackedState,
   RunMode,
+  GlobalMode,
   VuhlpConfig,
   MainTab,
 } from '@vuhlp/ui';
@@ -64,20 +65,36 @@ function App() {
     createEdge,
     deleteEdge,
     createNode,
+    deleteNode,
+    updateNode,
     // Run mode methods
     setRunMode,
     getRunMode,
     getRunPhase,
+    // Global mode methods
+    setGlobalMode,
+    getGlobalMode,
+    // CLI permissions methods
+    getSkipCliPermissions,
+    setSkipCliPermissions,
     // Prompt queue methods (Section 3.4)
     getPrompts,
     sendPrompt,
     cancelPrompt,
     addUserPrompt,
     modifyPrompt,
+    stopNode,
+    fetchEvents,
   } = useDaemon();
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [showConfig, setShowConfig] = useState(false);
+
+  useEffect(() => {
+    if (activeRunId) {
+      fetchEvents(activeRunId);
+    }
+  }, [activeRunId, fetchEvents]);
 
   // File tabs state
   const [openTabs, setOpenTabs] = useState<MainTab[]>([{ type: 'graph' }]);
@@ -130,6 +147,16 @@ function App() {
     if (!activeRunId) return null;
     return getRunPhase(activeRunId);
   }, [activeRunId, getRunPhase]);
+
+  const activeGlobalMode = useMemo(() => {
+    if (!activeRunId) return 'PLANNING' as const;
+    return getGlobalMode(activeRunId);
+  }, [activeRunId, getGlobalMode]);
+
+  const activeSkipCliPermissions = useMemo(() => {
+    if (!activeRunId) return true; // Default to skip
+    return getSkipCliPermissions(activeRunId);
+  }, [activeRunId, getSkipCliPermissions]);
 
   // Prompt queue state (Section 3.4)
   const activePrompts = useMemo(() => {
@@ -587,6 +614,7 @@ function App() {
 
       <ResizableLayout
         className="vuhlp-layout-container"
+        maxInspectorWidth={4000}
         sidebar={
         <Sidebar
           runs={Object.values(runs)}
@@ -617,6 +645,7 @@ function App() {
               const id = await createRun(prompt, repoPath);
               setActiveRunId(id);
               setActiveNodeId(null);
+              return id;
           }}
           onFetchFs={handleFetchFs}
           onOpenFile={handleOpenFile}
@@ -642,14 +671,25 @@ function App() {
                 createEdge(activeRunId, sourceId, targetId);
               }
             }}
+            onEdgeDelete={(edgeId) => {
+              if (activeRunId) {
+                deleteEdge(activeRunId, edgeId);
+              }
+            }}
             onNodeCreate={(providerId, label) => {
                if (activeRunId) {
                  createNode(activeRunId, providerId, { label, control: 'MANUAL', role: 'implementer' });
                }
             }}
+            onNodeDelete={(nodeId) => {
+              if (activeRunId) {
+                deleteNode(activeRunId, nodeId);
+              }
+            }}
             onStop={() => activeRunId && stopRun(activeRunId)}
             onPause={() => activeRunId && pauseRun(activeRunId)}
             onResume={(feedback?: string) => activeRunId && resumeRun(activeRunId, feedback)}
+            onStopNode={(nodeId) => activeRunId && stopNode(activeRunId, nodeId)}
             interactionMode={activeInteractionMode}
             onInteractionModeChange={(mode: InteractionMode) => {
               if (activeRunId) setInteractionMode(activeRunId, mode);
@@ -658,8 +698,21 @@ function App() {
             onRunModeChange={(mode: RunMode) => {
               if (activeRunId) setRunMode(activeRunId, mode);
             }}
+            globalMode={activeGlobalMode}
+            onGlobalModeChange={(mode: GlobalMode) => {
+              if (activeRunId) setGlobalMode(activeRunId, mode);
+            }}
+            skipCliPermissions={activeSkipCliPermissions}
+            onSkipCliPermissionsChange={(skip: boolean) => {
+              if (activeRunId) setSkipCliPermissions(activeRunId, skip);
+            }}
             runPhase={activeRunPhase}
             getNodeTrackedState={getNodeTrackedState}
+            onNodeMessage={(nodeId, content) => {
+              if (activeRunId) {
+                sendChatMessage(activeRunId, content, { nodeId, interrupt: true });
+              }
+            }}
             openTabs={openTabs}
             activeTabIndex={activeTabIndex}
             onTabChange={setActiveTabIndex}
@@ -704,6 +757,15 @@ function App() {
                 deleteEdge(activeRunId, edgeId);
               }
             }}
+            onGroupChanges={() => {
+              if (activeRunId) {
+                const prompt = "Please review the pending file changes, group them by feature, and create git commits for each feature.";
+                sendChatMessage(activeRunId, prompt, { nodeId: activeNodeId || undefined, interrupt: true });
+              }
+            }}
+            providers={providers}
+            onUpdateNode={updateNode}
+            isGitRepo={activeRun?.repoFacts?.isGitRepo}
           />
         }
       />

@@ -28,7 +28,8 @@
     "@fortawesome/fontawesome-svg-core": "^6.5.1",
     "@fortawesome/free-solid-svg-icons": "^6.5.1",
     "@fortawesome/react-fontawesome": "^0.2.0",
-    "cytoscape": "^3.28.1"
+    "cytoscape": "^3.28.1",
+    "react-markdown": "^10.1.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",
