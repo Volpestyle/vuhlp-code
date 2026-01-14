@@ -4,10 +4,13 @@ import path from "node:path";
 export interface VuhlpConfig {
   server?: { port?: number };
   dataDir?: string;
+  defaultProvider?: string;
   providers?: Record<string, { kind: string } & Record<string, unknown>>;
   roles?: Record<string, string>;
   scheduler?: { maxConcurrency?: number };
-  orchestration?: { maxIterations?: number; maxTurnsPerNode?: number };
+  orchestration?: { maxIterations?: number; maxTurnsPerNode?: number; defaultRunMode?: "AUTO" | "INTERACTIVE" };
+  planning?: { docsDirectory?: string };
+  node_defaults?: { defaultMode?: "auto" | "manual"; maxTurnsPerLoop?: number };
   workspace?: { mode?: "shared" | "worktree" | "copy"; rootDir?: string; cleanupOnDone?: boolean };
   verification?: { commands?: string[] };
 }
@@ -36,6 +39,7 @@ export function loadConfig(): VuhlpConfig {
   cfg.server = cfg.server ?? {};
   cfg.server.port = cfg.server.port ?? 4317;
   cfg.dataDir = cfg.dataDir ?? ".vuhlp";
+  cfg.defaultProvider = cfg.defaultProvider ?? "mock";
   cfg.providers = cfg.providers ?? { mock: { kind: "mock" } };
   cfg.roles = cfg.roles ?? {
     investigator: "mock",
@@ -47,6 +51,15 @@ export function loadConfig(): VuhlpConfig {
   cfg.orchestration = cfg.orchestration ?? { maxIterations: 3, maxTurnsPerNode: 2 };
   cfg.orchestration.maxIterations = cfg.orchestration.maxIterations ?? 3;
   cfg.orchestration.maxTurnsPerNode = cfg.orchestration.maxTurnsPerNode ?? 2;
+  cfg.orchestration.defaultRunMode = cfg.orchestration.defaultRunMode ?? "INTERACTIVE";
+
+  cfg.planning = cfg.planning ?? {};
+  cfg.planning.docsDirectory = cfg.planning.docsDirectory ?? "docs";
+
+  cfg.node_defaults = cfg.node_defaults ?? {};
+  cfg.node_defaults.defaultMode = cfg.node_defaults.defaultMode ?? "auto";
+  cfg.node_defaults.maxTurnsPerLoop = cfg.node_defaults.maxTurnsPerLoop ?? 10;
+
   cfg.workspace = cfg.workspace ?? { mode: "shared", rootDir: ".vuhlp/workspaces", cleanupOnDone: false };
   cfg.workspace.mode = cfg.workspace.mode ?? "shared";
   cfg.workspace.rootDir = cfg.workspace.rootDir ?? ".vuhlp/workspaces";
@@ -71,9 +84,6 @@ export function saveConfig(updates: Partial<VuhlpConfig>): void {
     }
   }
 
-  // Deep merge would be better, but top-level merge is a start. 
-  // Actually, let's do a simple merge for the known nested objects to avoid wiping others.
-  
   const merge = (target: any, source: any) => {
     for (const key of Object.keys(source)) {
       if (source[key] instanceof Object && !Array.isArray(source[key]) && target[key]) {
@@ -84,15 +94,7 @@ export function saveConfig(updates: Partial<VuhlpConfig>): void {
     return target;
   };
 
-  // We want to merge updates INTO currentFile.
-  // Simple Object.assign for top level sections is safer for now given the structure.
-  // e.g. updates.roles should replace currentFile.roles? Or merge?
-  // Usually config UIs replace the whole section.
-  
-  // Let's assume updates contains the full sections that were edited.
   const next = { ...currentFile, ...updates };
-
-  // Special handling for nested partials if needed, but the UI will likely send full objects for sections.
 
   fs.writeFileSync(configPath, JSON.stringify(next, null, 2), "utf-8");
 }

@@ -43,7 +43,7 @@ export type RunMode = "AUTO" | "INTERACTIVE";
  */
 export type NodeControl = "AUTO" | "MANUAL";
 
-export type NodeType = "orchestrator" | "task" | "verification" | "merge";
+export type NodeType = "orchestrator" | "task" | "verification" | "merge" | "join_gate" | "router";
 
 /**
  * Node execution status.
@@ -101,6 +101,20 @@ export type DocAgentRole =
   | "doc-reviewer"
   | "doc-merger";
 
+/**
+ * Options for manual turn execution.
+ */
+export interface ManualTurnOptions {
+  /** Optional context to attach (artifacts, files, summaries). */
+  attachContext?: string[];
+  /** Optional JSON schema for structured output. */
+  expectedSchema?: string;
+  /** Tool policy override for this turn only. */
+  turnPolicy?: TurnPolicy;
+  /** Max turns to run (usually 1 for manual). */
+  maxTurns?: number;
+}
+
 // Interaction mode for chat feature
 export type InteractionMode = "autonomous" | "interactive";
 
@@ -109,7 +123,7 @@ export interface ChatMessageRecord {
   id: string;
   runId: string;
   nodeId?: string; // undefined = run-level message
-  role: "user" | "system";
+  role: "user" | "system" | "assistant";
   content: string;
   createdAt: string;
   processed: boolean; // Has this message been sent to the agent?
@@ -144,8 +158,15 @@ export interface RunPolicy {
   allowedTools?: string[];
   /** Auto-pause triggers. */
   autoPauseOn?: AutoPausePolicy;
-  /** Default approval mode for tools. */
+  /** Default approval mode for tools (vuhlp's approval queue). */
   approvalMode?: "always" | "high_risk_only" | "never";
+  /**
+   * Skip CLI's built-in permission system.
+   * When true: CLI runs tools immediately (--dangerously-skip-permissions)
+   * When false: CLI waits for permission, vuhlp forwards approvals via stdin
+   * Default: true (skip permissions)
+   */
+  skipCliPermissions?: boolean;
 }
 
 /**
@@ -203,6 +224,9 @@ export interface RunRecord {
   docsInventory?: DocsInventory;
   /** Repo facts detected during INVESTIGATE phase. */
   repoFacts?: RepoFacts;
+
+  /** Chat messages history. */
+  chatMessages: ChatMessageRecord[];
 
   /** Whether this run is archived (soft-deleted). */
   archived?: boolean;
@@ -290,6 +314,7 @@ export interface RepoFacts {
   hasTests: boolean;
   hasDocs: boolean;
   isEmptyRepo: boolean;
+  isGitRepo: boolean;
   hasOnlyDocs?: boolean;
   hasCode?: boolean;
   gitBranch?: string;
@@ -300,7 +325,21 @@ export interface NodeRecord {
   id: string;
   runId: string;
   parentNodeId?: string; // for nested orchestrators
+  taskId?: string; // Link to Task DAG step ID
   type: NodeType;
+
+  // JoinGate configuration
+  joinPolicy?: {
+    type: "all" | "any" | "wait_for";
+    requiredCount?: number; // for quorum/wait_for
+  };
+
+  // Router configuration
+  routerRules?: Array<{
+    targetNodeId: string;
+    condition: "always" | "on_success" | "on_failure" | "on_artifact";
+    conditionArg?: string; // e.g. artifact kind
+  }>;
 
   label: string;
   role?: RoleId;
@@ -333,6 +372,7 @@ export interface NodeRecord {
   summary?: string;
   triggerMode?: TriggerMode;
   stallCount?: number;
+  lastFailureSignature?: string;
 
   workspacePath?: string;
   error?: {
@@ -383,8 +423,10 @@ export type VuhlpEventType =
   | "node.progress"
   | "node.completed"
   | "node.failed"
+  | "node.deleted"
   | "node.control.changed"
   | "edge.created"
+  | "edge.deleted"
   | "artifact.created"
   | "verification.completed"
   // Message events (custom interface mode)
@@ -449,9 +491,19 @@ export interface NodeEvent extends VuhlpEventBase {
   raw?: unknown;
 }
 
+export interface NodeDeletedEvent extends VuhlpEventBase {
+  type: "node.deleted";
+  nodeId: string;
+}
+
 export interface EdgeEvent extends VuhlpEventBase {
   type: "edge.created";
   edge: EdgeRecord;
+}
+
+export interface EdgeDeletedEvent extends VuhlpEventBase {
+  type: "edge.deleted";
+  edgeId: string;
 }
 
 export interface ArtifactEvent extends VuhlpEventBase {
@@ -715,7 +767,9 @@ export interface PromptCancelledEvent extends VuhlpEventBase {
 export type VuhlpEvent =
   | RunEvent
   | NodeEvent
+  | NodeDeletedEvent
   | EdgeEvent
+  | EdgeDeletedEvent
   | ArtifactEvent
   | VerificationCompletedEvent
   | MessageUserEvent

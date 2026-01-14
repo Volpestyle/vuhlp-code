@@ -8,6 +8,7 @@ import {
   NodeRecord,
   EdgeRecord,
   RunMode,
+  GlobalMode,
   RunPolicy,
   RunPhase,
 } from "./types.js";
@@ -80,6 +81,8 @@ export class RunStore {
     config: Record<string, unknown>;
     /** Initial run mode. Defaults to AUTO. */
     mode?: RunMode;
+    /** Initial global mode. Defaults to PLANNING. */
+    globalMode?: GlobalMode;
     /** Run-level policy configuration. */
     policy?: RunPolicy;
   }): RunRecord {
@@ -99,6 +102,7 @@ export class RunStore {
       status: "queued",
       phase: "BOOT",
       mode: params.mode ?? "AUTO",
+      globalMode: params.globalMode ?? "PLANNING",
       createdAt,
       updatedAt: createdAt,
       iterations: 0,
@@ -109,6 +113,7 @@ export class RunStore {
       nodes: {},
       edges: {},
       artifacts: {},
+      chatMessages: [],
     };
 
     // Create root orchestrator node upfront (as state, events emitted by Orchestrator).
@@ -119,6 +124,11 @@ export class RunStore {
       label: "Root Orchestrator",
       status: "queued",
       createdAt,
+      // Fix visual issue: ensure provider ID is set so the UI shows the logo.
+      // Default to the 'implementer' role's provider since Root acts as a generalist.
+      providerId: (params.config.roles as Record<string, string>)?.orchestrator ??
+        (params.config.roles as Record<string, string>)?.implementer ??
+        "mock",
     };
     run.nodes[rootNode.id] = rootNode;
 
@@ -308,6 +318,44 @@ export class RunStore {
     const run = this.getRun(runId);
     if (!run) return;
     run.edges[edge.id] = edge;
+    this.persistRun(run);
+  }
+
+  removeEdge(runId: string, edgeId: string): EdgeRecord | null {
+    const run = this.getRun(runId);
+    if (!run) return null;
+    const edge = run.edges[edgeId];
+    if (!edge) return null;
+    delete run.edges[edgeId];
+    this.persistRun(run);
+    return edge;
+  }
+
+  updateNode(runId: string, nodeId: string, patch: Partial<NodeRecord>): NodeRecord | null {
+    const run = this.getRun(runId);
+    if (!run) return null;
+    const node = run.nodes[nodeId];
+    if (!node) return null;
+
+    Object.assign(node, patch);
+    run.updatedAt = nowIso();
+
+    this.persistRun(run);
+    return node;
+  }
+
+  addChatMessage(runId: string, message: import("./types.js").ChatMessageRecord): void {
+    const run = this.getRun(runId);
+    if (!run) return;
+
+    // Initialize if missing (e.g. migration)
+    if (!run.chatMessages) run.chatMessages = [];
+
+    run.chatMessages.push(message);
+    run.updatedAt = nowIso();
+
+    // We don't want to rewrite the whole run file for every message if we can avoid it,
+    // but for now, safety first.
     this.persistRun(run);
   }
 }

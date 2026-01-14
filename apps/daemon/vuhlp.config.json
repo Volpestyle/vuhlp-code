@@ -19,8 +19,7 @@
         "-p",
         "{prompt}",
         "--output-format",
-        "stream-json",
-        "--dangerously-skip-permissions"
+        "stream-json"
       ]
     },
     "gemini": {

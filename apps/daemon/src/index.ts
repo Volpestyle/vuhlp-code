@@ -1,8 +1,9 @@
+import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
-import express from "express";
+import express, { type Response } from "express";
 import { WebSocketServer, WebSocket } from "ws";
 
 import { loadConfig, saveConfig } from "./config.js";
@@ -16,7 +17,7 @@ import { SessionRegistry } from "./core/sessionRegistry.js";
 import { ChatManager } from "./core/chatManager.js";
 import { PromptQueue } from "./core/promptQueue.js";
 import { nowIso } from "./core/time.js";
-import { ApprovalStatus, InteractionMode, RunMode, NodeControl, RoleId } from "./core/types.js";
+import { ApprovalStatus, InteractionMode, RunMode, GlobalMode, NodeControl, RoleId } from "./core/types.js";
 
 type WsClientState = {
   runIds: Set<string>;
@@ -30,7 +31,7 @@ const workspace = new WorkspaceManager({
   mode: cfg.workspace!.mode ?? "shared",
   rootDir: cfg.workspace!.rootDir ?? ".vuhlp/workspaces",
 });
-const chatManager = new ChatManager(bus);
+const chatManager = new ChatManager(bus, store);
 const promptQueue = new PromptQueue(bus);
 
 // Approval queue for tool execution approvals
@@ -59,6 +60,7 @@ const orchestrator = new OrchestratorEngine({
       maxTurnsPerNode: cfg.orchestration!.maxTurnsPerNode ?? 2,
     },
     verification: { commands: cfg.verification!.commands ?? [] },
+    planning: { docsDirectory: cfg.planning!.docsDirectory ?? "docs" },
     workspace: { cleanupOnDone: cfg.workspace!.cleanupOnDone ?? false },
   },
 });
@@ -122,7 +124,8 @@ app.get("/api/runs", (req, res) => {
 app.post("/api/runs", async (req, res) => {
   const prompt = String(req.body?.prompt ?? "").trim();
   const repoPath = String(req.body?.repoPath ?? process.cwd()).trim();
-  const mode = (req.body?.mode as RunMode) ?? "AUTO";
+  const mode = (req.body?.mode as RunMode) ?? cfg.orchestration!.defaultRunMode ?? "AUTO";
+  const globalMode = (req.body?.globalMode as GlobalMode) ?? "PLANNING";
   const policy = req.body?.policy;
 
   if (!prompt) {
@@ -142,6 +145,7 @@ app.post("/api/runs", async (req, res) => {
     maxIterations: cfg.orchestration!.maxIterations ?? 3,
     config: cfg as Record<string, unknown>,
     mode,
+    globalMode,
     policy,
   });
 
@@ -163,9 +167,90 @@ app.get("/api/runs/:runId", (req, res) => {
   res.json({ run });
 });
 
+// Create a new node
+app.post("/api/runs/:runId/nodes", (req, res) => {
+  const { runId } = req.params;
+  const { providerId, label, role, parentNodeId, input } = req.body;
+
+  try {
+    const node = orchestrator.spawnNode(runId, {
+      providerId,
+      label,
+      role: role as RoleId,
+      parentNodeId,
+      input,
+    });
+    res.json({ ok: true, node });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Update a node (e.g. change provider)
+app.patch("/api/runs/:runId/nodes/:nodeId", (req, res) => {
+  const { runId, nodeId } = req.params;
+  const updates = req.body; // e.g. { providerId: "claude" }
+
+  const run = store.getRun(runId);
+  if (!run) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+
+  // Validate updates (basic security: unlikely to break things if we allow most fields)
+  // But let's be explicitly permissive for now.
+  const updatedNode = store.updateNode(runId, nodeId, updates);
+  if (!updatedNode) {
+    res.status(404).json({ error: "node not found" });
+    return;
+  }
+
+  bus.emitNodePatch(runId, nodeId, updates, "node.progress");
+
+  res.json({ ok: true, node: updatedNode });
+});
+
 app.post("/api/runs/:runId/stop", (req, res) => {
   const ok = orchestrator.stopRun(req.params.runId);
   res.json({ ok });
+});
+
+app.post("/api/runs/:runId/nodes/:nodeId/stop", (req, res) => {
+  const ok = orchestrator.stopNode(req.params.runId, req.params.nodeId);
+  res.json({ ok });
+});
+
+app.post("/api/runs/:runId/nodes/:nodeId/restart", (req, res) => {
+  const ok = orchestrator.restartNode(req.params.runId, req.params.nodeId);
+  res.json({ ok });
+});
+
+app.delete("/api/runs/:runId/nodes/:nodeId", (req, res) => {
+  const { runId, nodeId } = req.params;
+
+  const run = store.getRun(runId);
+  if (!run) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+
+  const node = run.nodes[nodeId];
+  if (!node) {
+    res.status(404).json({ error: "node not found" });
+    return;
+  }
+
+  if (run.rootOrchestratorNodeId === nodeId) {
+    res.status(400).json({ error: "cannot delete root orchestrator node" });
+    return;
+  }
+
+  if (node.status === "running") {
+    orchestrator.stopNode(runId, nodeId);
+  }
+
+  bus.emitNodeDeleted(runId, nodeId);
+  res.json({ ok: true });
 });
 
 // Archive a run (soft-delete)
@@ -283,9 +368,17 @@ app.get("/api/runs/:runId/artifacts/:artifactId/download", (req, res) => {
   res.sendFile(art.path);
 });
 
+// Helper to expand tilde in paths
+function expandPath(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
 app.get("/api/system/fs", async (req, res) => {
   try {
-    const currentPath = path.resolve(String(req.query.path || process.cwd()));
+    const rawPath = String(req.query.path || process.cwd());
+    const currentPath = path.resolve(expandPath(rawPath));
     const includeFiles = req.query.includeFiles === "true";
     const entries = await fs.promises.readdir(currentPath, { withFileTypes: true });
 
@@ -322,7 +415,7 @@ app.get("/api/system/fs", async (req, res) => {
 
 app.get("/api/system/fs/read", async (req, res) => {
   try {
-    const filePath = path.resolve(String(req.query.path || ""));
+    const filePath = path.resolve(expandPath(String(req.query.path || "")));
     if (!filePath) {
       res.status(400).json({ error: "path is required" });
       return;
@@ -363,83 +456,140 @@ app.get("/api/system/fs/read", async (req, res) => {
 
 // --- Approval Queue API ---
 
+const safeStringify = (value: unknown): string => {
+  const seen = new WeakSet();
+  return JSON.stringify(value, (_key, val) => {
+    if (typeof val === "object" && val !== null) {
+      if (seen.has(val)) return "[Circular]";
+      seen.add(val);
+    }
+    if (typeof val === "bigint") return val.toString();
+    return val;
+  });
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  typeof value === "object" && value !== null && !Array.isArray(value)
+);
+
+const isResolvableApprovalStatus = (value: unknown): value is ApprovalStatus => (
+  value === "approved" || value === "denied" || value === "modified"
+);
+
+const respondApprovalError = (res: Response, context: string, err: unknown): void => {
+  const error = err instanceof Error ? err : new Error("Unknown approvals error");
+  console.error(`[approvals] ${context}`, error);
+  res.status(500).json({ error: error.message });
+};
+
 app.get("/api/approvals", (_req, res) => {
-  const pending = approvalQueue.getPending();
-  res.json({ approvals: pending });
+  try {
+    const pending = approvalQueue.getPending();
+    res.setHeader("Content-Type", "application/json");
+    res.send(safeStringify({ approvals: pending }));
+  } catch (err) {
+    respondApprovalError(res, "get pending", err);
+  }
 });
 
 app.get("/api/approvals/all", (_req, res) => {
-  const all = approvalQueue.getAll();
-  res.json({ approvals: all });
+  try {
+    const all = approvalQueue.getAll();
+    res.setHeader("Content-Type", "application/json");
+    res.send(safeStringify({ approvals: all }));
+  } catch (err) {
+    respondApprovalError(res, "get all", err);
+  }
 });
 
 app.get("/api/approvals/:approvalId", (req, res) => {
-  const approval = approvalQueue.get(req.params.approvalId);
-  if (!approval) {
-    res.status(404).json({ error: "approval not found" });
-    return;
+  try {
+    const approval = approvalQueue.get(req.params.approvalId);
+    if (!approval) {
+      res.status(404).json({ error: "approval not found" });
+      return;
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.send(safeStringify({ approval }));
+  } catch (err) {
+    respondApprovalError(res, "get by id", err);
   }
-  res.json({ approval });
 });
 
 app.post("/api/approvals/:approvalId/approve", (req, res) => {
-  const feedback = req.body?.feedback ? String(req.body.feedback) : undefined;
-  const ok = approvalQueue.approve(req.params.approvalId, feedback);
-  if (!ok) {
-    res.status(404).json({ error: "approval not found or already resolved" });
-    return;
+  try {
+    const feedback = req.body?.feedback ? String(req.body.feedback) : undefined;
+    const ok = approvalQueue.approve(req.params.approvalId, feedback);
+    if (!ok) {
+      res.status(404).json({ error: "approval not found or already resolved" });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    respondApprovalError(res, "approve", err);
   }
-  res.json({ ok: true });
 });
 
 app.post("/api/approvals/:approvalId/deny", (req, res) => {
-  const feedback = req.body?.feedback ? String(req.body.feedback) : undefined;
-  const ok = approvalQueue.deny(req.params.approvalId, feedback);
-  if (!ok) {
-    res.status(404).json({ error: "approval not found or already resolved" });
-    return;
+  try {
+    const feedback = req.body?.feedback ? String(req.body.feedback) : undefined;
+    const ok = approvalQueue.deny(req.params.approvalId, feedback);
+    if (!ok) {
+      res.status(404).json({ error: "approval not found or already resolved" });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    respondApprovalError(res, "deny", err);
   }
-  res.json({ ok: true });
 });
 
 app.post("/api/approvals/:approvalId/modify", (req, res) => {
-  const modifiedArgs = req.body?.modifiedArgs as Record<string, unknown> | undefined;
-  const feedback = req.body?.feedback ? String(req.body.feedback) : undefined;
+  try {
+    const modifiedArgs = isRecord(req.body?.modifiedArgs) ? req.body.modifiedArgs : undefined;
+    const feedback = req.body?.feedback ? String(req.body.feedback) : undefined;
 
-  if (!modifiedArgs || typeof modifiedArgs !== "object") {
-    res.status(400).json({ error: "modifiedArgs is required" });
-    return;
-  }
+    if (!modifiedArgs) {
+      res.status(400).json({ error: "modifiedArgs is required" });
+      return;
+    }
 
-  const ok = approvalQueue.modify(req.params.approvalId, modifiedArgs, feedback);
-  if (!ok) {
-    res.status(404).json({ error: "approval not found or already resolved" });
-    return;
+    const ok = approvalQueue.modify(req.params.approvalId, modifiedArgs, feedback);
+    if (!ok) {
+      res.status(404).json({ error: "approval not found or already resolved" });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    respondApprovalError(res, "modify", err);
   }
-  res.json({ ok: true });
 });
 
 app.post("/api/approvals/:approvalId/resolve", (req, res) => {
-  const status = req.body?.status as ApprovalStatus;
-  const feedback = req.body?.feedback ? String(req.body.feedback) : undefined;
-  const modifiedArgs = req.body?.modifiedArgs as Record<string, unknown> | undefined;
+  try {
+    const status = req.body?.status;
+    const feedback = req.body?.feedback ? String(req.body.feedback) : undefined;
+    const modifiedArgs = isRecord(req.body?.modifiedArgs) ? req.body.modifiedArgs : undefined;
 
-  if (!status || !["approved", "denied", "modified"].includes(status)) {
-    res.status(400).json({ error: "valid status is required (approved, denied, modified)" });
-    return;
+    if (!isResolvableApprovalStatus(status)) {
+      res.status(400).json({ error: "valid status is required (approved, denied, modified)" });
+      return;
+    }
+
+    const ok = approvalQueue.resolve(req.params.approvalId, {
+      status,
+      feedback,
+      modifiedArgs,
+    });
+
+    if (!ok) {
+      res.status(404).json({ error: "approval not found or already resolved" });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    respondApprovalError(res, "resolve", err);
   }
-
-  const ok = approvalQueue.resolve(req.params.approvalId, {
-    status,
-    feedback,
-    modifiedArgs,
-  });
-
-  if (!ok) {
-    res.status(404).json({ error: "approval not found or already resolved" });
-    return;
-  }
-  res.json({ ok: true });
 });
 
 // --- Session Registry API ---
@@ -488,12 +638,41 @@ app.post("/api/runs/:runId/chat", (req, res) => {
     // Interrupt current execution and inject message
     const ok = orchestrator.interruptWithMessage(runId, content, nodeId);
     if (!ok) {
-      // Run might not be active, queue instead
+      // Run might not be active, queue instead and restart
       chatManager.queueMessage(runId, content, nodeId);
+
+      // If run isn't active, we need to restart it to process the message
+      if (!orchestrator.isRunning(runId)) {
+        // Requeue the target node (or root) so it can process the message
+        const targetNodeId = nodeId ?? run.rootOrchestratorNodeId;
+        if (targetNodeId && run.nodes[targetNodeId]) {
+          // Only requeue if node is in a terminal state
+          const node = run.nodes[targetNodeId];
+          if (node.status === "completed" || node.status === "failed" || node.status === "skipped") {
+            store.updateNode(runId, targetNodeId, { status: "queued" });
+            bus.emitNodePatch(runId, targetNodeId, { status: "queued" }, "node.progress");
+          }
+        }
+        // Restart the scheduler loop
+        void orchestrator.startRun(runId);
+      }
     }
   } else {
     // Queue for next iteration
     chatManager.queueMessage(runId, content, nodeId);
+
+    // If run isn't active, restart it
+    if (!orchestrator.isRunning(runId)) {
+      const targetNodeId = nodeId ?? run.rootOrchestratorNodeId;
+      if (targetNodeId && run.nodes[targetNodeId]) {
+        const node = run.nodes[targetNodeId];
+        if (node.status === "completed" || node.status === "failed" || node.status === "skipped") {
+          store.updateNode(runId, targetNodeId, { status: "queued" });
+          bus.emitNodePatch(runId, targetNodeId, { status: "queued" }, "node.progress");
+        }
+      }
+      void orchestrator.startRun(runId);
+    }
   }
 
   res.json({ ok: true });
@@ -520,9 +699,29 @@ app.post("/api/runs/:runId/nodes/:nodeId/chat", (req, res) => {
     const ok = orchestrator.interruptWithMessage(runId, content, nodeId);
     if (!ok) {
       chatManager.queueMessage(runId, content, nodeId);
+
+      // If run isn't active, restart it
+      if (!orchestrator.isRunning(runId)) {
+        const node = run.nodes[nodeId];
+        if (node && (node.status === "completed" || node.status === "failed" || node.status === "skipped")) {
+          store.updateNode(runId, nodeId, { status: "queued" });
+          bus.emitNodePatch(runId, nodeId, { status: "queued" }, "node.progress");
+        }
+        void orchestrator.startRun(runId);
+      }
     }
   } else {
     chatManager.queueMessage(runId, content, nodeId);
+
+    // If run isn't active, restart it
+    if (!orchestrator.isRunning(runId)) {
+      const node = run.nodes[nodeId];
+      if (node && (node.status === "completed" || node.status === "failed" || node.status === "skipped")) {
+        store.updateNode(runId, nodeId, { status: "queued" });
+        bus.emitNodePatch(runId, nodeId, { status: "queued" }, "node.progress");
+      }
+      void orchestrator.startRun(runId);
+    }
   }
 
   res.json({ ok: true });
@@ -564,7 +763,6 @@ app.post("/api/runs/:runId/mode", (req, res) => {
   res.json({ ok: true, mode });
 });
 
-// Get interaction mode for a run
 app.get("/api/runs/:runId/mode", (req, res) => {
   const { runId } = req.params;
   const nodeId = req.query.nodeId ? String(req.query.nodeId) : undefined;
@@ -577,6 +775,89 @@ app.get("/api/runs/:runId/mode", (req, res) => {
 
   const mode = orchestrator.getInteractionMode(runId, nodeId);
   res.json({ mode });
+});
+
+// Set global mode for a run (PLANNING vs IMPLEMENTATION)
+app.post("/api/runs/:runId/global_mode", (req, res) => {
+  const { runId } = req.params;
+  const mode = req.body?.mode as GlobalMode;
+
+  if (!mode || !["PLANNING", "IMPLEMENTATION"].includes(mode)) {
+    res.status(400).json({ error: "valid global mode is required (PLANNING, IMPLEMENTATION)" });
+    return;
+  }
+
+  const run = store.getRun(runId);
+  if (!run) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+
+  orchestrator.setGlobalMode(runId, mode);
+  res.json({ ok: true, mode });
+});
+
+// Set CLI permissions policy for a run
+app.post("/api/runs/:runId/policy/skip_cli_permissions", (req, res) => {
+  const { runId } = req.params;
+  const skip = req.body?.skip;
+
+  if (typeof skip !== "boolean") {
+    res.status(400).json({ error: "skip must be a boolean" });
+    return;
+  }
+
+  const run = store.getRun(runId);
+  if (!run) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+
+  // Update the run's policy
+  run.policy = {
+    ...run.policy,
+    skipCliPermissions: skip,
+  };
+  store.persistRun(run);
+
+  res.json({ ok: true, skipCliPermissions: skip });
+});
+
+// Initialize git repo for a run
+app.post("/api/runs/:runId/git/init", (req, res) => {
+  const { runId } = req.params;
+
+  const run = store.getRun(runId);
+  if (!run) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+
+  // Use workspace manager to init
+  const result = workspace.initializeGitRepo(run.repoPath);
+  if (!result.ok) {
+    res.status(500).json({ error: result.error });
+    return;
+  }
+
+  // Force re-detection of repo facts to update state
+  // We can't easily call private method on orchestrator, so we manually update store for now
+  // OR we can add a public method to orchestrator to refresh facts.
+  // Actually, orchestrator exposes startRun but not refresh.
+  // For v0, let's just update the local run object if we can, or rely on orchestrator to pick it up on next boot.
+  // Better: We should probably trigger a re-scan.
+  // But since we don't have a public re-scan, let's just manually update the facts in store if possible?
+  // No, `detectRepoFacts` is private.
+  // Let's assume the UI will verify by another means or we accept that it might take a restart/reload to see "isGitRepo: true" in facts?
+  // Wait, if we don't update facts, the UI button won't disappear.
+  // Let's manually flip the bit in the store for immediate feedback.
+  if (run.repoFacts) {
+    run.repoFacts.isGitRepo = true;
+    store.persistRun(run);
+    bus.emitRunPatch(runId, { id: runId, repoFacts: run.repoFacts }, "run.updated");
+  }
+
+  res.json({ ok: true });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -618,461 +899,245 @@ app.get("/api/runs/:runId/prompts/:promptId", (req, res) => {
   res.json({ prompt });
 });
 
-// Add a user prompt to the queue
-app.post("/api/runs/:runId/prompts", (req, res) => {
+// Get run events (history)
+app.get("/api/runs/:runId/events", (req, res) => {
   const { runId } = req.params;
-  const content = String(req.body?.content ?? "").trim();
-  const targetNodeId = req.body?.targetNodeId ? String(req.body.targetNodeId) : undefined;
+  const eventsPath = store.eventsFilePath(runId);
 
-  if (!content) {
-    res.status(400).json({ error: "content is required" });
-    return;
-  }
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  const prompt = promptQueue.addUserPrompt({
-    runId,
-    targetNodeId,
-    content,
-  });
-
-  res.json({ prompt });
-});
-
-// Send a pending prompt
-app.post("/api/runs/:runId/prompts/:promptId/send", async (req, res) => {
-  const { runId, promptId } = req.params;
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  const prompt = promptQueue.getPrompt(promptId);
-  if (!prompt || prompt.runId !== runId) {
-    res.status(404).json({ error: "prompt not found" });
-    return;
-  }
-
-  if (prompt.status !== "pending") {
-    res.status(400).json({ error: "prompt is not pending" });
-    return;
-  }
-
-  // Mark as sent
-  const ok = promptQueue.markSent(promptId);
-  if (!ok) {
-    res.status(400).json({ error: "failed to mark prompt as sent" });
-    return;
-  }
-
-  // Actually send the prompt to the target node
-  if (prompt.targetNodeId) {
-    try {
-      const result = await orchestrator.manualTurn(runId, prompt.targetNodeId, prompt.content);
-      res.json({ ok: true, result });
-    } catch (e: unknown) {
-      const err = e as Error;
-      res.status(500).json({ ok: false, error: err.message });
-    }
-  } else {
-    // Queue as a chat message if no target node
-    chatManager.queueMessage(runId, prompt.content);
-    res.json({ ok: true, queued: true });
-  }
-});
-
-// Cancel a pending prompt
-app.post("/api/runs/:runId/prompts/:promptId/cancel", (req, res) => {
-  const { runId, promptId } = req.params;
-  const reason = req.body?.reason ? String(req.body.reason) : undefined;
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  const prompt = promptQueue.getPrompt(promptId);
-  if (!prompt || prompt.runId !== runId) {
-    res.status(404).json({ error: "prompt not found" });
-    return;
-  }
-
-  const ok = promptQueue.cancel(promptId, reason);
-  if (!ok) {
-    res.status(400).json({ error: "prompt not pending or already cancelled" });
-    return;
-  }
-
-  res.json({ ok: true });
-});
-
-// Modify a pending prompt's content
-app.patch("/api/runs/:runId/prompts/:promptId", (req, res) => {
-  const { runId, promptId } = req.params;
-  const content = req.body?.content ? String(req.body.content) : undefined;
-
-  if (!content) {
-    res.status(400).json({ error: "content is required" });
-    return;
-  }
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  const prompt = promptQueue.getPrompt(promptId);
-  if (!prompt || prompt.runId !== runId) {
-    res.status(404).json({ error: "prompt not found" });
-    return;
-  }
-
-  const ok = promptQueue.modifyContent(promptId, content);
-  if (!ok) {
-    res.status(400).json({ error: "prompt not pending or modification failed" });
-    return;
-  }
-
-  res.json({ ok: true, prompt: promptQueue.getPrompt(promptId) });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// RUN MODE CONTROL API (AUTO/INTERACTIVE orchestration)
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Set run mode (AUTO or INTERACTIVE)
-app.post("/api/runs/:runId/run-mode", (req, res) => {
-  const { runId } = req.params;
-  const mode = req.body?.mode as RunMode;
-
-  if (!mode || !["AUTO", "INTERACTIVE"].includes(mode)) {
-    res.status(400).json({ error: "valid mode is required (AUTO, INTERACTIVE)" });
-    return;
-  }
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  const ok = orchestrator.setRunMode(runId, mode);
-  res.json({ ok, mode });
-});
-
-// Get run mode
-app.get("/api/runs/:runId/run-mode", (req, res) => {
-  const { runId } = req.params;
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  const mode = orchestrator.getRunMode(runId);
-  res.json({ mode });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// NODE CONTROL API
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Set node control (AUTO or MANUAL)
-app.post("/api/runs/:runId/nodes/:nodeId/control", (req, res) => {
-  const { runId, nodeId } = req.params;
-  const control = req.body?.control as NodeControl;
-
-  if (!control || !["AUTO", "MANUAL"].includes(control)) {
-    res.status(400).json({ error: "valid control is required (AUTO, MANUAL)" });
-    return;
-  }
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  if (!run.nodes[nodeId]) {
-    res.status(404).json({ error: "node not found" });
-    return;
-  }
-
-  const ok = orchestrator.setNodeControl(runId, nodeId, control);
-  res.json({ ok, control });
-});
-
-// Get node control
-app.get("/api/runs/:runId/nodes/:nodeId/control", (req, res) => {
-  const { runId, nodeId } = req.params;
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  if (!run.nodes[nodeId]) {
-    res.status(404).json({ error: "node not found" });
-    return;
-  }
-
-  const control = orchestrator.getNodeControl(runId, nodeId);
-  res.json({ control });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// MANUAL TURN CONTROL API
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Send a manual turn to a node
-app.post("/api/runs/:runId/nodes/:nodeId/turn", async (req, res) => {
-  const { runId, nodeId } = req.params;
-  const message = String(req.body?.message ?? "").trim();
-  const options = req.body?.options as {
-    attachContext?: string[];
-    expectedSchema?: string;
-  } | undefined;
-
-  if (!message) {
-    res.status(400).json({ error: "message is required" });
-    return;
-  }
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  if (!run.nodes[nodeId]) {
-    res.status(404).json({ error: "node not found" });
+  if (!fs.existsSync(eventsPath)) {
+    res.json({ events: [] });
     return;
   }
 
   try {
-    const result = await orchestrator.manualTurn(runId, nodeId, message, options);
-    res.json(result);
-  } catch (e: unknown) {
-    const err = e as Error;
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Send a "continue" instruction to a node
-app.post("/api/runs/:runId/nodes/:nodeId/continue", async (req, res) => {
-  const { runId, nodeId } = req.params;
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  if (!run.nodes[nodeId]) {
-    res.status(404).json({ error: "node not found" });
-    return;
-  }
-
-  try {
-    const result = await orchestrator.manualContinue(runId, nodeId);
-    res.json(result);
-  } catch (e: unknown) {
-    const err = e as Error;
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Cancel a node
-app.post("/api/runs/:runId/nodes/:nodeId/cancel", (req, res) => {
-  const { runId, nodeId } = req.params;
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  const node = run.nodes[nodeId];
-  if (!node) {
-    res.status(404).json({ error: "node not found" });
-    return;
-  }
-
-  // Mark node as skipped/cancelled
-  node.status = "skipped";
-  node.completedAt = nowIso();
-  store.persistRun(run);
-
-  bus.emitNodePatch(runId, nodeId, {
-    status: "skipped",
-    completedAt: node.completedAt,
-  }, "node.completed");
-
-  res.json({ ok: true });
-});
-
-// Manually run verification
-app.post("/api/runs/:runId/verify", async (req, res) => {
-  const { runId } = req.params;
-  const profileId = req.body?.profileId ? String(req.body.profileId) : undefined;
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  try {
-    const result = await orchestrator.manualVerify(runId, profileId);
-    res.json(result);
-  } catch (e: unknown) {
-    const err = e as Error;
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Create a new node manually
-app.post("/api/runs/:runId/nodes", (req, res) => {
-  const { runId } = req.params;
-  const parentNodeId = req.body?.parentNodeId ? String(req.body.parentNodeId) : undefined;
-  const providerId = req.body?.providerId ? String(req.body.providerId) : undefined;
-  const role = req.body?.role as RoleId | undefined;
-  const label = req.body?.label ? String(req.body.label) : undefined;
-  const control = req.body?.control as NodeControl | undefined;
-
-  if (!providerId) {
-    res.status(400).json({ error: "providerId is required" });
-    return;
-  }
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  const actualParentNodeId = parentNodeId ?? run.rootOrchestratorNodeId;
-
-  const node = orchestrator.createManualNode({
-    runId,
-    parentNodeId: actualParentNodeId,
-    providerId,
-    role,
-    label,
-    control,
-  });
-
-  if (!node) {
-    res.status(500).json({ error: "failed to create node" });
-    return;
-  }
-
-  res.json({ node });
-});
-
-// Create a new edge manually
-app.post("/api/runs/:runId/edges", (req, res) => {
-  const { runId } = req.params;
-  const sourceId = req.body?.sourceId ? String(req.body.sourceId) : undefined;
-  const targetId = req.body?.targetId ? String(req.body.targetId) : undefined;
-  const type = (req.body?.type ?? "handoff") as "handoff" | "dependency" | "report" | "gate";
-  const label = req.body?.label ? String(req.body.label) : undefined;
-
-  if (!sourceId || !targetId) {
-    res.status(400).json({ error: "sourceId and targetId are required" });
-    return;
-  }
-
-  const run = store.getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "run not found" });
-    return;
-  }
-
-  if (!run.nodes[sourceId]) {
-    res.status(404).json({ error: "source node not found" });
-    return;
-  }
-
-  if (!run.nodes[targetId]) {
-    res.status(404).json({ error: "target node not found" });
-    return;
-  }
-
-  orchestrator.createEdge(runId, sourceId, targetId, type, label);
-  res.json({ ok: true });
-});
-
-// --- WS server ---
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
-
-const wsState = new Map<WebSocket, WsClientState>();
-
-function wsSend(ws: WebSocket, msg: any) {
-  try {
-    ws.send(JSON.stringify(msg));
-  } catch {
-    // ignore
-  }
-}
-
-wss.on("connection", (ws) => {
-  wsState.set(ws, { runIds: new Set() });
-
-  wsSend(ws, {
-    type: "hello",
-    now: nowIso(),
-    runs: store.listRuns().map((r) => ({ id: r.id, status: r.status, createdAt: r.createdAt, prompt: r.prompt })),
-  });
-
-  ws.on("message", (data) => {
-    try {
-      const msg = JSON.parse(String(data));
-      if (msg.type === "subscribe") {
-        const st = wsState.get(ws);
-        if (!st) return;
-        if (msg.runId === "*") {
-          st.runIds.add("*");
-        } else if (typeof msg.runId === "string") {
-          st.runIds.add(msg.runId);
+    const content = fs.readFileSync(eventsPath, "utf-8");
+    const events = content
+      .trim()
+      .split("\n")
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
         }
-        wsSend(ws, { type: "subscribed", runIds: [...st.runIds] });
-      } else if (msg.type === "snapshot") {
-        const run = store.getRun(String(msg.runId));
-        if (run) wsSend(ws, { type: "snapshot", run });
+      })
+      .filter(Boolean);
+    res.json({ events });
+  } catch (e: unknown) {
+    const err = e as Error;
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Start the server ---
+// --- Start the server ---
+const server = http.createServer(app);
+
+// Initialize WebSocket server
+new WebSocketServer({ server }).on("connection", (ws: WebSocket) => {
+  const state: WsClientState = { runIds: new Set() };
+
+  // Subscribe to bus events
+  const onRunPatch = (runId: string, patch: any, event: string) => {
+    // Broadcast generic run updates to everyone, or filter?
+    // For now everyone sees run list updates
+    ws.send(JSON.stringify({ type: "run.patch", runId, patch, event }));
+  };
+
+  const onNodePatch = (runId: string, nodeId: string, patch: any, event: string) => {
+    if (state.runIds.has(runId)) {
+      ws.send(JSON.stringify({ type: "node.patch", runId, nodeId, patch, event }));
+    }
+  };
+
+  const onNodeProgress = (runId: string, nodeId: string, message: string, raw?: any) => {
+    if (state.runIds.has(runId)) {
+      ws.send(JSON.stringify({ type: "node.progress", runId, nodeId, message, raw }));
+    }
+  };
+
+  const onEdge = (runId: string, edge: any) => {
+    if (state.runIds.has(runId)) {
+      ws.send(JSON.stringify({ type: "edge.created", runId, edge }));
+    }
+  };
+
+  const onHandoff = (runId: string, from: string, to: string, edgeId: string, payload: any) => {
+    if (state.runIds.has(runId)) {
+      ws.send(JSON.stringify({ type: "handoff", runId, from, to, edgeId, payload }));
+    }
+  };
+
+  const onArtifact = (runId: string, artifact: any) => {
+    if (state.runIds.has(runId)) {
+      ws.send(JSON.stringify({ type: "artifact.created", runId, artifact }));
+    }
+  };
+
+  const onRunPhaseChanged = (runId: string, phase: string, prev: string, reason?: string) => {
+    ws.send(JSON.stringify({ type: "run.phase", runId, phase, prev, reason }));
+  }
+
+  // New Global Mode Event
+  const onRunModeChanged = (runId: string, mode: string, prev: string, reason?: string) => {
+    // This is for RunMode (AUTO/INTERACTIVE), wait, emitRunModeChanged is currently used for RunMode
+    // but typically UI listens to "run.patch" for generic property updates which I implemented in setGlobalMode
+    // So this is redundant but harmless.
+    ws.send(JSON.stringify({ type: "run.mode", runId, mode, prev, reason }));
+  }
+
+  const onNodeControlChanged = (runId: string, nodeId: string, control: any) => {
+    if (state.runIds.has(runId)) {
+      ws.send(JSON.stringify({ type: "node.control", runId, nodeId, control }));
+    }
+  }
+
+  const unsubscribeBus = bus.subscribe((event) => {
+    switch (event.type) {
+      case "run.created":
+      case "run.started":
+      case "run.updated":
+      case "run.completed":
+      case "run.failed":
+      case "run.stopped":
+      case "run.paused":
+      case "run.resumed":
+        // @ts-ignore
+        onRunPatch(event.runId, event.run, event.type);
+        break;
+
+      case "node.created":
+      case "node.started":
+      case "node.completed":
+      case "node.failed":
+        // @ts-ignore
+        onNodePatch(event.runId, event.nodeId, event.patch, event.type);
+        break;
+
+      case "node.progress":
+        // @ts-ignore
+        onNodeProgress(event.runId, event.nodeId, event.message, event.raw);
+        break;
+
+      case "message.user":
+      case "message.assistant.delta":
+      case "message.assistant.final":
+      case "message.reasoning":
+      case "tool.proposed":
+      case "tool.started":
+      case "tool.completed":
+      case "console.chunk":
+        // Forward these events directly with their original type
+        // @ts-ignore
+        if (state.runIds.has(event.runId)) {
+          ws.send(JSON.stringify(event));
+        }
+        break;
+
+      case "edge.created":
+        // @ts-ignore
+        onEdge(event.runId, event.edge);
+        break;
+
+      case "handoff.sent":
+        // @ts-ignore
+        onHandoff(event.runId, event.fromNodeId, event.toNodeId, event.edgeId, event.payload);
+        break;
+
+      case "artifact.created":
+        // @ts-ignore
+        onArtifact(event.runId, event.artifact);
+        break;
+
+      case "run.phase.changed":
+        // @ts-ignore
+        onRunPhaseChanged(event.runId, event.phase, event.previousPhase, event.reason);
+        break;
+
+      case "run.mode.changed":
+        // @ts-ignore
+        onRunModeChanged(event.runId, event.mode, event.previousMode, event.reason);
+        break;
+
+      case "node.control.changed":
+        // @ts-ignore
+        onNodeControlChanged(event.runId, event.nodeId, event.control);
+        break;
+
+      case "chat.message.sent":
+      case "chat.message.queued":
+      case "interaction.mode.changed":
+      case "prompt.queued":
+      case "prompt.sent":
+      case "prompt.cancelled":
+      case "approval.requested":
+      case "approval.resolved":
+        // @ts-ignore
+        if (state.runIds.has(event.runId)) {
+          ws.send(JSON.stringify(event));
+        }
+        break;
+    }
+  });
+
+  ws.on("message", (msg) => {
+    try {
+      const data = JSON.parse(String(msg));
+      if (data.type === "subscribe") {
+        if (data.runId) state.runIds.add(data.runId);
       }
-    } catch (e: any) {
-      wsSend(ws, { type: "error", message: e?.message ?? String(e) });
+      if (data.type === "unsubscribe") {
+        if (data.runId) state.runIds.delete(data.runId);
+      }
+    } catch (e) {
+      console.error("WS error", e);
     }
   });
 
   ws.on("close", () => {
-    wsState.delete(ws);
+    unsubscribeBus();
   });
 });
 
-bus.subscribe((event) => {
-  for (const [ws, st] of wsState.entries()) {
-    if (ws.readyState !== ws.OPEN) continue;
-    if (st.runIds.has("*") || st.runIds.has(event.runId)) {
-      wsSend(ws, { type: "event", event });
+// --- Startup Cleanup ---
+async function cleanupZombieState() {
+  console.log("🧹 Running startup cleanup...");
+  const runs = store.listRunsFiltered(false); // Include archived? Maybe just active ones.
+  let recoveredCount = 0;
+
+  for (const run of runs) {
+    if (run.status === "completed" || run.status === "failed") continue;
+
+    let hasChanges = false;
+    for (const node of Object.values(run.nodes)) {
+      if (node.status === "running") {
+        console.log(`⚠️ Recovering zombie node ${node.id} in run ${run.id} (running -> queued)`);
+        node.status = "queued";
+        // Also emit patch so UI updates if it connects immediately
+        // (Though UI connects after server starts, so initial fetch will get clean state)
+        hasChanges = true;
+        recoveredCount++;
+      }
+    }
+
+    if (hasChanges) {
+      store.persistRun(run);
+    }
+
+    // Resume scheduler for this run if it's active (running/queued)
+    // We already reset running nodes to queued, so now we just need the loop to run.
+    if (run.status === "running" || run.status === "queued" || run.status === "paused") {
+      console.log(`🔄 Resuming scheduler for run ${run.id}`);
+      // No await, fire and forget background loop
+      orchestrator.recoverRun(run.id).catch(e => console.error(e));
     }
   }
-});
+  console.log(`✅ Cleanup complete. Recovered ${recoveredCount} zombie nodes.`);
+}
 
-server.listen(cfg.server!.port, () => {
-  console.log(`[vuhlp] daemon listening on http://localhost:${cfg.server!.port}`);
-  console.log(`[vuhlp] dataDir: ${store.getDataDir()}`);
+cleanupZombieState();
+
+const port = cfg.server?.port ?? 4317;
+server.listen(port, () => {
+  console.log(`Daemon listening on port ${port}`);
 });

@@ -84,6 +84,28 @@ export class ContextPackBuilder {
       constraints: {
         mustUpdateDocsOnBehaviorChange: true,
       },
+      outputSchema: JSON.stringify({
+        taskDag: {
+          summary: "string",
+          steps: [
+            {
+              id: "string",
+              title: "string",
+              instructions: "string",
+              deps: ["string (step ids)"],
+              agentHint: "string"
+            }
+          ]
+        },
+        acceptanceCriteria: [
+          {
+            id: "string",
+            description: "string",
+            checkType: "test | lint | build | manual | custom",
+            checkCommand: "string?"
+          }
+        ]
+      }, null, 2)
     };
   }
 

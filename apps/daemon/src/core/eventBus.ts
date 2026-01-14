@@ -4,7 +4,9 @@ import {
   VuhlpEvent,
   RunEvent,
   NodeEvent,
+  NodeDeletedEvent,
   EdgeEvent,
+  EdgeDeletedEvent,
   ArtifactEvent,
   VerificationCompletedEvent,
   RunRecord,
@@ -113,6 +115,16 @@ export class EventBus {
     } as NodeEvent);
   }
 
+  emitNodeDeleted(runId: string, nodeId: string): void {
+    this.publish({
+      id: randomUUID(),
+      runId,
+      ts: nowIso(),
+      type: "node.deleted",
+      nodeId,
+    } as NodeDeletedEvent);
+  }
+
   emitEdge(runId: string, edge: EdgeEvent["edge"]): void {
     this.publish({
       id: randomUUID(),
@@ -121,6 +133,16 @@ export class EventBus {
       type: "edge.created",
       edge,
     } as EdgeEvent);
+  }
+
+  emitEdgeDeleted(runId: string, edgeId: string): void {
+    this.publish({
+      id: randomUUID(),
+      runId,
+      ts: nowIso(),
+      type: "edge.deleted",
+      edgeId,
+    } as EdgeDeletedEvent);
   }
 
   emitArtifact(runId: string, artifact: ArtifactEvent["artifact"]): void {
@@ -552,9 +574,33 @@ export class EventBus {
         return;
       }
 
+      case "node.deleted": {
+        const e = event as NodeDeletedEvent;
+        delete run.nodes[e.nodeId];
+
+        for (const [edgeId, edge] of Object.entries(run.edges)) {
+          if (edge.from === e.nodeId || edge.to === e.nodeId) {
+            delete run.edges[edgeId];
+          }
+        }
+
+        for (const [artifactId, artifact] of Object.entries(run.artifacts)) {
+          if (artifact.nodeId === e.nodeId) {
+            delete run.artifacts[artifactId];
+          }
+        }
+        return;
+      }
+
       case "edge.created": {
         const e = event as EdgeEvent;
         run.edges[e.edge.id] = e.edge;
+        return;
+      }
+
+      case "edge.deleted": {
+        const e = event as EdgeDeletedEvent;
+        delete run.edges[e.edgeId];
         return;
       }
 
@@ -614,7 +660,7 @@ export class EventBus {
       case "run.resumed":
       case "message.user":
       case "message.assistant.delta":
-      case "message.assistant.final":
+      // message.assistant.final handled below for persistence
       case "message.reasoning":
       case "tool.proposed":
       case "tool.started":
@@ -633,6 +679,23 @@ export class EventBus {
       case "prompt.cancelled":
         // These events are broadcast to subscribers but don't mutate RunRecord
         return;
+
+      case "message.assistant.final": {
+        const e = event as MessageAssistantFinalEvent;
+        const msg: ChatMessageRecord = {
+          id: randomUUID(),
+          runId: run.id,
+          nodeId: e.nodeId,
+          role: "assistant",
+          content: e.content,
+          createdAt: e.ts,
+          processed: true, // Output is already processed
+          interruptedExecution: false,
+        };
+        if (!run.chatMessages) run.chatMessages = [];
+        run.chatMessages.push(msg);
+        return;
+      }
 
       default:
         return;

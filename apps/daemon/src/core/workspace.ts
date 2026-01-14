@@ -95,6 +95,33 @@ export class WorkspaceManager {
     }
   }
 
+  initializeGitRepo(repoPath: string): { ok: boolean; error?: string } {
+    try {
+      const absPath = path.resolve(repoPath);
+
+      // git init
+      const init = spawnSync("git", ["init"], { cwd: absPath, encoding: "utf-8" });
+      if (init.status !== 0) return { ok: false, error: init.stderr || "git init failed" };
+
+      // Set local git config to ensure commit works in CI/Container environments
+      spawnSync("git", ["config", "user.email", "vuhlp@example.com"], { cwd: absPath });
+      spawnSync("git", ["config", "user.name", "Vuhlp Daemon"], { cwd: absPath });
+
+      // git add .
+      const add = spawnSync("git", ["add", "."], { cwd: absPath, encoding: "utf-8" });
+      if (add.status !== 0) return { ok: false, error: add.stderr || "git add failed" };
+
+      // git commit
+      const commit = spawnSync("git", ["commit", "-m", "Initial commit"], { cwd: absPath, encoding: "utf-8" });
+      if (commit.status !== 0) return { ok: false, error: commit.stderr || ("git commit failed: " + commit.stdout) };
+
+      return { ok: true };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { ok: false, error: message };
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // GIT WORKTREE ISOLATION (Section 6.3)
   // These methods provide write isolation for concurrent tasks
