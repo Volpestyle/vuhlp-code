@@ -1,0 +1,12 @@
+{
+  "type": "join_gate",
+  "id": "join.research",
+  "policy": { "kind": "all" },
+  "requiredInputs": [
+    { "fromNodeId": "research.a", "edgeId": "edge.a_to_join" },
+    { "fromNodeId": "research.b", "edgeId": "edge.b_to_join" }
+  ],
+  "timeoutMs": 600000,
+  "onTimeout": "emit_partial",
+  "outputSelector": "composite"
+}

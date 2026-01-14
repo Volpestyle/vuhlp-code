@@ -19,6 +19,15 @@ This folder contains the **product + technical spec** plus implementation notes 
 - [13. Security + privacy](./13-security.md)
 - [14. Design decisions](./14-decisions.md)
 - [15. Agents SDK integration](./15-agents-sdk-integration.md)
+- [16. Custom Interface Mode](./16-custom-interface-mode.md)
+- [17. Agent Workflow UI Framework Spec](./17-agent-workflow-ui-framework.md)
+- [18. Execution semantics](./18-execution-semantics.md)
+- [19. Join, gates, and routing](./19-join-gates-and-routing.md)
+- [20. Loop safety and non-progress detection](./20-loop-safety-and-nonprogress.md)
+- [21. Context packs](./21-context-packs.md)
+- [22. Docs lifecycle (docs-first autonomy)](./22-docs-lifecycle.md)
+- [23. Failure modes and recovery](./23-failure-modes-and-recovery.md)
+- [24. CLI equivalence (terminal-first mode)](./24-cli-equivalence.md)
 
 ## Schemas and examples
 

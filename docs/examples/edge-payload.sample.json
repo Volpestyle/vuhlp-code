@@ -1,0 +1,28 @@
+{
+  "payloadId": "22222222-2222-2222-2222-222222222222",
+  "kind": "verification",
+  "fromNodeId": "verifier.tests",
+  "edgeId": "edge.verifier_to_coder",
+  "createdAt": "2026-01-13T00:01:00.000Z",
+  "status": {
+    "ok": false,
+    "code": "tests_failed",
+    "reason": "2 tests failing"
+  },
+  "message": {
+    "content": "Tests failing: src/ws/retry...",
+    "format": "text"
+  },
+  "artifacts": [
+    {
+      "ref": "artifact://logs/test-failures.txt",
+      "type": "log",
+      "summary": "pnpm test output"
+    }
+  ],
+  "contextPackRef": {
+    "ref": "artifact://context/pack-11111111.json",
+    "type": "context_pack",
+    "summary": "ContextPack for coder.frontend"
+  }
+}
