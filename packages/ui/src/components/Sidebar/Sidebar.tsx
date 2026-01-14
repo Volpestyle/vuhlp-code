@@ -16,7 +16,7 @@ export interface SidebarProps {
   onArchiveRun: (id: string) => void;
   onUnarchiveRun: (id: string) => void;
   onRenameRun: (id: string, name: string) => void;
-  onCreateRun: (prompt: string, repoPath: string) => Promise<void>;
+  onCreateRun: (prompt: string, repoPath: string) => Promise<string | void>;
   onFetchFs: (path: string, includeFiles?: boolean) => Promise<FsResponse>;
   onFilterChange?: (filter: RunsFilter) => void;
   onOpenFile: (path: string) => void;
@@ -41,7 +41,7 @@ export function Sidebar({
   isLoadingProviders = false,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('sessions');
-  const [repoPath, setRepoPath] = useState('');
+  const [repoPath, setRepoPath] = useState(() => localStorage.getItem('vuhlp_last_repo_path') || '');
   const [isCreating, setIsCreating] = useState(false);
   const [showPathBrowser, setShowPathBrowser] = useState(false);
   const [browserPath, setBrowserPath] = useState('');
@@ -83,8 +83,21 @@ export function Sidebar({
     if (!repoPath.trim()) return;
     setIsCreating(true);
     try {
-      await onCreateRun("(Session Started)", repoPath);
-      setRepoPath('');
+      localStorage.setItem('vuhlp_last_repo_path', repoPath);
+      const newRunId = await onCreateRun("(Session Started)", repoPath);
+      
+      // If we got a runId, wait for it to appear in the list
+      if (newRunId) {
+        // Poll for the new run
+        const startTime = Date.now();
+        while (Date.now() - startTime < 5000) { // 5s timeout
+          const found = runs.some(r => r.id === newRunId);
+          if (found) break;
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
+      // Don't clear repo path so it stays for next time
+      // setRepoPath('');
     } catch (err) {
       console.error('Failed to create run:', err);
     } finally {
@@ -113,6 +126,7 @@ export function Sidebar({
 
   const selectPath = (path: string) => {
     setRepoPath(path);
+    localStorage.setItem('vuhlp_last_repo_path', path);
     setShowPathBrowser(false);
   };
 

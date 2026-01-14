@@ -38,6 +38,7 @@ export interface Edge {
 
 export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'stopped' | 'paused';
 export type RunMode = 'AUTO' | 'INTERACTIVE';
+export type GlobalMode = 'PLANNING' | 'IMPLEMENTATION';
 export type RunPhase =
   | 'BOOT'
   | 'DOCS_ITERATION'
@@ -50,6 +51,19 @@ export type RunPhase =
 
 export type InteractionMode = 'autonomous' | 'interactive';
 
+export interface RepoFacts {
+  language: string;
+  hasTests: boolean;
+  hasDocs: boolean;
+  isEmptyRepo: boolean;
+  isGitRepo: boolean;
+  hasCode?: boolean;
+}
+
+export interface RunPolicy {
+  skipCliPermissions?: boolean;
+}
+
 export interface Run {
   id: string;
   name?: string;
@@ -57,18 +71,22 @@ export interface Run {
   repoPath: string;
   status: RunStatus;
   mode?: RunMode;
+  globalMode?: GlobalMode;
   phase?: RunPhase;
   rootOrchestratorNodeId?: string;
   nodes?: Record<string, Node>;
   edges?: Record<string, Edge>;
   artifacts?: Record<string, Artifact>;
+  repoFacts?: RepoFacts;
   iteration?: number;
   maxIterations?: number;
+  policy?: RunPolicy;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
   archived?: boolean;
   archivedAt?: string;
+  chatMessages?: ChatMessage[];
 }
 
 // ============================================================================
@@ -255,9 +273,9 @@ export interface ChatMessage {
   id: string;
   runId: string;
   nodeId?: string;
-  role: 'user' | 'system';
+  role: 'user' | 'system' | 'assistant';
   content: string;
-  createdAt: string;
+  timestamp: string;
   processed: boolean;
   interruptedExecution: boolean;
 }

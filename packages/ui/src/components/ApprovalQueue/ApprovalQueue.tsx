@@ -68,8 +68,10 @@ export function ApprovalQueue({
       </div>
 
       <div className="vuhlp-approval-queue__list">
-        {approvals.map((approval) => (
-          <div
+        {approvals.map((approval) => {
+          if (!approval) return null;
+          return (
+            <div
             key={approval.id}
             className={`vuhlp-approval-queue__item ${expandedId === approval.id ? 'vuhlp-approval-queue__item--expanded' : ''}`}
           >
@@ -142,7 +144,8 @@ export function ApprovalQueue({
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

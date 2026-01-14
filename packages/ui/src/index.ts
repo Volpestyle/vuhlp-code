@@ -12,6 +12,8 @@ export type {
   RunMode,
   RunPhase,
   InteractionMode,
+  GlobalMode,
+  RunPolicy,
   Run,
   // Artifacts
   ArtifactType,

@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, ReactNode } from 'react';
 import type {
   Node,
   Artifact,
@@ -8,6 +8,8 @@ import type {
   Edge,
 } from '../../types';
 import { Button } from '../Button';
+import { parseMessageContent, formatJsonWithHighlight, getStatusClass } from '../utils/messageParser';
+import { MarkdownContent } from '../utils/MarkdownContent';
 import './Inspector.css';
 
 export interface InspectorProps {
@@ -26,9 +28,64 @@ export interface InspectorProps {
   edges?: Edge[];
   onAddConnection?: (sourceId: string, targetId: string) => void;
   onRemoveConnection?: (edgeId: string) => void;
+  onGroupChanges?: () => void;
+  // Node Editing
+  providers?: Array<{ id: string; displayName: string }>;
+  onUpdateNode?: (runId: string, nodeId: string, updates: Record<string, unknown>) => void;
+  // Git repository status
+  isGitRepo?: boolean;
 }
 
 type TabId = 'overview' | 'conversation' | 'graph' | 'tools' | 'files' | 'context' | 'events' | 'console';
+
+// Component to render parsed message content
+function MessageContent({ content }: { content: string }): ReactNode {
+  const segments = useMemo(() => parseMessageContent(content), [content]);
+
+  if (segments.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {segments.map((segment, idx) => {
+        switch (segment.type) {
+          case 'status':
+            return (
+              <div key={idx} className="vuhlp-inspector__status-block">
+                {segment.data && Object.entries(segment.data).map(([key, value]) => (
+                  <span
+                    key={key}
+                    className={`vuhlp-inspector__status-badge ${getStatusClass(String(value))}`}
+                  >
+                    {key}: {String(value)}
+                  </span>
+                ))}
+              </div>
+            );
+
+          case 'json':
+            return (
+              <pre key={idx} className="vuhlp-inspector__json-block">
+                {formatJsonWithHighlight(segment.data || segment.content)}
+              </pre>
+            );
+
+          case 'code':
+            return (
+              <pre key={idx} className="vuhlp-inspector__code-block">
+                <code>{segment.content}</code>
+              </pre>
+            );
+
+          case 'text':
+          default:
+            return <MarkdownContent key={idx} content={segment.content} />;
+        }
+      })}
+    </>
+  );
+}
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'overview', label: 'Overview' },
@@ -49,36 +106,89 @@ export function Inspector({
   trackedState,
   canSendMessage = false,
   chatTarget,
-  chatMessages: _chatMessages = [],
+  chatMessages = [],
   onSendMessage,
   onQueueMessage,
   nodes = [],
   edges = [],
   onAddConnection,
   onRemoveConnection,
+  onGroupChanges,
+  providers = [],
+  onUpdateNode,
+  isGitRepo,
 }: InspectorProps) {
   const [activeTab, setActiveTab] = useState<TabId>('conversation');
   const [chatInput, setChatInput] = useState('');
   const [eventFilter, setEventFilter] = useState('');
   const [newInputNodeId, setNewInputNodeId] = useState('');
   const [newOutputNodeId, setNewOutputNodeId] = useState('');
+  const [isEditingProvider, setIsEditingProvider] = useState(false);
+  const [gitInitStatus, setGitInitStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [gitInitError, setGitInitError] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
 
-  // Scroll chat to bottom on new messages
+  // Smart auto-scroll: only scroll if user was already near the bottom
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [trackedState?.messages]);
+    const container = messagesRef.current;
+    if (!container) {
+      // Fallback if ref not yet attached (initial render)
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+
+    // Check if we are close to the bottom (within 100px)
+    const isCloseToBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
+    
+    if (isCloseToBottom) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, node?.status]);
 
   const handleSendMessage = (interrupt: boolean) => {
     if (!chatInput.trim() || !onSendMessage) return;
     onSendMessage(chatInput.trim(), interrupt);
     setChatInput('');
+    // Always force scroll to bottom when user sends a message
+    setTimeout(() => {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 10);
   };
 
   const handleQueueMessage = () => {
     if (!chatInput.trim() || !onQueueMessage) return;
     onQueueMessage(chatInput.trim());
     setChatInput('');
+    setTimeout(() => {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 10);
+  };
+
+  const handleInitGitRepo = async () => {
+    if (!_runId) {
+      setGitInitError('No active run');
+      setGitInitStatus('error');
+      return;
+    }
+
+    setGitInitStatus('loading');
+    setGitInitError('');
+
+    try {
+      const res = await fetch(`/api/runs/${_runId}/git/init`, { method: 'POST' });
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to initialize git repo');
+      }
+
+      setGitInitStatus('success');
+    } catch (e) {
+      console.error(e);
+      setGitInitStatus('error');
+      setGitInitError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   // Filter events
@@ -177,10 +287,33 @@ export function Inspector({
         <div className="vuhlp-inspector__node-info">
           <span className={`vuhlp-inspector__status vuhlp-inspector__status--${node.status}`} />
           <span className="vuhlp-inspector__label">{node.label}</span>
-          {node.providerId && (
-            <span className={`vuhlp-inspector__provider vuhlp-inspector__provider--${node.providerId}`}>
-              {node.providerId}
-            </span>
+          {isEditingProvider && onUpdateNode && _runId ? (
+            <select
+              className="inspector-select"
+              value={node.providerId || 'mock'}
+              onChange={(e) => {
+                onUpdateNode(_runId, node.id, { providerId: e.target.value });
+                setIsEditingProvider(false);
+              }}
+              onBlur={() => setIsEditingProvider(false)}
+              autoFocus
+            >
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.displayName}
+                </option>
+              ))}
+            </select>
+          ) : (
+            node.providerId && (
+              <span 
+                className={`vuhlp-inspector__provider vuhlp-inspector__provider--${node.providerId} ${onUpdateNode ? 'clickable' : ''}`}
+                onClick={() => onUpdateNode && setIsEditingProvider(true)}
+                title={onUpdateNode ? "Click to change provider" : undefined}
+              >
+                {node.providerId}
+              </span>
+            )
           )}
         </div>
         {node.type && (
@@ -256,25 +389,50 @@ export function Inspector({
         {/* Conversation Tab */}
         {activeTab === 'conversation' && (
           <div className="vuhlp-inspector__conversation">
-            <div className="vuhlp-inspector__messages">
-              {(!trackedState?.messages || trackedState.messages.length === 0) ? (
-                <div className="vuhlp-inspector__messages-empty">No messages yet</div>
-              ) : (
-                trackedState.messages.map((msg) => (
+            <div className="vuhlp-inspector__messages" ref={messagesRef}>
+              {(() => {
+                // Filter messages for current node or run-level
+                // If viewing a specific node, show messages for that node + run-level messages
+                // If viewing orchestrator (or no specific node), show all messages? Or just run-level?
+                // For now: Node view = Node messages + Run messages
+                const relevantMessages = (chatMessages || []).filter((m: ChatMessage) => {
+                  if (!node) return true;
+                  return m.nodeId === node.id || !m.nodeId;
+                }).sort((a: ChatMessage, b: ChatMessage) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+                // Deduplicate by ID just in case
+                const uniqueMessages = Array.from(new Map(relevantMessages.map((m: ChatMessage) => [m.id, m])).values());
+
+                if (uniqueMessages.length === 0) {
+                  return <div className="vuhlp-inspector__messages-empty">No messages yet</div>;
+                }
+
+                return uniqueMessages.map((msg: ChatMessage) => (
                   <div
                     key={msg.id}
-                    className={`vuhlp-inspector__message vuhlp-inspector__message--${msg.type}`}
+                    className={`vuhlp-inspector__message vuhlp-inspector__message--${msg.role}`}
                   >
                     <div className="vuhlp-inspector__message-header">
-                      <span className="vuhlp-inspector__message-role">{msg.type}</span>
-                      <span className="vuhlp-inspector__message-time">{formatTime(msg.timestamp)}</span>
+                      <span className="vuhlp-inspector__message-role">{msg.role}</span>
+                      <span className="vuhlp-inspector__message-time">
+                        {formatTime(msg.timestamp)}
+                      </span>
                     </div>
                     <div className="vuhlp-inspector__message-content">
-                      {msg.content}
-                      {msg.isPartial && <span className="vuhlp-inspector__typing" />}
+                      <MessageContent content={msg.content} />
                     </div>
                   </div>
-                ))
+                ));
+              })()}
+              {node?.status === 'running' && (
+                <div className="vuhlp-inspector__message vuhlp-inspector__message--assistant">
+                  <div className="vuhlp-inspector__message-header">
+                    <span className="vuhlp-inspector__message-role">assistant</span>
+                  </div>
+                  <div className="vuhlp-inspector__message-content">
+                    <span className="vuhlp-inspector__loading-dots">Thinking...</span>
+                  </div>
+                </div>
               )}
               <div ref={chatEndRef} />
             </div>
@@ -474,6 +632,38 @@ export function Inspector({
         {/* Files Tab */}
         {activeTab === 'files' && (
           <div className="vuhlp-inspector__files">
+            {/* Git Repository Status */}
+            {isGitRepo === false && (
+              <div className="vuhlp-inspector__section vuhlp-inspector__section--warning">
+                <h3 className="vuhlp-inspector__section-title">Repository Status</h3>
+                <div className="vuhlp-inspector__git-status">
+                  <div className="vuhlp-inspector__warning-text">
+                    No Git repository initialized
+                  </div>
+                  {gitInitStatus !== 'success' && (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleInitGitRepo}
+                      disabled={gitInitStatus === 'loading'}
+                    >
+                      {gitInitStatus === 'loading' ? 'Initializing...' : 'Initialize Git Repo'}
+                    </Button>
+                  )}
+                  {gitInitStatus === 'error' && (
+                    <div className="vuhlp-inspector__error-text">{gitInitError}</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {onGroupChanges && fileArtifacts.length > 0 && (
+              <div style={{ marginBottom: 'var(--vuhlp-space-3)', display: 'flex', justifyContent: 'flex-end' }}>
+                <Button variant="secondary" size="sm" onClick={onGroupChanges}>
+                  Group Changes & Commit
+                </Button>
+              </div>
+            )}
             {fileArtifacts.length === 0 ? (
               <div className="vuhlp-inspector__files-empty">No file changes</div>
             ) : (

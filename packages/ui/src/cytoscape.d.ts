@@ -6,6 +6,22 @@ declare module 'cytoscape' {
     y: number;
   }
 
+  export interface ZoomOptions {
+    level: number;
+    renderedPosition?: Position;
+  }
+
+  export interface AnimateOptions {
+    fit?: {
+      eles: unknown;
+      padding?: number;
+    };
+    zoom?: number | ZoomOptions;
+    duration?: number;
+    easing?: string;
+    complete?: () => void;
+  }
+
   export interface ElementDataDefinition {
     id?: string;
     source?: string;
@@ -133,11 +149,15 @@ declare module 'cytoscape' {
     on(event: string, selector: string, handler: (evt: EventObject) => void): void;
     style(): StyleManipulator;
     zoom(level?: number): number;
+    zoom(options: ZoomOptions): void;
     fit(elements?: unknown, padding?: number): void;
     layout(options: LayoutOptions): LayoutManipulation;
     destroy(): void;
     batch(callback: () => void): void;
     pan(): Position;
+    animate(options: AnimateOptions): void;
+    stop(): void;
+    resize(): void;
   }
 
   export default function cytoscape(options?: CytoscapeOptions): Core;

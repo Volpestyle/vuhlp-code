@@ -100,16 +100,16 @@
   color: var(--vuhlp-text);
 }
 
-/* Variant: Danger */
+/* Variant: Danger - Pastel */
 .vuhlp-btn--danger {
   background: var(--vuhlp-status-failed);
-  color: white;
+  color: #1a1a1a;
   border-color: var(--vuhlp-status-failed);
 }
 
 .vuhlp-btn--danger:hover:not(:disabled) {
-  background: #dc2626;
-  border-color: #dc2626;
+  background: #D49A9A;
+  border-color: #D49A9A;
 }
 
 /* Loading State */

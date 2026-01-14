@@ -1,4 +1,4 @@
-import type { Run, InteractionMode, RunMode, RunPhase, NodeTrackedState } from '../../types';
+import type { Run, InteractionMode, RunMode, GlobalMode, RunPhase, NodeTrackedState } from '../../types';
 import { GraphPane } from '../GraphPane';
 import { FileViewer } from '../FileViewer';
 import './MainPane.css';
@@ -14,7 +14,9 @@ export interface MainPaneProps {
   selectedNodeId: string | null;
   onEdgeUpdate?: (edgeId: string, updates: { source?: string; target?: string }) => void;
   onEdgeCreate?: (sourceId: string, targetId: string) => void;
+  onEdgeDelete?: (edgeId: string) => void;
   onNodeCreate?: (providerId: string, label: string) => void;
+  onNodeDelete?: (nodeId: string) => void;
   onStop: () => void;
   onPause: () => void;
   onResume: (feedback?: string) => void;
@@ -22,8 +24,14 @@ export interface MainPaneProps {
   onInteractionModeChange: (mode: InteractionMode) => void;
   runMode: RunMode;
   onRunModeChange: (mode: RunMode) => void;
+  globalMode: GlobalMode;
+  onGlobalModeChange: (mode: GlobalMode) => void;
+  skipCliPermissions: boolean;
+  onSkipCliPermissionsChange: (skip: boolean) => void;
   runPhase: RunPhase | null;
   getNodeTrackedState: (runId: string, nodeId: string) => NodeTrackedState;
+  onNodeMessage?: (nodeId: string, content: string) => void;
+  onStopNode?: (nodeId: string) => void;
   // Tab management props
   openTabs: MainTab[];
   activeTabIndex: number;
@@ -41,7 +49,9 @@ export function MainPane({
   selectedNodeId,
   onEdgeUpdate,
   onEdgeCreate,
+  onEdgeDelete,
   onNodeCreate,
+  onNodeDelete,
   onStop,
   onPause,
   onResume,
@@ -49,8 +59,14 @@ export function MainPane({
   onInteractionModeChange,
   runMode,
   onRunModeChange,
+  globalMode,
+  onGlobalModeChange,
+  skipCliPermissions,
+  onSkipCliPermissionsChange,
   runPhase,
   getNodeTrackedState,
+  onNodeMessage,
+  onStopNode,
   openTabs,
   activeTabIndex,
   onTabChange,
@@ -98,7 +114,9 @@ export function MainPane({
             selectedNodeId={selectedNodeId}
             onEdgeUpdate={onEdgeUpdate}
             onEdgeCreate={onEdgeCreate}
+            onEdgeDelete={onEdgeDelete}
             onNodeCreate={onNodeCreate}
+            onNodeDelete={onNodeDelete}
             onStop={onStop}
             onPause={onPause}
             onResume={onResume}
@@ -106,8 +124,14 @@ export function MainPane({
             onInteractionModeChange={onInteractionModeChange}
             runMode={runMode}
             onRunModeChange={onRunModeChange}
+            globalMode={globalMode}
+            onGlobalModeChange={onGlobalModeChange}
+            skipCliPermissions={skipCliPermissions}
+            onSkipCliPermissionsChange={onSkipCliPermissionsChange}
             runPhase={runPhase}
             getNodeTrackedState={getNodeTrackedState}
+            onNodeMessage={onNodeMessage}
+            onStopNode={onStopNode}
           />
         )}
         {activeTab?.type === 'file' && (

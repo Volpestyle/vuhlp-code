@@ -3,6 +3,7 @@ import cytoscape, { type Core, type EventObject } from 'cytoscape';
 import type {
   Run,
   RunMode,
+  GlobalMode,
   RunPhase,
   InteractionMode,
   Node,
@@ -28,7 +29,8 @@ import './GraphPane.css';
 
 // Storage key prefix for node positions
 const POSITION_STORAGE_PREFIX = 'vuhlp-graph-positions-';
-const OVERVIEW_ZOOM_THRESHOLD = 0.6;
+const OVERVIEW_ZOOM_THRESHOLD = 0.35;
+const OVERVIEW_ZOOM_MARGIN = 0.01;
 const NEW_NODE_OFFSET_Y = 260;
 const NEW_NODE_ORPHAN_OFFSET_X = 80;
 const EDGE_HANDLE_RADIUS = 18;
@@ -70,6 +72,7 @@ interface EdgeDragState {
   end: EdgeEndpoint;
   fixedPosition: Position;
   currentPosition: Position;
+  isOverValidTarget: boolean;
 }
 
 function getPositionStorageKey(runId: string): string {
@@ -212,9 +215,9 @@ function getCyPortPosition(cy: Core, nodeId: string, port: PortKind): Position |
   const element = cy.getElementById(nodeId);
   if (!('position' in element)) return null;
 
-  const widthValue = element.data('width');
+
   const heightValue = element.data('height');
-  const width = typeof widthValue === 'number' ? widthValue : DEFAULT_WINDOW_SIZE.width;
+
   const height = typeof heightValue === 'number' ? heightValue : DEFAULT_WINDOW_SIZE.height;
 
   const zoom = cy.zoom();
@@ -260,13 +263,30 @@ function runGraphLayout(
   cy.layout(layoutOptions).run();
 }
 
+interface ContextMenuState {
+  x: number;
+  y: number;
+  nodeId: string;
+}
+
+interface EdgeContextMenuState {
+  x: number;
+  y: number;
+  edgeId: string;
+  sourceLabel: string;
+  targetLabel: string;
+}
+
 export interface GraphPaneProps {
   run: Run | null;
   onNodeSelect: (nodeId: string | null) => void;
   selectedNodeId: string | null;
   onEdgeUpdate?: (edgeId: string, updates: { source?: string; target?: string }) => void;
   onEdgeCreate?: (sourceId: string, targetId: string) => void;
+  onEdgeDelete?: (edgeId: string) => void;
   onNodeCreate?: (providerId: string, label: string) => void;
+  onNodeDelete?: (nodeId: string) => void;
+  onNodeDuplicate?: (nodeId: string) => void;
   onStop: () => void;
   onPause: () => void;
   onResume: (feedback?: string) => void;
@@ -274,8 +294,16 @@ export interface GraphPaneProps {
   onInteractionModeChange: (mode: InteractionMode) => void;
   runMode: RunMode;
   onRunModeChange: (mode: RunMode) => void;
+  globalMode: GlobalMode;
+  onGlobalModeChange: (mode: GlobalMode) => void;
+  /** Whether CLI permissions are skipped (true = skip, false = require approval) */
+  skipCliPermissions: boolean;
+  onSkipCliPermissionsChange: (skip: boolean) => void;
   runPhase: RunPhase | null;
   getNodeTrackedState: (runId: string, nodeId: string) => NodeTrackedState;
+  onNodeMessage?: (nodeId: string, content: string) => void;
+  onStopNode?: (nodeId: string) => void;
+  onRestartNode?: (nodeId: string) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -340,7 +368,10 @@ export function GraphPane({
   selectedNodeId,
   onEdgeUpdate,
   onEdgeCreate,
+  onEdgeDelete,
   onNodeCreate,
+  onNodeDelete,
+  onNodeDuplicate,
   onStop,
   onPause,
   onResume,
@@ -348,10 +379,18 @@ export function GraphPane({
   onInteractionModeChange: _onInteractionModeChange,
   runMode,
   onRunModeChange,
+  globalMode,
+  onGlobalModeChange,
+  skipCliPermissions,
+  onSkipCliPermissionsChange,
   runPhase,
   getNodeTrackedState,
+  onNodeMessage,
+  onStopNode,
+  onRestartNode,
 }: GraphPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const runIdRef = useRef<string | null>(null);
   const savedPositionsRef = useRef<SavedPositions | null>(null);
@@ -359,6 +398,7 @@ export function GraphPane({
   const lastFollowedNodeIdRef = useRef<string | null>(null);
   const syncRef = useRef<number | null>(null);
   const handoffTimerRef = useRef<number | null>(null);
+  const centeringNodeIdRef = useRef<string | null>(null);
 
   // Viewport state for coordinate transformations
   const [viewport, setViewport] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
@@ -374,6 +414,9 @@ export function GraphPane({
   const [edgeDrag, setEdgeDrag] = useState<EdgeDragState | null>(null);
   const [newEdgeDrag, setNewEdgeDrag] = useState<{ sourceId: string; currentPosition: Position } | null>(null);
   const [highlightedPort, setHighlightedPort] = useState<{ nodeId: string; port: 'input' | 'output' } | null>(null);
+  const [showInfo, setShowInfo] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [edgeContextMenu, setEdgeContextMenu] = useState<EdgeContextMenuState | null>(null);
 
   // Node positions from Cytoscape (model coordinates)
   const [nodePositions, setNodePositions] = useState<Record<string, Position>>({});
@@ -409,6 +452,8 @@ export function GraphPane({
     toggleProviderFilter,
     clearFilters,
   } = useGraphFilters({ nodes, edges, runId: run?.id || null });
+
+
 
   const {
     focusNodeIds,
@@ -531,6 +576,11 @@ export function GraphPane({
   }, [nodes]);
 
   const getEffectiveWindowSize = useCallback((nodeId: string): Size => {
+    // If we are actively centering this node, force it to be full size
+    // ensuring the zoom animation targets the detailed view dimensions
+    if (centeringNodeIdRef.current === nodeId) {
+      return getWindowSize(nodeId);
+    }
     if (isOverview) return OVERVIEW_WINDOW_SIZE;
     return getWindowSize(nodeId);
   }, [isOverview, getWindowSize]);
@@ -603,46 +653,12 @@ export function GraphPane({
         
         if (dist === 0) return;
 
-        // Calculate control points for vertical flow (S down, T up)
-        // K is the vertical offset for control points
-        // Dynamic K: minimum 30px, max 600px, scaled by distance (0.25)
-        // Less dramatic curves for short lines, but still enough to see direction
+        // Bezier control point offset (scales with distance, clamped 30-600px)
         const K = Math.min(600, Math.max(30, dist * 0.25));
 
-        // Vector math to project (0, K) and (0, -K) onto the line vector
-        // Line vector L = (dx, dy)
-        // We need w (weights, 0..1 along line) and d (distances, perpendicular)
-        // Reference: Cytoscape documentation for unbundled-bezier
-        
-        // CP1 absolute: (sPos.x, sPos.y + K)
-        // CP2 absolute: (tPos.x, tPos.y - K)
-        
-        // Project CP1 onto line S->T
-        // Vector S->CP1 = (0, K)
-        // Projection p1 = ((0*dx) + (K*dy)) / dist
-        // w1 = p1 / dist = (K*dy) / (dist*dist)
-        
-        // Perpendicular distance d1
-        // (0, K) - (w1*dx, w1*dy) ... magnitude?
-        // Or simpler: Cross product / dot with normal
-        // Normal N = (-dy, dx) normalized?
-        // Let's use scalar cross product for distance to line
-        // Dist = (Vector dot Normal)
-        // Normal = (-dy, dx) / dist
-        // d1 = ((0 * -dy) + (K * dx)) / dist = (K*dx) / dist
-
+        // Project control points onto line for Cytoscape unbundled-bezier format
         const w1 = (K * dy) / (dist * dist);
         const d1 = (K * dx) / dist;
-
-        // Project CP2 onto line S->T
-        // CP2 is T + (0, -K). Calculations relative to SOURCE line S->T.
-        // Vector S->CP2 = L + (0, -K) = (dx, dy - K)
-        // Projection p2 = ((dx*dx) + ((dy-K)*dy)) / dist = (dist*dist - K*dy) / dist
-        // w2 = p2 / dist = 1 - (K*dy)/(dist*dist)
-        
-        // d2: Vector (dx, dy-K) dot Normal (-dy, dx) / dist
-        // (dx*-dy + (dy-K)*dx) / dist = (-dx*dy + dx*dy - K*dx) / dist = (-K*dx) / dist
-        
         const w2 = 1 - (K * dy) / (dist * dist);
         const d2 = (-K * dx) / dist;
 
@@ -691,6 +707,7 @@ export function GraphPane({
       end,
       fixedPosition,
       currentPosition: position,
+      isOverValidTarget: false,
     });
     setEdgeTooltip(null);
     setHoveredEdgeId(edge.id());
@@ -707,7 +724,7 @@ export function GraphPane({
       autoungrabify: true, // Disable node dragging in Cytoscape (we handle it in HTML)
       autounselectify: true,
       userPanningEnabled: true,
-      userZoomingEnabled: true,
+      userZoomingEnabled: false,
       style: [
         {
           // Nodes serve as invisible anchors with correct dimensions for edge routing
@@ -873,10 +890,34 @@ export function GraphPane({
       setEdgeTooltip(null);
     };
 
+    const handleEdgeCxttap = (evt: EventObject) => {
+      if (!('source' in evt.target)) return;
+      if (!evt.originalEvent) return;
+
+      evt.originalEvent.preventDefault();
+
+      const edge = evt.target;
+      const sourceId = edge.source().id();
+      const targetId = edge.target().id();
+      const sourceLabel = nodeLabelRef.current[sourceId] || sourceId;
+      const targetLabel = nodeLabelRef.current[targetId] || targetId;
+
+      const mouseEvt = evt.originalEvent as MouseEvent;
+      setEdgeContextMenu({
+        x: mouseEvt.clientX,
+        y: mouseEvt.clientY,
+        edgeId: edge.id(),
+        sourceLabel,
+        targetLabel,
+      });
+      setEdgeTooltip(null);
+    };
+
     cy.on('mouseover', 'edge', handleEdgeOver);
     cy.on('mousemove', 'edge', handleEdgeMove);
     cy.on('mouseout', 'edge', handleEdgeOut);
     cy.on('mousedown', 'edge', handleEdgeMouseDown);
+    cy.on('cxttap', 'edge', handleEdgeCxttap);
 
     cyRef.current = cy;
     let offset = 0;
@@ -889,7 +930,83 @@ export function GraphPane({
       });
     }, 120);
 
+
+    // Resize observer to handle container size changes
+    const resizeObserver = new ResizeObserver(() => {
+        cy.resize();
+        // optionally throttle sync here?
+        throttledSync();
+    });
+    if (containerRef.current) {
+        resizeObserver.observe(containerRef.current);
+    }
+
+    // Manual zoom/pan handling
+    const handleWheel = (e: WheelEvent) => {
+      const cy = cyRef.current;
+      if (!cy) return;
+
+      // Check if scrolling inside a focused node window's content area
+      // If so, let the content scroll instead of zooming the graph
+      const target = e.target as HTMLElement;
+      const focusedNode = target.closest('.vuhlp-node-window--focused');
+      if (focusedNode) {
+        // Check if the target or an ancestor is scrollable content
+        const scrollableContent = target.closest('.term-content, .vuhlp-node-window__content');
+        if (scrollableContent) {
+          const el = scrollableContent as HTMLElement;
+          // Use a small epsilon or round to handle fractional pixels (common with scaling)
+          const canScrollUp = el.scrollTop > 0;
+          const canScrollDown = Math.ceil(el.scrollTop + el.clientHeight) < el.scrollHeight;
+          const scrollingUp = e.deltaY < 0;
+          const scrollingDown = e.deltaY > 0;
+
+          // Allow native scroll if there's room to scroll in that direction
+          if ((scrollingUp && canScrollUp) || (scrollingDown && canScrollDown)) {
+            // Don't prevent default - let the content scroll naturally
+            e.stopPropagation();
+            return;
+          }
+        }
+        
+        // If we're focused but can't scroll (or not over scrollable area), 
+        // BLOCK the external zoom.
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
+      e.preventDefault();
+
+      // Zoom the graph
+      // Pan is handled by click-drag on canvas (default cytoscape behavior via userPanningEnabled: true)
+
+      const zoom = cy.zoom();
+      const delta = e.deltaY;
+      const factor = Math.pow(1.001, -delta);
+
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      cy.zoom({
+        level: zoom * factor,
+        renderedPosition: { x, y }
+      });
+    };
+
+    const wrapper = wrapperRef.current;
+    if (wrapper) {
+        wrapper.addEventListener('wheel', handleWheel, { passive: false });
+    }
+
     return () => {
+      if (wrapper) {
+          wrapper.removeEventListener('wheel', handleWheel);
+      }
+      resizeObserver.disconnect();
       if (syncRef.current) cancelAnimationFrame(syncRef.current);
       if (handoffTimerRef.current) {
         window.clearInterval(handoffTimerRef.current);
@@ -996,12 +1113,76 @@ export function GraphPane({
     setHoveredEdgeId(null);
   }, [edgeTooltip, visibleEdgeIds]);
 
+  // Close context menu when clicking elsewhere
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handleClick = () => {
+      setContextMenu(null);
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      // Only close if right-clicking outside the menu
+      const target = e.target as HTMLElement;
+      if (!target.closest('.vuhlp-graph__context-menu')) {
+        setContextMenu(null);
+      }
+    };
+
+    document.addEventListener('click', handleClick);
+    document.addEventListener('contextmenu', handleContextMenu);
+
+    return () => {
+      document.removeEventListener('click', handleClick);
+      document.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, [contextMenu]);
+
+  // Close edge context menu when clicking elsewhere
+  useEffect(() => {
+    if (!edgeContextMenu) return;
+
+    const handleClick = () => {
+      setEdgeContextMenu(null);
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.vuhlp-graph__context-menu')) {
+        setEdgeContextMenu(null);
+      }
+    };
+
+    document.addEventListener('click', handleClick);
+    document.addEventListener('contextmenu', handleContextMenu);
+
+    return () => {
+      document.removeEventListener('click', handleClick);
+      document.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, [edgeContextMenu]);
+
   const centerStage = useCallback((nodeId: string) => {
     const cy = cyRef.current;
     if (!cy) return;
 
     const node = cy.getElementById(nodeId);
-    if (node.empty()) return;
+    if (!('position' in node) || !node.nonempty()) return;
+
+    // Force the node to its full size for the fit calculation
+    // This prevents "zooming in too far" if the node is currently in overview mode (small size)
+    const targetSize = getWindowSize(nodeId);
+    
+    // Set ref to prevent getEffectiveWindowSize from reverting it to small size
+    centeringNodeIdRef.current = nodeId;
+    // Mark center stage mode active immediately to register intent
+    centerStageActiveRef.current = true;
+    lastZoomOutWasFitRef.current = false;
+    
+    node.data({
+      width: targetSize.width,
+      height: targetSize.height,
+    });
 
     cy.animate({
       fit: {
@@ -1010,12 +1191,24 @@ export function GraphPane({
       },
       duration: 500,
       easing: 'ease-in-out-cubic',
+      complete: () => {
+        // Clear the centering ref when done
+        // Note: by now, we should be close enough that isOverview is false
+        // so the next render will keep it large naturally
+        if (centeringNodeIdRef.current === nodeId) {
+          centeringNodeIdRef.current = null;
+        }
+      }
     });
-  }, []);
+  }, [getWindowSize]);
 
   // Cycle state refs
   const inputCycleIndexRef = useRef<number>(-1);
   const outputCycleIndexRef = useRef<number>(-1);
+
+  // Track whether we're currently in center stage mode (for 'f' key toggle)
+  const centerStageActiveRef = useRef<boolean>(false);
+  const lastZoomOutWasFitRef = useRef<boolean>(false);
 
   // Reset cycle state when selection changes
   useEffect(() => {
@@ -1038,7 +1231,7 @@ export function GraphPane({
 
     const neighbors = Array.from(neighborIds).flatMap((id) => {
       const node = cy.getElementById(id);
-      if (node.empty()) return [];
+      if (!('position' in node) || !node.nonempty()) return [];
       return [{ id, pos: node.position() }];
     });
 
@@ -1051,67 +1244,164 @@ export function GraphPane({
     return neighbors.map(n => n.id);
   }, [edges]);
 
-  const lastCenteredNodeIdRef = useRef<string | null>(null);
+  const requestNodeDelete = useCallback((nodeId: string) => {
+    if (!onNodeDelete) return;
+    if (run?.rootOrchestratorNodeId && nodeId === run.rootOrchestratorNodeId) {
+      window.alert('Cannot delete the Root Orchestrator node.');
+      return;
+    }
 
-  // Reset last centered node when selection changes (optional, maybe we want to keep it strict)
-  // Actually, if I select B, I want 'f' to center B immediately.
-  useEffect(() => {
-     lastCenteredNodeIdRef.current = null;
-  }, [selectedNodeId]);
+    const node = nodes.find((item) => item.id === nodeId);
+    if (!node) return;
+
+    const trackedState = run ? getNodeTrackedState(run.id, nodeId) : undefined;
+    const hasActivity = Boolean(
+      trackedState &&
+      (trackedState.messages.length ||
+        trackedState.tools.length ||
+        trackedState.consoleChunks.length ||
+        trackedState.events.length)
+    );
+    const isWaitingForEvents = node.status === 'queued' && !hasActivity;
+    if (!isWaitingForEvents) {
+      const label = node.label || node.id.slice(0, 8);
+      const confirmed = window.confirm(
+        `Delete "${label}"? This agent is ${node.status} (not waiting for events).`
+      );
+      if (!confirmed) return;
+    }
+
+    onNodeDelete(nodeId);
+  }, [getNodeTrackedState, onNodeDelete, nodes, run?.id, run?.rootOrchestratorNodeId]);
+
+  const handleDuplicateAgent = useCallback((nodeId?: string) => {
+    const targetNodeId = nodeId || selectedNodeId;
+    if (targetNodeId && onNodeDuplicate) {
+      onNodeDuplicate(targetNodeId);
+    }
+    setContextMenu(null);
+  }, [selectedNodeId, onNodeDuplicate]);
 
   // Keyboard shortcut for center stage and cycling
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Only trigger if not typing in an input
       const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+      const isInInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+
+      // Escape deselects the current node (works even when in input)
+      if (e.key === 'Escape' && selectedNodeId) {
+        if (isInInput) {
+          (target as HTMLInputElement | HTMLTextAreaElement).blur();
+        }
+        onNodeSelect(null);
+        return;
+      }
+
+      // Other shortcuts only trigger if not typing in an input
+      if (isInInput) return;
+
+      if (e.key.toLowerCase() === 'q' && e.shiftKey) {
+        if (selectedNodeId) {
+          e.preventDefault();
+          requestNodeDelete(selectedNodeId);
+        }
+        return;
+      }
+
+      if (e.key === 'f') {
+        const cy = cyRef.current;
+        if (!cy) return;
+
+        const clampToOverview = () => {
+          const currentZoom = cy.zoom();
+          const overviewZoomTarget = Math.min(
+            currentZoom,
+            OVERVIEW_ZOOM_THRESHOLD - OVERVIEW_ZOOM_MARGIN
+          );
+          if (overviewZoomTarget >= currentZoom) return;
+
+          const rect = containerRef.current?.getBoundingClientRect();
+          if (!rect) {
+            cy.zoom(overviewZoomTarget);
+            return;
+          }
+
+          cy.animate({
+            zoom: {
+              level: overviewZoomTarget,
+              renderedPosition: { x: rect.width / 2, y: rect.height / 2 },
+            },
+            duration: 250,
+            easing: 'ease-in-out-cubic',
+          });
+        };
+
+        // Toggle: if we're in center stage mode, zoom out; otherwise center on the selection
+        if (centerStageActiveRef.current) {
+          centerStageActiveRef.current = false;
+          centeringNodeIdRef.current = null; // Ensure we stop forcing large size
+          cy.stop(); // Stop any ongoing animation
+
+          if (visibleNodes.length <= 1) {
+            lastZoomOutWasFitRef.current = false;
+            clampToOverview();
+            return;
+          }
+
+          // Zoom out to fit all nodes
+          lastZoomOutWasFitRef.current = true;
+          cy.animate({
+            fit: {
+              eles: cy.elements(),
+              padding: 50,
+            },
+            duration: 500,
+            easing: 'ease-in-out-cubic',
+          });
+          return;
+        }
+
+        if (lastZoomOutWasFitRef.current && !isOverview) {
+          lastZoomOutWasFitRef.current = false;
+          clampToOverview();
+          return;
+        }
+
+        if (!selectedNodeId) return;
+
+        // Center stage on the selected node
+        lastZoomOutWasFitRef.current = false;
+        centerStage(selectedNodeId);
+        return;
+      }
+
+      // Shift+D to duplicate the selected agent
+      if (e.key === 'D' && e.shiftKey && selectedNodeId) {
+        e.preventDefault();
+        handleDuplicateAgent(selectedNodeId);
+        return;
+      }
 
       if (!selectedNodeId) return;
 
-      if (e.key === 'f') {
-        // Toggle logic: If we just centered this node, zoom out to fit all.
-        // Otherwise (or if we panned away/selected new), center it.
-        // NOTE: This simple boolean toggle resets effectively if you pan away? 
-        // No, manual panning doesn't clear this ref. 
-        // But the user request is "when looking at 'center stage' ... zoom out".
-        // Use a heuristic + ref? OR just the ref is fine? 
-        // "Pressing F when looking at center stage" implies state.
-        // Let's use the ref. It's predictable.
-        if (lastCenteredNodeIdRef.current === selectedNodeId) {
-            // Zoom out
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (cyRef.current as any)?.animate({
-                fit: { padding: 50 },
-                duration: 500,
-                easing: 'ease-in-out-cubic',
-            });
-            lastCenteredNodeIdRef.current = null; 
-        } else {
-            // Center stage
-            centerStage(selectedNodeId);
-            lastCenteredNodeIdRef.current = selectedNodeId;
-        }
-      } else if (e.key === 'i') {
+      if (e.key === 'i') {
         const neighbors = getSortedNeighbors(selectedNodeId, 'input');
         if (neighbors.length === 0) return;
-        
+
         inputCycleIndexRef.current = (inputCycleIndexRef.current + 1) % neighbors.length;
-        centerStage(neighbors[inputCycleIndexRef.current]);
-        // Cycling breaks the "center toggle" state for the original node effectively
-        lastCenteredNodeIdRef.current = null; 
+        centerStage(neighbors[inputCycleIndexRef.current]); 
       } else if (e.key === 'o') {
         const neighbors = getSortedNeighbors(selectedNodeId, 'output');
         if (neighbors.length === 0) return;
 
         outputCycleIndexRef.current = (outputCycleIndexRef.current + 1) % neighbors.length;
         centerStage(neighbors[outputCycleIndexRef.current]);
-        lastCenteredNodeIdRef.current = null;
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedNodeId, centerStage, getSortedNeighbors]);
+  }, [selectedNodeId, centerStage, getSortedNeighbors, isOverview, onNodeSelect, requestNodeDelete, visibleNodes, handleDuplicateAgent]);
 
   // Update graph when run changes (Incremental)
   useEffect(() => {
@@ -1303,12 +1593,15 @@ export function GraphPane({
       if (!position) return;
 
       const target = getPortTargetFromPoint(evt.clientX, evt.clientY);
-      if (target && isValidDrop(edgeDrag.end, target.port)) {
+      const isValid = target !== null && isValidDrop(edgeDrag.end, target.port);
+
+      if (isValid && target) {
         const targetPosition = getPortPosition(target.nodeId, target.port);
         if (targetPosition) {
           setEdgeDrag((current) => (current ? {
             ...current,
             currentPosition: targetPosition,
+            isOverValidTarget: true,
           } : current));
           return;
         }
@@ -1317,17 +1610,22 @@ export function GraphPane({
       setEdgeDrag((current) => (current ? {
         ...current,
         currentPosition: position,
+        isOverValidTarget: false,
       } : current));
     };
 
     const handleMouseUp = (evt: MouseEvent) => {
       const target = getPortTargetFromPoint(evt.clientX, evt.clientY);
       if (target && isValidDrop(edgeDrag.end, target.port)) {
+        // Reconnect to a new node
         if (edgeDrag.end === 'source') {
           onEdgeUpdate?.(edgeDrag.edgeId, { source: target.nodeId });
         } else {
           onEdgeUpdate?.(edgeDrag.edgeId, { target: target.nodeId });
         }
+      } else {
+        // Dropped off a valid port - disconnect the edge
+        onEdgeDelete?.(edgeDrag.edgeId);
       }
       setEdgeDrag(null);
       setHoveredEdgeId(null);
@@ -1340,7 +1638,7 @@ export function GraphPane({
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [edgeDrag, getPortPosition, onEdgeUpdate]);
+  }, [edgeDrag, getPortPosition, onEdgeUpdate, onEdgeDelete]);
 
   // Handle window position change (from drag)
   const handlePositionChange = useCallback((
@@ -1458,6 +1756,30 @@ export function GraphPane({
       setPortTooltip({ nodeId, port });
     }
   }, [portTooltip, highlightedPort]);
+
+  const handleNodeContextMenu = useCallback((nodeId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      nodeId,
+    });
+  }, []);
+
+  const handleDeleteAgent = useCallback(() => {
+    if (contextMenu) {
+      requestNodeDelete(contextMenu.nodeId);
+    }
+    setContextMenu(null);
+  }, [contextMenu, requestNodeDelete]);
+
+  const handleRemoveEdge = useCallback(() => {
+    if (edgeContextMenu && onEdgeDelete) {
+      onEdgeDelete(edgeContextMenu.edgeId);
+    }
+    setEdgeContextMenu(null);
+  }, [edgeContextMenu, onEdgeDelete]);
 
   const handleZoomIn = useCallback(() => {
     cyRef.current?.zoom(cyRef.current.zoom() * 1.2);
@@ -1645,6 +1967,46 @@ export function GraphPane({
             </div>
           )}
 
+          {/* Global Mode Toggle */}
+          {run && (
+            <div className="vuhlp-graph__mode-toggle" style={{ marginLeft: 8 }}>
+              <button
+                className={`vuhlp-graph__mode-btn ${globalMode === 'PLANNING' ? 'vuhlp-graph__mode-btn--active' : ''}`}
+                onClick={() => onGlobalModeChange('PLANNING')}
+                title="Planning Mode: Analyze and Plan"
+              >
+                Plan
+              </button>
+              <button
+                className={`vuhlp-graph__mode-btn ${globalMode === 'IMPLEMENTATION' ? 'vuhlp-graph__mode-btn--active' : ''}`}
+                onClick={() => onGlobalModeChange('IMPLEMENTATION')}
+                title="Implementation Mode: Execute Changes"
+              >
+                Implement
+              </button>
+            </div>
+          )}
+
+          {/* Permissions Toggle */}
+          {run && (
+            <div className="vuhlp-graph__mode-toggle" style={{ marginLeft: 8 }}>
+              <button
+                className={`vuhlp-graph__mode-btn ${skipCliPermissions ? 'vuhlp-graph__mode-btn--active' : ''}`}
+                onClick={() => onSkipCliPermissionsChange(true)}
+                title="Skip Permissions: Tools run immediately without approval"
+              >
+                Skip Perms
+              </button>
+              <button
+                className={`vuhlp-graph__mode-btn ${!skipCliPermissions ? 'vuhlp-graph__mode-btn--active' : ''}`}
+                onClick={() => onSkipCliPermissionsChange(false)}
+                title="Require Permissions: Tools require approval before running"
+              >
+                Require Perms
+              </button>
+            </div>
+          )}
+
           {/* Add Node Button */}
           {run && onNodeCreate && (
              <button
@@ -1688,7 +2050,7 @@ export function GraphPane({
               <button
                 className="vuhlp-graph__control-btn vuhlp-graph__control-btn--stop"
                 onClick={onStop}
-                title="Stop"
+                title="Global Stop (Kill All Workers)"
               >
                 <svg viewBox="0 0 16 16" fill="currentColor">
                   <rect x="2" y="2" width="12" height="12" rx="2" />
@@ -1699,6 +2061,16 @@ export function GraphPane({
 
           {/* Zoom Controls */}
           <div className="vuhlp-graph__zoom-controls">
+            <button 
+              className={`vuhlp-graph__zoom-btn ${showInfo ? 'vuhlp-graph__zoom-btn--active' : ''}`}
+              onClick={() => setShowInfo(prev => !prev)}
+              title="Shortcuts Info"
+            >
+               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <circle cx="8" cy="8" r="6" />
+                  <path d="M8 8v4M8 4v.01" strokeLinecap="round" />
+               </svg>
+            </button>
             <span className="vuhlp-graph__zoom-level" title="Current zoom level">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <circle cx="7" cy="7" r="4" />
@@ -1761,7 +2133,10 @@ export function GraphPane({
       </div>
 
       {/* Graph Container - Canvas for edges */}
-      <div className={`vuhlp-graph__canvas-container ${showGrid ? 'vuhlp-graph__canvas-container--grid' : ''}`}>
+      <div 
+        ref={wrapperRef}
+        className={`vuhlp-graph__canvas-container ${showGrid ? 'vuhlp-graph__canvas-container--grid' : ''}`}
+      >
         <div ref={containerRef} className="vuhlp-graph__canvas" />
 
         {/* Windows Layer - HTML nodes on top of canvas */}
@@ -1786,12 +2161,17 @@ export function GraphPane({
                   isOverview={isOverview}
                   onPositionChange={handlePositionChange}
                   onPositionCommit={handlePositionCommit}
-
                   onSelect={handleWindowSelect}
                   onPortMouseDown={handlePortMouseDown}
                   onPortClick={handlePortClick}
                   onDoubleClick={centerStage}
+                  onContextMenu={handleNodeContextMenu}
+                  onMessage={onNodeMessage}
                   zoom={viewport.zoom}
+                  artifacts={run.artifacts ? Object.values(run.artifacts).filter(a => a.nodeId === node.id) : []}
+                  onStopNode={onStopNode}
+                  onRestartNode={onRestartNode}
+                  isFocused={selectedNodeId === node.id && viewport.zoom > 0.8}
                 />
               );
             })}
@@ -1840,11 +2220,22 @@ export function GraphPane({
               >
                 <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
               </marker>
+              <marker
+                id="vuhlp-edge-drag-arrow-disconnect"
+                markerWidth="8"
+                markerHeight="6"
+                refX="7"
+                refY="3"
+                orient="auto"
+                markerUnits="strokeWidth"
+              >
+                <path d="M0,0 L8,3 L0,6 Z" fill="#ef4444" />
+              </marker>
             </defs>
             <path
-              className="vuhlp-graph__edge-drag"
+              className={`vuhlp-graph__edge-drag ${!edgeDrag?.isOverValidTarget ? 'vuhlp-graph__edge-drag--disconnect' : ''}`}
               d={buildEdgePath(edgeDragPoints.source, edgeDragPoints.target, connectionStyle)}
-              markerEnd="url(#vuhlp-edge-drag-arrow)"
+              markerEnd={edgeDrag?.isOverValidTarget ? 'url(#vuhlp-edge-drag-arrow)' : 'url(#vuhlp-edge-drag-arrow-disconnect)'}
             />
           </svg>
         )}
@@ -1990,6 +2381,121 @@ export function GraphPane({
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* Shortcuts Info Tooltip */}
+      {showInfo && (
+        <div className="vuhlp-graph__shortcuts-tooltip">
+          <div className="vuhlp-graph__shortcuts-title">Keyboard Shortcuts</div>
+          <div className="vuhlp-graph__shortcuts-list">
+             <div className="vuhlp-graph__shortcut-item">
+                <span className="vuhlp-graph__shortcut-label">Zoom</span>
+                <span className="vuhlp-graph__shortcut-keys">
+                   <kbd>Ctrl</kbd> + <kbd>Scroll</kbd>
+                </span>
+             </div>
+             <div className="vuhlp-graph__shortcut-item">
+                <span className="vuhlp-graph__shortcut-label">Pan</span>
+                <span className="vuhlp-graph__shortcut-keys">
+                   <kbd>Scroll</kbd> / <kbd>Drag</kbd>
+                </span>
+             </div>
+             <div className="vuhlp-graph__shortcut-item">
+                <span className="vuhlp-graph__shortcut-label">Select Node</span>
+                <span className="vuhlp-graph__shortcut-keys">
+                   <kbd>Click</kbd>
+                </span>
+             </div>
+             <div className="vuhlp-graph__shortcut-item">
+                <span className="vuhlp-graph__shortcut-label">Center Stage</span>
+                <span className="vuhlp-graph__shortcut-keys">
+                    <kbd>Double Click</kbd> / <kbd>f</kbd>
+                </span>
+             </div>
+             <div className="vuhlp-graph__shortcut-item">
+                <span className="vuhlp-graph__shortcut-label">Cycle Inputs</span>
+                <span className="vuhlp-graph__shortcut-keys">
+                   <kbd>i</kbd>
+                </span>
+             </div>
+             <div className="vuhlp-graph__shortcut-item">
+                <span className="vuhlp-graph__shortcut-label">Cycle Outputs</span>
+                <span className="vuhlp-graph__shortcut-keys">
+                   <kbd>o</kbd>
+                </span>
+             </div>
+             <div className="vuhlp-graph__shortcut-item">
+                <span className="vuhlp-graph__shortcut-label">Duplicate Agent</span>
+                <span className="vuhlp-graph__shortcut-keys">
+                   <kbd>Shift</kbd> + <kbd>D</kbd>
+                </span>
+             </div>
+             <div className="vuhlp-graph__shortcut-item">
+                <span className="vuhlp-graph__shortcut-label">Delete Agent</span>
+                <span className="vuhlp-graph__shortcut-keys">
+                   <kbd>Shift</kbd> + <kbd>Q</kbd>
+                </span>
+             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Context Menu */}
+      {contextMenu && (
+        <div
+          className="vuhlp-graph__context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="vuhlp-graph__context-menu-item"
+            onClick={() => handleDuplicateAgent()}
+            disabled={!onNodeDuplicate}
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6z"/>
+              <path d="M2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2z"/>
+            </svg>
+            Duplicate Agent
+            <span className="vuhlp-graph__context-menu-shortcut">Shift+D</span>
+          </button>
+          <div className="vuhlp-graph__context-menu-divider" />
+          <button
+            className="vuhlp-graph__context-menu-item vuhlp-graph__context-menu-item--danger"
+            onClick={handleDeleteAgent}
+            disabled={!onNodeDelete}
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
+              <path fillRule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
+            </svg>
+            Delete Agent
+          </button>
+        </div>
+      )}
+
+      {/* Edge Context Menu */}
+      {edgeContextMenu && (
+        <div
+          className="vuhlp-graph__context-menu"
+          style={{ left: edgeContextMenu.x, top: edgeContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="vuhlp-graph__context-menu-header">
+            {edgeContextMenu.sourceLabel} → {edgeContextMenu.targetLabel}
+          </div>
+          <div className="vuhlp-graph__context-menu-divider" />
+          <button
+            className="vuhlp-graph__context-menu-item vuhlp-graph__context-menu-item--danger"
+            onClick={handleRemoveEdge}
+            disabled={!onEdgeDelete}
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+            </svg>
+            Remove Edge
+          </button>
         </div>
       )}
     </div>
