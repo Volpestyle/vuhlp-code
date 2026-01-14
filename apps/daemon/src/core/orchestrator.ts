@@ -445,6 +445,10 @@ export class OrchestratorEngine {
 
     try {
       const entries = fs.readdirSync(repoPath);
+      // Check for .git directory
+      if (entries.includes(".git")) {
+        facts.isGitRepo = true;
+      }
       const visibleEntries = entries.filter((entry) => entry !== ".git" && entry !== ".vuhlp");
       facts.isEmptyRepo = visibleEntries.length === 0;
       facts.hasDocs = fs.existsSync(path.join(repoPath, "docs"));
