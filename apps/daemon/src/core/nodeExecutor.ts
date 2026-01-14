@@ -27,20 +27,98 @@ interface GraphCommandSpawn {
 
 type GraphCommand = GraphCommandSpawn;
 
-function parseGraphCommand(text: string): GraphCommand | null {
+function relaxedJsonParse(text: string): any {
     try {
-        // Look for JSON block
-        const match = text.match(/```json\s*(\{[\s\S]*?"command"\s*:\s*"spawn_node"[\s\S]*?\})\s*```/) ||
-            text.match(/(\{[\s\S]*?"command"\s*:\s*"spawn_node"[\s\S]*?\})/);
+        return JSON.parse(text);
+    } catch (e) {
+        // Try strict parse failed, attempt to clean up
+        let cleaned = text;
 
-        if (match) {
-            const json = JSON.parse(match[1]);
-            if (json.command === "spawn_node" && json.args) {
-                return json as GraphCommand;
+        // 1. Remove comments (simple regex, might be fragile but better than nothing)
+        cleaned = cleaned.replace(/\/\/.*$/gm, ''); // Single line
+        cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, ''); // Multi line
+
+        // 2. Remove trailing commas
+        cleaned = cleaned.replace(/,(\s*[}\]])/g, '$1');
+
+        try {
+            return JSON.parse(cleaned);
+        } catch (e2) {
+            throw e; // Throw original error
+        }
+    }
+}
+
+function parseGraphCommand(text: string): GraphCommand | null {
+    if (!text) return null;
+
+    // Helper to validate and return the command
+    const validate = (json: any): GraphCommand | null => {
+        if (json && typeof json === 'object' && json.command === "spawn_node" && json.args) {
+            return json as GraphCommand;
+        }
+        return null;
+    };
+
+    try {
+        // 1. Try parsing Markdown Code Blocks
+        // Relaxed regex to allow optional language tag
+        const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
+        let match;
+        while ((match = codeBlockRegex.exec(text)) !== null) {
+            try {
+                const json = relaxedJsonParse(match[1]);
+                const valid = validate(json);
+                if (valid) return valid;
+            } catch { /* ignore invalid json in blocks */ }
+        }
+
+        // 2. Try parsing the whole text (if it's just raw JSON)
+        try {
+            const json = relaxedJsonParse(text);
+            const valid = validate(json);
+            if (valid) return valid;
+        } catch { /* ignore */ }
+
+        // 3. Robust Brace Balancing (scan for top-level objects)
+        let openBraces = 0;
+        let startIndex = -1;
+        let inString = false;
+        let escaped = false;
+
+        for (let i = 0; i < text.length; i++) {
+            const char = text[i];
+
+            if (char === '"' && !escaped) {
+                inString = !inString;
+            }
+            if (!inString && char === '\\') {
+                escaped = !escaped;
+            } else {
+                escaped = false;
+            }
+
+            if (!inString) {
+                if (char === '{') {
+                    if (openBraces === 0) startIndex = i;
+                    openBraces++;
+                } else if (char === '}') {
+                    openBraces--;
+                    if (openBraces === 0 && startIndex !== -1) {
+                        // Found a potential JSON object block
+                        const block = text.substring(startIndex, i + 1);
+                        try {
+                            const json = relaxedJsonParse(block);
+                            const valid = validate(json);
+                            if (valid) return valid;
+                        } catch { /* ignore invalid blocks */ }
+                        startIndex = -1;
+                    }
+                }
             }
         }
     } catch (e) {
-        // ignore parse errors
+        // safety net
     }
     return null;
 }
