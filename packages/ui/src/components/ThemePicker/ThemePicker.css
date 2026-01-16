@@ -94,3 +94,22 @@
   height: 14px;
   color: var(--vuhlp-accent);
 }
+
+.vuhlp-theme-picker__section {
+  padding: var(--vuhlp-space-1) 0;
+}
+
+.vuhlp-theme-picker__section:not(:last-child) {
+  border-bottom: 1px solid var(--vuhlp-border);
+  margin-bottom: var(--vuhlp-space-1);
+}
+
+.vuhlp-theme-picker__section-title {
+  font-size: var(--vuhlp-text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vuhlp-text-muted);
+  padding: var(--vuhlp-space-1) var(--vuhlp-space-3);
+  margin-bottom: var(--vuhlp-space-1);
+}

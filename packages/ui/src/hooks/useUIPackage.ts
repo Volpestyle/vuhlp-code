@@ -1,17 +1,19 @@
 import { useState, useCallback, useEffect } from 'react';
 
-// UI package system for potential future theme packs
-// Currently we only have one package, but this allows for extensibility
+// UI package system for switching between UI themes
+// Supports 'default' (original) and 'refresh' (technical minimal)
 
-export type UIPackage = 'default';
+export type UIPackage = 'default' | 'refresh';
 
 const UI_PACKAGE_STORAGE_KEY = 'vuhlp-ui-package';
+
+const VALID_PACKAGES: UIPackage[] = ['default', 'refresh'];
 
 function getStoredPackage(): UIPackage {
   if (typeof window === 'undefined') return 'default';
   const stored = localStorage.getItem(UI_PACKAGE_STORAGE_KEY);
-  if (stored === 'default') {
-    return stored;
+  if (stored && VALID_PACKAGES.includes(stored as UIPackage)) {
+    return stored as UIPackage;
   }
   return 'default';
 }
@@ -33,6 +35,7 @@ export function useUIPackage(): [UIPackage, (pkg: UIPackage) => void] {
 }
 
 // Available UI packages
-export const UI_PACKAGES: { id: UIPackage; label: string }[] = [
-  { id: 'default', label: 'Default' },
+export const UI_PACKAGES: { id: UIPackage; label: string; description: string }[] = [
+  { id: 'default', label: 'Default', description: 'Original vuhlp theme' },
+  { id: 'refresh', label: 'Technical', description: 'Minimal monospace design' },
 ];

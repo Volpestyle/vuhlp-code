@@ -9,7 +9,8 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@vuhlp/ui/styles": ["../../../packages/ui/src/styles/index.css"]
+      "@vuhlp/ui/styles": ["../../../packages/ui/src/styles/index.css"],
+      "@vuhlp/ui-refresh/styles": ["../../../packages/ui-refresh/src/styles/index.css"]
     },
 
     /* Bundler mode */
