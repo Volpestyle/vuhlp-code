@@ -75,8 +75,10 @@ export function* mapGeminiEvent(raw: unknown): Generator<ProviderOutputEvent> {
     }
 
     case "message": {
-      const role = event.role;
-      if (role === "model") {
+      const role = String(event.role);
+      const isDelta = !!event.delta;
+
+      if (role === "model" || role === "assistant") {
         let textContent = typeof event.content === "string" ? event.content : "";
 
         const parts = event.parts as Array<Record<string, unknown>> | undefined;
@@ -100,17 +102,23 @@ export function* mapGeminiEvent(raw: unknown): Generator<ProviderOutputEvent> {
         }
 
         if (textContent) {
-          yield { type: "message.final", content: textContent };
+          if (isDelta) {
+            yield { type: "message.delta", delta: textContent };
+          } else {
+            yield { type: "message.final", content: textContent };
+          }
         }
       }
       break;
     }
 
     case "tool_use": {
-      const id = event.id;
-      const name = event.name;
+      // Support both old (id/name/args) and new (tool_id/tool_name/parameters) formats
+      const id = (event.id ?? event.tool_id) as string;
+      const name = (event.name ?? event.tool_name) as string;
+
       if (typeof id === "string" && typeof name === "string") {
-        const args = (event.args ?? {}) as Record<string, unknown>;
+        const args = (event.args ?? event.parameters ?? {}) as Record<string, unknown>;
         const tool: ProviderToolProposal = {
           id,
           name,
@@ -125,7 +133,7 @@ export function* mapGeminiEvent(raw: unknown): Generator<ProviderOutputEvent> {
     }
 
     case "tool_result": {
-      const id = event.id;
+      const id = (event.id ?? event.tool_id) as string;
       if (typeof id === "string") {
         const pending = pendingTools.get(id);
         const durationMs = pending ? Date.now() - pending.startTime : undefined;
@@ -134,6 +142,10 @@ export function* mapGeminiEvent(raw: unknown): Generator<ProviderOutputEvent> {
         const error = event.error;
         if (typeof error === "string") {
           yield { type: "tool.completed", toolId: id, error: { message: error }, durationMs };
+        } else if (error && typeof error === "object") {
+          // Handle structured error object
+          const errMsg = (error as any).message ?? JSON.stringify(error);
+          yield { type: "tool.completed", toolId: id, error: { message: errMsg }, durationMs };
         } else {
           const output = event.output;
           let result: unknown = output;

@@ -8,7 +8,7 @@ export interface GeminiCliConfig {
   args?: string[];
   env?: Record<string, string>;
   /** Approval mode for tool execution. Default: auto */
-  approvalMode?: "always" | "never" | "auto";
+  approvalMode?: "always" | "never" | "auto" | "default" | "auto_edit" | "yolo";
   /** Allowed tools (comma-separated list). Empty means all allowed. */
   allowedTools?: string;
 }
@@ -101,7 +101,7 @@ export class GeminiCliProvider implements ProviderAdapter {
     }
 
     // Build default args with best practices for custom interface mode
-    const args: string[] = ["-p"];
+    const args: string[] = [];
 
     // Session support: use --resume for existing sessions
     if (task.sessionId) {
@@ -112,13 +112,25 @@ export class GeminiCliProvider implements ProviderAdapter {
     args.push("--output-format", "stream-json");
 
     // Approval mode (default: auto, but can be configured)
-    if (this.cfg.approvalMode) {
-      args.push("--approval-mode", this.cfg.approvalMode);
+    let approvalMode = this.cfg.approvalMode;
+
+    // Skip permissions (YOLO mode) if requested by run policy
+    if (task.skipPermissions) {
+      approvalMode = "yolo";
+    }
+
+    if (approvalMode) {
+      args.push("--approval-mode", approvalMode);
     }
 
     // Allowed tools (if specified)
     if (this.cfg.allowedTools) {
       args.push("--allowed-tools", this.cfg.allowedTools);
+    }
+
+    // Model override (e.g. for summarizer)
+    if (task.meta?.model) {
+      args.push("--model", String(task.meta.model));
     }
 
     // Add the prompt placeholder
