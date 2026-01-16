@@ -227,6 +227,15 @@ function reduceDaemonState(s: ExtendedDaemonState, ev: Record<string, unknown>):
     };
     nextRun.edges = { ...nextRun.edges, [edge.id]: edge };
   }
+  // Handle edge deleted events
+  else if (evType === 'edge.deleted') {
+    const edgeId = ev.edgeId as string;
+    if (nextRun.edges) {
+      const nextEdges = { ...nextRun.edges };
+      delete nextEdges[edgeId];
+      nextRun.edges = nextEdges;
+    }
+  }
   // Handle artifact events
   else if (evType === 'artifact.created') {
     const artifact = ev.artifact as Artifact;
@@ -461,8 +470,22 @@ function reduceDaemonState(s: ExtendedDaemonState, ev: Record<string, unknown>):
   }
   // Handle approval events
   else if (evType === 'approval.requested') {
-    const approval = ev.approval as ApprovalRequest;
-    if (approval) {
+    // Backend emits: { type: 'approval.requested', approvalId, tool: {...}, ... }
+    // It does NOT have an 'approval' property wrapping everything.
+    // We map this to frontend ApprovalRequest
+    const tool = ev.tool as any;
+    if (tool) {
+      const approval: ApprovalRequest = {
+        id: (ev.approvalId as string) || (ev.id as string),
+        runId: runId, // Event has runId
+        nodeId: (ev.nodeId as string) || '',
+        toolId: tool.id,
+        toolName: tool.name,
+        args: tool.args,
+        riskLevel: tool.riskLevel,
+        description: (ev.context as string),
+        createdAt: ts,
+      };
       nextApprovals = [...nextApprovals, approval];
     }
   } else if (evType === 'approval.resolved') {
@@ -629,10 +652,34 @@ export function useDaemon() {
     }
   }, []);
 
+  // Helper to map backend approval to frontend type
+  const mapApproval = (raw: any): ApprovalRequest | null => {
+    if (!raw) return null;
+    // Handle both flat (if already mapped) and nested (backend) formats
+    if (raw.toolName) return raw as ApprovalRequest;
+
+    // Backend format: has "tool" object
+    if (raw.tool) {
+      return {
+        id: raw.id || raw.approvalId,
+        runId: raw.runId,
+        nodeId: raw.nodeId,
+        toolId: raw.tool.id || raw.toolId,
+        toolName: raw.tool.name,
+        args: raw.tool.args,
+        riskLevel: raw.tool.riskLevel,
+        description: raw.tool.description || raw.context,
+        createdAt: raw.createdAt || raw.timestamp || new Date().toISOString(),
+      };
+    }
+    return null;
+  };
+
   const fetchPendingApprovals = useCallback(async () => {
     try {
       const data = await httpGet('/api/approvals');
-      setState((s) => ({ ...s, pendingApprovals: (data.approvals || []).filter(Boolean) }));
+      const mapped = (data.approvals || []).map(mapApproval).filter(Boolean);
+      setState((s) => ({ ...s, pendingApprovals: mapped }));
     } catch (e) {
       console.error(e);
     }
@@ -1112,30 +1159,64 @@ export function useDaemon() {
     fetchEvents,
     subscribeToRun,
     // Graph Editor (local state helper)
-    updateEdge: (runId: string, edgeId: string, updates: Partial<Edge>) => {
+    updateEdge: async (runId: string, edgeId: string, updates: Partial<Edge>) => {
+      // Optimistic update
       setState((s) => {
         const run = s.runs[runId];
         if (!run?.edges?.[edgeId]) return s;
-        // Map UI edge back to daemon edge if needed, but here we just update UI state locally
         const nextEdges = { ...run.edges, [edgeId]: { ...run.edges[edgeId], ...updates } };
         return { ...s, runs: { ...s.runs, [runId]: { ...run, edges: nextEdges } } };
       });
+      await httpPatch(`/api/runs/${runId}/edges/${edgeId}`, updates);
     },
-    createEdge: (runId: string, sourceId: string, targetId: string) => {
-      // Placeholder: Implementation currently relies on backend creating edges via graph commands or explicitly
-      // We can add an API for manual edge creation if needed
-      console.log("Create edge not implemented via API yet", runId, sourceId, targetId);
+    createEdge: async (runId: string, sourceId: string, targetId: string) => {
+      // Optimistic update (requires guessing ID, so maybe just wait for server?
+      // Or generate temp ID. For now, let's just await server to be safe on ID.)
+      // Actually, for better UX, we should wait. But we can update if we returned the edge.
+      const res = await httpPost(`/api/runs/${runId}/edges`, { sourceId, targetId });
+      if (res.edge) {
+        setState((s) => {
+          const run = s.runs[runId];
+          if (!run) return s;
+          const nextEdges = { ...run.edges, [res.edge.id]: res.edge };
+          return { ...s, runs: { ...s.runs, [runId]: { ...run, edges: nextEdges } } };
+        });
+      }
     },
-    deleteEdge: (runId: string, edgeId: string) => {
-      // Placeholder
-      console.log("Delete edge not implemented via API yet", runId, edgeId);
+    deleteEdge: async (runId: string, edgeId: string) => {
+      // Optimistic update
+      setState((s) => {
+        const run = s.runs[runId];
+        if (!run) return s;
+        const nextEdges = { ...run.edges };
+        delete nextEdges[edgeId];
+        return { ...s, runs: { ...s.runs, [runId]: { ...run, edges: nextEdges } } };
+      });
+      try {
+        await httpDelete(`/api/runs/${runId}/edges/${edgeId}`);
+      } catch (err) {
+        // If edge is already gone (404), that's fine since we optimistically deleted it.
+        console.warn('Failed to delete edge on server (may be already deleted):', err);
+      }
     },
-    createNode: async (runId: string, providerId: string, params: { label: string; control?: any; role?: string }) => {
+    createNode: async (
+      runId: string,
+      providerId: string,
+      params: {
+        label: string;
+        control?: unknown;
+        role?: string;
+        customSystemPrompt?: string;
+        policy?: { allowedTools?: string[]; approvalMode?: "always" | "high_risk_only" | "never" };
+      }
+    ) => {
       await httpPost(`/api/runs/${runId}/nodes`, {
         providerId,
         label: params.label,
         control: params.control,
-        role: params.role
+        role: params.role,
+        customSystemPrompt: params.customSystemPrompt,
+        policy: params.policy,
       });
       // Refresh runs to see the new node
       await fetchRuns();

@@ -1,5 +1,10 @@
 export async function httpGet(url: string) {
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: {
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache"
+    }
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 }

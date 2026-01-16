@@ -85,6 +85,7 @@ function App() {
     modifyPrompt,
     stopNode,
     fetchEvents,
+    nodeTrackedState,
   } = useDaemon();
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
@@ -676,9 +677,15 @@ function App() {
                 deleteEdge(activeRunId, edgeId);
               }
             }}
-            onNodeCreate={(providerId, label) => {
+            onNodeCreate={(providerId, label, options) => {
                if (activeRunId) {
-                 createNode(activeRunId, providerId, { label, control: 'MANUAL', role: 'implementer' });
+                 createNode(activeRunId, providerId, {
+                   label,
+                   control: 'MANUAL',
+                   role: options?.role,
+                   customSystemPrompt: options?.customSystemPrompt,
+                   policy: options?.policy,
+                 });
                }
             }}
             onNodeDelete={(nodeId) => {
@@ -726,6 +733,7 @@ function App() {
             artifacts={activeArtifacts}
             runId={activeRunId || undefined}
             trackedState={activeTrackedState}
+            trackedStateMap={activeRunId ? nodeTrackedState[activeRunId] : undefined}
             canSendMessage={isRunActive}
             // Context-aware chat: shows who you're chatting with
             chatTarget={activeNode ? {
