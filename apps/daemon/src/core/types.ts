@@ -43,7 +43,7 @@ export type RunMode = "AUTO" | "INTERACTIVE";
  */
 export type NodeControl = "AUTO" | "MANUAL";
 
-export type NodeType = "orchestrator" | "task" | "verification" | "merge" | "join_gate" | "router";
+export type NodeType = "orchestrator" | "task" | "verification" | "merge";
 
 /**
  * Node execution status.
@@ -61,14 +61,14 @@ export type NodeStatus =
   | "running"
   | "completed"
   | "failed"
+  | "cancelled"
   | "skipped"
-  | "blocked_dependency"
   | "blocked_approval"
   | "blocked_manual_input";
 
-export type TriggerMode = "any_input" | "all_inputs" | "manual" | "scheduled";
+export type TriggerMode = "any_input" | "manual" | "scheduled";
 
-export type EdgeType = "handoff" | "dependency" | "report" | "gate";
+export type EdgeType = "handoff" | "report";
 
 export type DeliveryPolicy = "queue" | "latest" | "debounce";
 
@@ -88,7 +88,8 @@ export interface Envelope {
 }
 
 export type ProviderId = string; // e.g. "mock", "codex", "claude", "gemini"
-export type RoleId = "investigator" | "planner" | "implementer" | "reviewer";
+export type PredefinedRoleId = "investigator" | "planner" | "implementer" | "reviewer";
+export type RoleId = PredefinedRoleId | (string & {});
 
 /**
  * Doc agent roles for DOCS_ITERATION phase (section 7.2).
@@ -328,22 +329,11 @@ export interface NodeRecord {
   taskId?: string; // Link to Task DAG step ID
   type: NodeType;
 
-  // JoinGate configuration
-  joinPolicy?: {
-    type: "all" | "any" | "wait_for";
-    requiredCount?: number; // for quorum/wait_for
-  };
-
-  // Router configuration
-  routerRules?: Array<{
-    targetNodeId: string;
-    condition: "always" | "on_success" | "on_failure" | "on_artifact";
-    conditionArg?: string; // e.g. artifact kind
-  }>;
-
   label: string;
   role?: RoleId;
   providerId?: ProviderId;
+  /** Custom system prompt - if provided, overrides the role-based prompt */
+  customSystemPrompt?: string;
 
   status: NodeStatus;
   /** Node-level control: AUTO (follow run mode) or MANUAL (always require manual trigger). */
@@ -388,6 +378,7 @@ export interface EdgeRecord {
   to: string;
   type: EdgeType;
   label?: string;
+  bidirectional?: boolean;
   deliveryPolicy?: DeliveryPolicy;
   pendingEnvelopes?: Envelope[];
   createdAt: string;
