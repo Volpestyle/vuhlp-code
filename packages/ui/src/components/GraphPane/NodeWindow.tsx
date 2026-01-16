@@ -6,6 +6,7 @@ import { NodeContentRegistry } from './NodeContentRegistry';
 import {
   Position,
   Size,
+  MAX_WINDOW_SIZE,
 } from './coordinateUtils';
 import './NodeWindow.css';
 
@@ -25,12 +26,12 @@ interface NodeWindowProps {
     nodeId: string,
     deltaX: number,
     deltaY: number,
-    options?: { snap?: boolean }
+    options?: { snap?: boolean; transient?: boolean }
   ) => void;
   onPositionCommit?: (nodeId: string) => void;
   onSelect: (nodeId: string) => void;
-  onPortMouseDown?: (nodeId: string, port: 'input' | 'output', e: React.MouseEvent) => void;
-  onPortClick?: (nodeId: string, port: 'input' | 'output', e: React.MouseEvent) => void;
+  onPortMouseDown?: (nodeId: string, port: 'input' | 'output' | 'left' | 'right', e: React.MouseEvent) => void;
+  onPortClick?: (nodeId: string, port: 'input' | 'output' | 'left' | 'right', e: React.MouseEvent) => void;
   onDoubleClick?: (nodeId: string) => void;
   onContextMenu?: (nodeId: string, e: React.MouseEvent) => void;
   onMessage?: (nodeId: string, content: string) => void;
@@ -80,28 +81,41 @@ export function NodeWindow({
   const [transitionScale, setTransitionScale] = useState<{ x: number; y: number } | null>(null);
   
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const lastMousePosRef = useRef<{ x: number; y: number } | null>(null);
   const initialPositionRef = useRef<Position | null>(null);
   const fullSizeRef = useRef<Size>(size);
   const overviewSizeRef = useRef<Size | null>(null);
   const previousOverviewRef = useRef<boolean>(isOverview);
   const transitionRafRef = useRef<number | null>(null);
   const transitionTimeoutRef = useRef<number | null>(null);
+  const isInteractive = zoom >= 0.4;
 
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return; // Only left click
-    e.preventDefault();
-    setIsDragging(true);
-    dragStartRef.current = { x: e.clientX, y: e.clientY };
-    initialPositionRef.current = screenPosition;
-    setDragOffset({ x: 0, y: 0 });
+    
+    // Always allow selection, regardless of zoom level
     onSelect(node.id);
-  }, [node.id, onSelect, screenPosition]);
 
+    // Allow interaction with inputs/textareas without dragging hijacking it
+    const target = e.target as HTMLElement;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) {
+      return;
+    }
 
-  const handleClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    onSelect(node.id);
-  }, [node.id, onSelect]);
+    // Only allow dragging if we are in interactive mode (zoomed in enough)
+    if (isInteractive) {
+      e.preventDefault();
+      setIsDragging(true);
+      dragStartRef.current = { x: e.clientX, y: e.clientY };
+      initialPositionRef.current = screenPosition;
+      setDragOffset({ x: 0, y: 0 });
+    }
+  }, [node.id, onSelect, screenPosition, isInteractive]);
+
+  // Handle messages from tabs (terminal input)
+  const handleMessage = useCallback((content: string) => {
+    onMessage?.(node.id, content);
+  }, [node.id, onMessage]);
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -114,56 +128,65 @@ export function NodeWindow({
     onContextMenu?.(node.id, e);
   }, [node.id, onContextMenu]);
 
-  const handleMessage = useCallback((content: string) => {
-    onMessage?.(node.id, content);
-  }, [node.id, onMessage]);
-
   useEffect(() => {
-    if (!isDragging) return;
+    if (isDragging) {
+      const handleMouseMove = (e: MouseEvent) => {
+        if (!dragStartRef.current) return;
+        
+        const currentX = e.clientX;
+        const currentY = e.clientY;
+        const deltaX = currentX - (lastMousePosRef.current?.x ?? currentX);
+        const deltaY = currentY - (lastMousePosRef.current?.y ?? currentY);
+        
+        lastMousePosRef.current = { x: currentX, y: currentY };
 
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!dragStartRef.current) return;
-      const deltaX = e.clientX - dragStartRef.current.x;
-      const deltaY = e.clientY - dragStartRef.current.y;
-      
-      dragStartRef.current = { x: e.clientX, y: e.clientY };
-      setDragOffset((prev) => ({ x: prev.x + deltaX, y: prev.y + deltaY }));
-      onPositionChange(node.id, deltaX, deltaY, { snap: false });
-    };
+        setDragOffset({
+          x: currentX - dragStartRef.current.x,
+          y: currentY - dragStartRef.current.y,
+        });
 
-    const handleMouseUp = () => {
-      setIsDragging(false);
-      dragStartRef.current = null;
-      initialPositionRef.current = null;
-      onPositionCommit?.(node.id);
-    };
+        // Pass raw screen delta for backend update (edges)
+        // We use transient: true to avoid heavy syncs/saves
+        // We do NOT snap during drag for smoothness
+        onPositionChange(node.id, deltaX, deltaY, { snap: false, transient: true });
+      };
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
+      const handleMouseUp = () => {
+        setIsDragging(false);
+        dragStartRef.current = null;
+        lastMousePosRef.current = null;
+        
+        // Final snap: delta 0 means "use current position but apply snap"
+        onPositionChange(node.id, 0, 0, { snap: true, transient: false });
+        onPositionCommit?.(node.id);
+        setDragOffset({ x: 0, y: 0 });
+      };
 
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
+      // Initialize last position on mount (or start of drag)
+      lastMousePosRef.current = { x: dragStartRef.current!.x, y: dragStartRef.current!.y };
+
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
   }, [isDragging, node.id, onPositionChange, onPositionCommit]);
 
-  useEffect(() => {
-    if (!isOverview) {
-      fullSizeRef.current = size;
-    }
-  }, [isOverview, size.width, size.height]);
-
-  useLayoutEffect(() => {
-    if (!isOverview) return;
-    const nodeElement = windowRef.current;
-    if (!nodeElement) return;
-    const rect = nodeElement.getBoundingClientRect();
-    overviewSizeRef.current = { width: rect.width, height: rect.height };
-  }, [isOverview, node.label, node.status]);
-
+  // Detect mode changes (Overview <-> Detailed) for transition animation
   useLayoutEffect(() => {
     const wasOverview = previousOverviewRef.current;
     if (wasOverview === isOverview) return;
+
+    // If going to overview, current size is full size
+    if (!wasOverview) {
+      fullSizeRef.current = size;
+    } else {
+      // Coming from overview
+      overviewSizeRef.current = size;
+    }
 
     const fromSize = wasOverview ? overviewSizeRef.current : fullSizeRef.current;
     const toSize = isOverview ? overviewSizeRef.current : size;
@@ -210,14 +233,7 @@ export function NodeWindow({
     };
   }, []);
 
-  const providerClass = node.providerId ? PROVIDER_CLASSES[node.providerId] : '';
-  const selectedClass = isSelected ? 'vuhlp-node-window--selected' : '';
-  const highlightedClass = isHighlighted ? 'vuhlp-node-window--highlighted' : '';
-  const dimmedClass = isDimmed ? 'vuhlp-node-window--dimmed' : '';
-  const draggingClass = isDragging ? 'vuhlp-node-window--dragging' : '';
-  const overviewClass = isOverview ? 'vuhlp-node-window--overview' : '';
-  const statusClass = `vuhlp-node-window--status-${node.status}`;
-  const isInteractive = zoom >= 0.9;
+
   const interactiveClass = isInteractive ? 'vuhlp-node-window--interactive' : '';
   const modeTransitionClass = transitionScale ? 'vuhlp-node-window--mode-transition' : '';
 
@@ -227,132 +243,204 @@ export function NodeWindow({
   const contentZoom = Math.min(zoom, MAX_CONTENT_SCALE);
 
   // Check if window is at max size (using base/unscaled size)
-  const baseWidth = size.width / zoom;
-  const baseHeight = size.height / zoom;
+  // Note: size prop is now unscaled model size
+  const baseWidth = size.width;
+  const baseHeight = size.height;
 
   // Calculate effective position (local override during drag)
   let effectivePosition = screenPosition;
 
   if (isDragging && initialPositionRef.current) {
+    // Convert screen pixel delta to model unit delta
     effectivePosition = {
-      x: initialPositionRef.current.x + dragOffset.x,
-      y: initialPositionRef.current.y + dragOffset.y,
+      x: initialPositionRef.current.x + dragOffset.x / zoom,
+      y: initialPositionRef.current.y + dragOffset.y / zoom,
     };
   }
 
   // Position window with top-left at screenPosition
-  // Outer container has scaled dimensions for positioning
+  // The parent layer is already transformed by pan/zoom
   const outerStyle: React.CSSProperties = {
     left: effectivePosition.x,
     top: effectivePosition.y,
-    width: isOverview ? 'auto' : size.width,
-    height: isOverview ? 'auto' : size.height,
-    // In overview mode, only set a small minimum - don't use full size
-    minWidth: isOverview ? 120 : undefined,
-    minHeight: isOverview ? undefined : undefined,
+    width: size.width,
+    height: size.height,
     transform: transitionScale ? `scale(${transitionScale.x}, ${transitionScale.y})` : undefined,
     transformOrigin: 'center center',
   };
 
   // Inner content wrapper has BASE dimensions and uses transform to scale
   // Content uses contentZoom (capped) so text doesn't get too large when zoomed in far
-  // The outer container still uses full zoom for sizing, giving more readable space
+  // The outer container still uses full zoom for sizing (via parent layer transform), giving more readable space
+  // We need to invert the parent zoom for the content scale calculation relative to the outer container
   const contentWidth = baseWidth * (zoom / contentZoom);
   const contentHeight = baseHeight * (zoom / contentZoom);
+  
+  // In Overview, we want the content to appear larger relative to the scene (inverse zoom)
+  // so it remains readable even when zoomed out.
+  // We use a factor of 0.6 as a base readability scale for overview cards.
+  const OVERVIEW_SCALE = 0.6;
+  const overviewScale = OVERVIEW_SCALE / zoom;
 
   const innerStyle: React.CSSProperties = isOverview ? {
-    minWidth: '100%',
-    minHeight: '100%',
-    transform: 'none',
+    width: size.width / overviewScale,
+    height: size.height / overviewScale,
+    transform: `scale(${overviewScale})`,
+    transformOrigin: 'top left',
   } : {
     width: contentWidth,
     height: contentHeight,
-    transform: `scale(${contentZoom})`,
+    // Provide the content zoom relative to the parent's scale (which is `zoom`)
+    transform: `scale(${contentZoom / zoom})`,
     transformOrigin: 'top left',
   };
 
   // Determine content to render
   const CustomContent = node.type ? NodeContentRegistry.get(node.type) : undefined;
 
+  // Calculate summary text
+  const getLastActivity = () => {
+    if (!trackedState) return null;
+    
+    // Check for running tools first
+    const runningTool = trackedState.tools.find(t => t.status === 'started');
+    if (runningTool) {
+      return `Running tool: ${runningTool.name}...`;
+    }
+
+    // Check for last user message
+    const lastMsg = trackedState.messages[trackedState.messages.length - 1];
+    if (lastMsg && lastMsg.type === 'assistant') {
+      return lastMsg.content;
+    }
+    
+    return null;
+  };
+
+  const summaryText = (node as any).summary || getLastActivity() || (
+    node.status === 'queued' ? 'Waiting to start...' : 
+    node.status === 'completed' ? 'Task completed.' :
+    node.status === 'failed' ? 'Task failed.' : 
+    'Ready'
+  );
+
   return (
     <div
       ref={windowRef}
-      className={`vuhlp-node-window ${providerClass} ${selectedClass} ${highlightedClass} ${dimmedClass} ${draggingClass} ${overviewClass} ${statusClass} ${interactiveClass} ${modeTransitionClass} ${isFocused ? 'vuhlp-node-window--focused' : ''}`}
+      className={`vuhlp-node-window ${interactiveClass} ${modeTransitionClass} ${isDimmed ? 'vuhlp-node-window--dimmed' : ''} vuhlp-node-window--status-${node.status} ${isSelected ? 'vuhlp-node-window--selected' : ''} ${isHighlighted ? 'vuhlp-node-window--highlighted' : ''} ${isDragging ? 'vuhlp-node-window--dragging' : ''} ${PROVIDER_CLASSES[node.providerId || 'mock'] || ''} ${isOverview ? 'vuhlp-node-window--overview' : ''} ${isFocused ? 'vuhlp-node-window--focused' : ''} ${size.width >= MAX_WINDOW_SIZE.width && size.height >= MAX_WINDOW_SIZE.height ? 'vuhlp-node-window--max-size' : ''}`}
       style={outerStyle}
-      onClick={handleClick}
+      onMouseDown={handleDragStart}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
-      onWheel={(e) => {
-        if (isFocused) {
-          e.stopPropagation();
-        }
-      }}
     >
       <div className="vuhlp-node-window__clip-mask">
-        <div className="vuhlp-node-window__inner" style={innerStyle}>
+        <div style={innerStyle} className="vuhlp-node-window__inner">
           {isOverview ? (
-            <div className="vuhlp-node-window__overview-content" onMouseDown={handleDragStart}>
-              <span className="vuhlp-node-window__overview-label" title={node.label}>
-                {node.label || node.id.slice(0, 8)}
-              </span>
-              <span className={`vuhlp-node-window__overview-status vuhlp-node-window__status--${node.status}`}>
-                {node.status}
-              </span>
-            </div>
+             <div className="vuhlp-node-window__compact-view">
+                <div className="vuhlp-node-window__compact-header">
+                  {node.providerId && (
+                    <img 
+                      src={`/${node.providerId}.svg`} 
+                      alt={node.providerId}
+                      className="vuhlp-node-window__compact-icon"
+                    />
+                  )}
+                  <span className="vuhlp-node-window__compact-label">
+                    {node.label || node.id.slice(0, 8)}
+                  </span>
+                  {node.durationMs !== undefined && (
+                     <span className="vuhlp-node-window__compact-time">
+                       {Math.round(node.durationMs / 1000)}s
+                     </span>
+                  )}
+                </div>
+                
+                <div className="vuhlp-node-window__compact-body">
+                   <div className={`vuhlp-node-window__compact-status vuhlp-node-window__status--${node.status}`}>
+                     {node.status}
+                   </div>
+                   <div className="vuhlp-node-window__compact-summary">
+                     {summaryText}
+                   </div>
+                </div>
+             </div>
           ) : (
             <>
-              <NodeWindowHeader 
-                node={node} 
-                trackedState={trackedState} 
-                onMouseDown={handleDragStart} 
+              <NodeWindowHeader
+                node={node}
                 onStop={() => onStopNode?.(node.id)}
                 onRestart={() => onRestartNode?.(node.id)}
+                onMouseDown={handleDragStart}
               />
               {CustomContent ? (
                 <CustomContent node={node} trackedState={trackedState} />
               ) : (
-                  <NodeWindowTabs 
-                    trackedState={trackedState}
-                    onMessage={handleMessage}
-                    isInteractive={isInteractive}
-                    artifacts={artifacts}
-                    node={node}
-                  />
+                <NodeWindowTabs
+                  node={node}
+                  trackedState={trackedState}
+                  onMessage={handleMessage}
+                  isInteractive={isInteractive}
+                  artifacts={artifacts}
+                />
               )}
             </>
           )}
         </div>
       </div>
-      {!isOverview && (
-        <>
-          <div 
-            className="vuhlp-node-port vuhlp-node-port--input" 
-            data-node-id={node.id} 
-            data-port="input"
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              onPortMouseDown?.(node.id, 'input', e);
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onPortClick?.(node.id, 'input', e);
-            }}
-          />
-          <div 
-            className="vuhlp-node-port vuhlp-node-port--output" 
-            data-node-id={node.id} 
-            data-port="output"
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              onPortMouseDown?.(node.id, 'output', e);
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onPortClick?.(node.id, 'output', e);
-            }}
-          />
-        </>
-      )}
+      
+      {/* Port Handles */}
+      <div
+        className="vuhlp-node-port vuhlp-node-port--input"
+        data-node-id={node.id}
+        data-port="input"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          onPortMouseDown?.(node.id, 'input', e);
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPortClick?.(node.id, 'input', e);
+        }}
+      />
+      <div
+        className="vuhlp-node-port vuhlp-node-port--output"
+        data-node-id={node.id}
+        data-port="output"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          onPortMouseDown?.(node.id, 'output', e);
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPortClick?.(node.id, 'output', e);
+        }}
+      />
+      <div
+        className="vuhlp-node-port vuhlp-node-port--left"
+        data-node-id={node.id}
+        data-port="left"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          onPortMouseDown?.(node.id, 'left', e);
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPortClick?.(node.id, 'left', e);
+        }}
+      />
+      <div
+        className="vuhlp-node-port vuhlp-node-port--right"
+        data-node-id={node.id}
+        data-port="right"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          onPortMouseDown?.(node.id, 'right', e);
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPortClick?.(node.id, 'right', e);
+        }}
+      />
     </div>
   );
 }

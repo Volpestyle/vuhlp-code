@@ -12,10 +12,18 @@ export interface MainPaneProps {
   run: Run | null;
   onNodeSelect: (nodeId: string | null) => void;
   selectedNodeId: string | null;
-  onEdgeUpdate?: (edgeId: string, updates: { source?: string; target?: string }) => void;
+  onEdgeUpdate?: (edgeId: string, updates: { source?: string; target?: string; bidirectional?: boolean }) => void;
   onEdgeCreate?: (sourceId: string, targetId: string) => void;
   onEdgeDelete?: (edgeId: string) => void;
-  onNodeCreate?: (providerId: string, label: string) => void;
+  onNodeCreate?: (
+    providerId: string,
+    label: string,
+    options?: {
+      role?: string;
+      customSystemPrompt?: string;
+      policy?: { allowedTools?: string[]; approvalMode?: 'always' | 'high_risk_only' | 'never' };
+    }
+  ) => void;
   onNodeDelete?: (nodeId: string) => void;
   onStop: () => void;
   onPause: () => void;

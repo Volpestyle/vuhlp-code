@@ -9,6 +9,11 @@ export type NodeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'skippe
 export type EdgeType = 'handoff' | 'dependency' | 'report' | 'gate';
 export type Provider = 'claude' | 'codex' | 'gemini' | 'mock';
 
+export interface NodePolicy {
+  allowedTools?: string[];
+  approvalMode?: 'always' | 'high_risk_only' | 'never';
+}
+
 export interface Node {
   id: string;
   label: string;
@@ -22,6 +27,8 @@ export interface Node {
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
+  customSystemPrompt?: string;
+  policy?: NodePolicy;
 }
 
 export interface Edge {
@@ -30,6 +37,7 @@ export interface Edge {
   target: string;
   type: EdgeType;
   label?: string;
+  bidirectional?: boolean;
 }
 
 // ============================================================================

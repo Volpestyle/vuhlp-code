@@ -94,6 +94,6 @@ export const MAX_WINDOW_SIZE: Size = {
 };
 
 export const OVERVIEW_WINDOW_SIZE: Size = {
-  width: 220,
-  height: 140,
+  width: 320,
+  height: 200,
 };

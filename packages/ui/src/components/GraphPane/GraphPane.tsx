@@ -20,7 +20,6 @@ import {
   Position,
   Size,
   cyToScreen,
-  centerToTopLeft,
   DEFAULT_WINDOW_SIZE,
   OVERVIEW_WINDOW_SIZE,
   SNAP_SIZE,
@@ -64,7 +63,7 @@ interface EdgeTooltipState {
 }
 
 type EdgeEndpoint = 'source' | 'target';
-type PortKind = 'input' | 'output';
+type PortKind = 'input' | 'output' | 'left' | 'right';
 type CyNodeCollection = ReturnType<Core['nodes']>;
 
 interface EdgeDragState {
@@ -187,8 +186,8 @@ function getPortTargetFromPoint(clientX: number, clientY: number): { nodeId: str
   const nodeId = portElement.dataset.nodeId;
   const port = portElement.dataset.port;
   if (!nodeId) return null;
-  if (port !== 'input' && port !== 'output') return null;
-  return { nodeId, port };
+  if (port !== 'input' && port !== 'output' && port !== 'left' && port !== 'right') return null;
+  return { nodeId, port: port as PortKind };
 }
 
 function distanceBetween(a: Position, b: Position): number {
@@ -217,8 +216,10 @@ function getCyPortPosition(cy: Core, nodeId: string, port: PortKind): Position |
 
 
   const heightValue = element.data('height');
+  const widthValue = element.data('width');
 
   const height = typeof heightValue === 'number' ? heightValue : DEFAULT_WINDOW_SIZE.height;
+  const width = typeof widthValue === 'number' ? widthValue : DEFAULT_WINDOW_SIZE.width;
 
   const zoom = cy.zoom();
   const pan = cy.pan();
@@ -228,12 +229,19 @@ function getCyPortPosition(cy: Core, nodeId: string, port: PortKind): Position |
     y: pos.y * zoom + pan.y,
   };
   const scaledHeight = height * zoom;
-  const yOffset = port === 'input' ? -scaledHeight / 2 : scaledHeight / 2;
-
-  return {
-    x: center.x,
-    y: center.y + yOffset,
-  };
+  const scaledWidth = width * zoom;
+  
+  if (port === 'input') {
+    return { x: center.x, y: center.y - scaledHeight / 2 };
+  } else if (port === 'output') {
+    return { x: center.x, y: center.y + scaledHeight / 2 };
+  } else if (port === 'left') {
+    return { x: center.x - scaledWidth / 2, y: center.y };
+  } else if (port === 'right') {
+    return { x: center.x + scaledWidth / 2, y: center.y };
+  }
+  
+  return center;
 }
 
 function resolveRootNodes(
@@ -273,18 +281,29 @@ interface EdgeContextMenuState {
   x: number;
   y: number;
   edgeId: string;
+  sourceId: string;
+  targetId: string;
   sourceLabel: string;
   targetLabel: string;
+  bidirectional: boolean;
 }
 
 export interface GraphPaneProps {
   run: Run | null;
   onNodeSelect: (nodeId: string | null) => void;
   selectedNodeId: string | null;
-  onEdgeUpdate?: (edgeId: string, updates: { source?: string; target?: string }) => void;
+  onEdgeUpdate?: (edgeId: string, updates: { source?: string; target?: string; bidirectional?: boolean }) => void;
   onEdgeCreate?: (sourceId: string, targetId: string) => void;
   onEdgeDelete?: (edgeId: string) => void;
-  onNodeCreate?: (providerId: string, label: string) => void;
+  onNodeCreate?: (
+    providerId: string,
+    label: string,
+    options?: {
+      role?: string;
+      customSystemPrompt?: string;
+      policy?: { allowedTools?: string[]; approvalMode?: 'always' | 'high_risk_only' | 'never' };
+    }
+  ) => void;
   onNodeDelete?: (nodeId: string) => void;
   onNodeDuplicate?: (nodeId: string) => void;
   onStop: () => void;
@@ -359,7 +378,7 @@ const EDGE_HIGHLIGHT_COLOR = '#d946ef';
 
 interface PortTooltipState {
   nodeId: string;
-  port: 'input' | 'output';
+  port: 'input' | 'output' | 'left' | 'right';
 }
 
 export function GraphPane({
@@ -410,19 +429,30 @@ export function GraphPane({
   const [followRunning, setFollowRunning] = useState(false);
   const [edgeTooltip, setEdgeTooltip] = useState<EdgeTooltipState | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [portTooltip, setPortTooltip] = useState<PortTooltipState | null>(null);
   const [edgeDrag, setEdgeDrag] = useState<EdgeDragState | null>(null);
-  const [newEdgeDrag, setNewEdgeDrag] = useState<{ sourceId: string; currentPosition: Position } | null>(null);
-  const [highlightedPort, setHighlightedPort] = useState<{ nodeId: string; port: 'input' | 'output' } | null>(null);
+  const [newEdgeDrag, setNewEdgeDrag] = useState<{ sourceId: string; sourcePort: PortKind; currentPosition: Position } | null>(null);
+  const [highlightedPort, setHighlightedPort] = useState<{ nodeId: string; port: 'input' | 'output' | 'left' | 'right' } | null>(null);
   const [showInfo, setShowInfo] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [edgeContextMenu, setEdgeContextMenu] = useState<EdgeContextMenuState | null>(null);
+  const [canvasContextMenu, setCanvasContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [addAgentModal, setAddAgentModal] = useState({
+    open: false,
+    providerId: 'claude',
+    label: '',
+    role: 'implementer',
+    useCustomPrompt: false,
+    customSystemPrompt: '',
+  });
 
   // Node positions from Cytoscape (model coordinates)
   const [nodePositions, setNodePositions] = useState<Record<string, Position>>({});
 
   // Window sizes
   const { getWindowSize, resetWindowSizes } = useNodeWindowState(run?.id || null);
+  const windowsLayerRef = useRef<HTMLDivElement>(null);
 
   const isOverview = viewport.zoom < OVERVIEW_ZOOM_THRESHOLD;
 
@@ -585,32 +615,52 @@ export function GraphPane({
     return getWindowSize(nodeId);
   }, [isOverview, getWindowSize]);
 
+  // Return base model size (no zoom applied)
   const getScaledSize = useCallback((nodeId: string): Size => {
-    const baseSize = getEffectiveWindowSize(nodeId);
-    return {
-      width: baseSize.width * viewport.zoom,
-      height: baseSize.height * viewport.zoom,
-    };
-  }, [getEffectiveWindowSize, viewport.zoom]);
+    return getEffectiveWindowSize(nodeId);
+  }, [getEffectiveWindowSize]);
 
-  const getScreenPosition = useCallback((nodeId: string, scaledSize: Size): Position => {
+  // Return base model position (top-left) - no viewport transform applied
+  // The layer itself will be transformed
+  const getRelativePosition = useCallback((nodeId: string, size: Size): Position => {
     const modelPos = nodePositions[nodeId];
     if (!modelPos) return { x: 0, y: 0 };
-    const screenCenter = cyToScreen(modelPos, viewport);
-    return centerToTopLeft(screenCenter, scaledSize);
-  }, [nodePositions, viewport]);
+    return {
+      x: modelPos.x - size.width / 2,
+      y: modelPos.y - size.height / 2,
+    };
+  }, [nodePositions]);
 
   const getPortPosition = useCallback((nodeId: string, port: PortKind): Position | null => {
     const modelPos = nodePositions[nodeId];
     if (!modelPos) return null;
     const center = cyToScreen(modelPos, viewport);
-    const scaledSize = getScaledSize(nodeId);
-    const yOffset = port === 'input' ? -scaledSize.height / 2 : scaledSize.height / 2;
+    // Port positions still need screen coordinates for drag lines (which are in SVG overlay)
+    // The SVG overlay is currently NOT transformed with the windows layer (it's separate)
+    // So we invoke `getEffectiveWindowSize` and apply zoom manually for the ports
+    // or rely on cyToScreen which uses the current viewport.
+    
+    // For ports, we need the scaled height to apply offset
+    const baseSize = getEffectiveWindowSize(nodeId);
+    const scaledHeight = baseSize.height * viewport.zoom;
+    const yOffset = port === 'input' ? -scaledHeight / 2 : scaledHeight / 2;
     return {
       x: center.x,
       y: center.y + yOffset,
     };
-  }, [nodePositions, viewport, getScaledSize]);
+  }, [nodePositions, viewport, getEffectiveWindowSize]);
+
+  const updateWindowsLayerTransform = useCallback(() => {
+    const layer = windowsLayerRef.current;
+    const cy = cyRef.current;
+    if (!layer || !cy) return;
+
+    const pan = cy.pan();
+    const zoom = cy.zoom();
+    
+    layer.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+    layer.style.transformOrigin = '0 0';
+  }, []);
 
   // Update node positions from Cytoscape
   const syncPositionsFromCy = useCallback(() => {
@@ -626,11 +676,15 @@ export function GraphPane({
 
     // Also update viewport
     const currentPan = cy.pan();
+    const currentZoom = cy.zoom();
     setViewport({
-      zoom: cy.zoom(),
+      zoom: currentZoom,
       pan: currentPan,
     });
-  }, []);
+    
+    // Explicitly update transform here too to ensure sync
+    updateWindowsLayerTransform();
+  }, [updateWindowsLayerTransform]);
 
   const updateAllEdgeCurves = useCallback(() => {
     const cy = cyRef.current;
@@ -638,7 +692,7 @@ export function GraphPane({
 
     cy.batch(() => {
       cy.edges().forEach((edge) => {
-        if (connectionStyle !== 'bezier') return;
+        // if (connectionStyle !== 'bezier') return; // We now want to update endpoints for all styles
 
         const source = edge.source();
         const target = edge.target();
@@ -653,19 +707,83 @@ export function GraphPane({
         
         if (dist === 0) return;
 
-        // Bezier control point offset (scales with distance, clamped 30-600px)
-        const K = Math.min(600, Math.max(30, dist * 0.25));
+        // Calculate Optimal Endpoints for Shortest Path
+        const w = Math.abs(dx);
+        const h = Math.abs(dy);
+        
+        let sourceEndpoint = '0% 0%';
+        let targetEndpoint = '0% 0%';
 
-        // Project control points onto line for Cytoscape unbundled-bezier format
-        const w1 = (K * dy) / (dist * dist);
-        const d1 = (K * dx) / dist;
-        const w2 = 1 - (K * dy) / (dist * dist);
-        const d2 = (-K * dx) / dist;
+        if (w > h) {
+           // Horizontal dominance
+           if (dx > 0) {
+              // Target is to the Right of Source
+              sourceEndpoint = '50% 0%';  // Source Right
+              targetEndpoint = '-50% 0%'; // Target Left
+           } else {
+              // Target is to the Left of Source
+              sourceEndpoint = '-50% 0%'; // Source Left
+              targetEndpoint = '50% 0%';  // Target Right
+           }
+        } else {
+           // Vertical dominance
+           if (dy > 0) {
+              // Target is Below Source
+              sourceEndpoint = '0% 50%';  // Source Bottom
+              targetEndpoint = '0% -50%'; // Target Top
+           } else {
+              // Target is Above Source
+              sourceEndpoint = '0% -50%'; // Source Top
+              targetEndpoint = '0% 50%';  // Target Bottom
+           }
+        }
 
-        edge.data({
-          cpDistances: [d1, d2],
-          cpWeights: [w1, w2]
-        });
+        if (connectionStyle === 'bezier') {
+          let d1 = 0;
+          let d2 = 0;
+          let w1 = 0.5;
+          let w2 = 0.5;
+
+          // Calculate offset ratio - how diagonal is the connection?
+          // 0 = perfectly aligned, 1 = 45 degrees diagonal
+          const offsetRatio = w > h ? h / (w + 1) : w / (h + 1);
+
+          // Only add curve when connection is nearly diagonal (would clip node corners)
+          // Threshold 0.6 = ~31° off-axis, below this straight line works fine
+          if (offsetRatio > 0.6) {
+            const curveStrength = Math.min(1, (offsetRatio - 0.6) * 2.5);
+
+            if (w > h) {
+              // Horizontal ports with significant vertical offset
+              const extension = Math.min(120, Math.abs(dx) * 0.25) * curveStrength;
+              w1 = 0.15;
+              w2 = 0.85;
+              d1 = dy > 0 ? extension : -extension;
+              d2 = dy > 0 ? -extension : extension;
+            } else {
+              // Vertical ports with significant horizontal offset
+              // Curve AWAY from source node (toward the target side)
+              const extension = Math.min(120, Math.abs(dy) * 0.25) * curveStrength;
+              w1 = 0.15;
+              w2 = 0.85;
+              d1 = dx > 0 ? extension : -extension;
+              d2 = dx > 0 ? -extension : extension;
+            }
+          }
+
+          edge.data({
+            cpDistances: [d1, d2],
+            cpWeights: [w1, w2],
+            sourceEndpoint,
+            targetEndpoint,
+          });
+        } else {
+           // For non-bezier, just update endpoints
+           edge.data({
+            sourceEndpoint,
+            targetEndpoint,
+           });
+        }
       });
     });
   }, [connectionStyle]);
@@ -697,7 +815,13 @@ export function GraphPane({
 
     const sourceDistance = distanceBetween(position, sourcePort);
     const targetDistance = distanceBetween(position, targetPort);
-    if (sourceDistance > EDGE_HANDLE_RADIUS && targetDistance > EDGE_HANDLE_RADIUS) return;
+
+    if (sourceDistance > EDGE_HANDLE_RADIUS && targetDistance > EDGE_HANDLE_RADIUS) {
+       // Clicked on edge body -> Select it
+       setSelectedEdgeId(edge.id());
+       onNodeSelect(null); // Deselect node if any
+       return;
+    }
 
     const end: EdgeEndpoint = sourceDistance <= targetDistance ? 'source' : 'target';
     const fixedPosition = end === 'source' ? targetPort : sourcePort;
@@ -732,11 +856,18 @@ export function GraphPane({
           style: {
             'background-opacity': 0,
             'border-width': 0,
-            width: 'data(width)',
-            height: 'data(height)',
+            width: 1, // Default fallback
+            height: 1, // Default fallback
             shape: 'round-rectangle',
             label: '',
           },
+        },
+        {
+          selector: 'node[width][height]',
+          style: {
+             width: 'data(width)',
+             height: 'data(height)',
+          }
         },
         {
           selector: 'edge',
@@ -745,15 +876,37 @@ export function GraphPane({
             'line-color': EDGE_COLORS.dependency,
             'target-arrow-color': EDGE_COLORS.dependency,
             'target-arrow-shape': 'triangle',
+            'source-arrow-color': EDGE_COLORS.dependency,
             'curve-style': connectionStyle === 'bezier' ? 'unbundled-bezier' : connectionStyle,
             'taxi-direction': 'vertical',
             'taxi-turn': 20,
             'arrow-scale': 1,
             'opacity': 0.85,
-            'source-endpoint': '0% 50%',
-            'target-endpoint': '0% -50%',
+          },
+        },
+        {
+          selector: 'edge[sourceEndpoint]',
+          style: {
+            'source-endpoint': 'data(sourceEndpoint)',
+          },
+        },
+        {
+          selector: 'edge[targetEndpoint]',
+          style: {
+            'target-endpoint': 'data(targetEndpoint)',
+          },
+        },
+        {
+          selector: 'edge[cpDistances][cpWeights]',
+          style: {
             'control-point-distances': 'data(cpDistances)',
             'control-point-weights': 'data(cpWeights)',
+          },
+        },
+        {
+          selector: 'edge[sourceArrowShape]',
+          style: {
+            'source-arrow-shape': 'data(sourceArrowShape)',
           },
         },
         {
@@ -834,6 +987,16 @@ export function GraphPane({
         'opacity': 1,
         'z-index': 999,
       })
+      .selector('edge.vuhlp-edge--selected')
+      .style({
+        'line-color': '#3b82f6', // bright blue
+        'target-arrow-color': '#3b82f6',
+        'width': 4,
+        'opacity': 1,
+        'z-index': 1000,
+        // 'text-outline-color': '#3b82f6', // if we had labels
+        // 'text-outline-width': 2,
+      })
       .update();
 
     // Click on canvas to deselect
@@ -841,14 +1004,32 @@ export function GraphPane({
       if (evt.target === cy) {
         onNodeSelect(null);
         setHoveredEdgeId(null);
+        setSelectedEdgeId(null);
         setEdgeTooltip(null);
         setPortTooltip(null);
         setHighlightedPort(null);
+        setCanvasContextMenu(null);
+      }
+    });
+
+    // Right-click on canvas to show "Add Agent" menu
+    cy.on('cxttap', (evt: EventObject) => {
+      if (evt.target === cy) {
+        // Use clientX/clientY directly since context menu is position: fixed
+        if (evt.originalEvent && evt.originalEvent instanceof MouseEvent) {
+          setCanvasContextMenu({ x: evt.originalEvent.clientX, y: evt.originalEvent.clientY });
+          setContextMenu(null);
+          setEdgeContextMenu(null);
+        }
       }
     });
 
     // Sync positions when viewport changes (throttled)
-    cy.on('pan zoom render', throttledSync);
+    cy.on('pan zoom render', () => {
+      throttledSync();
+      // Immediate transform update for smooth 60fps
+      updateWindowsLayerTransform();
+    });
 
     const handleEdgeOver = (evt: EventObject) => {
       if (!('source' in evt.target)) return;
@@ -903,12 +1084,16 @@ export function GraphPane({
       const targetLabel = nodeLabelRef.current[targetId] || targetId;
 
       const mouseEvt = evt.originalEvent as MouseEvent;
+      const bidirectional = edge.data('bidirectional') === true;
       setEdgeContextMenu({
         x: mouseEvt.clientX,
         y: mouseEvt.clientY,
         edgeId: edge.id(),
+        sourceId,
+        targetId,
         sourceLabel,
         targetLabel,
+        bidirectional,
       });
       setEdgeTooltip(null);
     };
@@ -936,6 +1121,7 @@ export function GraphPane({
         cy.resize();
         // optionally throttle sync here?
         throttledSync();
+        updateWindowsLayerTransform();
     });
     if (containerRef.current) {
         resizeObserver.observe(containerRef.current);
@@ -1025,10 +1211,6 @@ export function GraphPane({
       .selector('edge')
       .style({
         'curve-style': connectionStyle === 'bezier' ? 'unbundled-bezier' : connectionStyle,
-        'source-endpoint': '0% 50%',
-        'target-endpoint': '0% -50%',
-        'control-point-distances': 'data(cpDistances)',
-        'control-point-weights': 'data(cpWeights)',
       })
       .update();
   }, [connectionStyle]);
@@ -1200,7 +1382,19 @@ export function GraphPane({
         }
       }
     });
+
   }, [getWindowSize]);
+
+  // Sync selected edge state to Cytoscape
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    cy.edges().removeClass('vuhlp-edge--selected');
+    if (selectedEdgeId) {
+      cy.getElementById(selectedEdgeId).addClass('vuhlp-edge--selected');
+    }
+  }, [selectedEdgeId]);
 
   // Cycle state refs
   const inputCycleIndexRef = useRef<number>(-1);
@@ -1300,10 +1494,17 @@ export function GraphPane({
       // Other shortcuts only trigger if not typing in an input
       if (isInInput) return;
 
-      if (e.key.toLowerCase() === 'q' && e.shiftKey) {
+      if ((e.key.toLowerCase() === 'q' && e.shiftKey) || e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedNodeId) {
           e.preventDefault();
           requestNodeDelete(selectedNodeId);
+          return;
+        }
+        if (selectedEdgeId && onEdgeDelete) {
+           e.preventDefault();
+           onEdgeDelete(selectedEdgeId);
+           setSelectedEdgeId(null);
+           return;
         }
         return;
       }
@@ -1485,6 +1686,8 @@ export function GraphPane({
           source: edge.source,
           target: edge.target,
           type: edge.type,
+          bidirectional: edge.bidirectional,
+          sourceArrowShape: edge.bidirectional ? 'triangle' : 'none',
           ...(edge.label ? { label: edge.label } : {}),
         };
 
@@ -1565,7 +1768,7 @@ export function GraphPane({
 
     const handleMouseUp = (evt: MouseEvent) => {
       const target = getPortTargetFromPoint(evt.clientX, evt.clientY);
-      if (target && target.port === 'input' && onEdgeCreate) {
+      if (target && onEdgeCreate) {
         onEdgeCreate(newEdgeDrag.sourceId, target.nodeId);
       }
       setNewEdgeDrag(null);
@@ -1583,9 +1786,8 @@ export function GraphPane({
   useEffect(() => {
     if (!edgeDrag) return;
 
-    const isValidDrop = (end: EdgeEndpoint, port: PortKind) => {
-      if (end === 'source') return port === 'output';
-      return port === 'input';
+    const isValidDrop = (_end: EdgeEndpoint, _port: PortKind) => {
+      return true;
     };
 
     const handleMouseMove = (evt: MouseEvent) => {
@@ -1645,13 +1847,15 @@ export function GraphPane({
     nodeId: string,
     deltaX: number,
     deltaY: number,
-    options?: { snap?: boolean }
+    options?: { snap?: boolean; transient?: boolean }
   ) => {
     const cy = cyRef.current;
     if (!cy) return;
 
     const shouldSnap = options?.snap ?? true;
+    const isTransient = options?.transient ?? false;
     let updated = false;
+    
     cy.nodes().forEach((node) => {
       if (node.id() === nodeId && !updated) {
         updated = true;
@@ -1671,23 +1875,25 @@ export function GraphPane({
 
     if (!updated) return;
 
-    const runId = runIdRef.current;
-    if (runId) {
-      const positions: SavedPositions = {};
-      cy.nodes().forEach((n) => {
-        const pos = n.position();
-        positions[n.id()] = { x: pos.x, y: pos.y };
-      });
-      savePositions(runId, positions);
-      savedPositionsRef.current = positions;
+    if (!isTransient) {
+      const runId = runIdRef.current;
+      if (runId) {
+        const positions: SavedPositions = {};
+        cy.nodes().forEach((n) => {
+          const pos = n.position();
+          positions[n.id()] = { x: pos.x, y: pos.y };
+        });
+        savePositions(runId, positions);
+        savedPositionsRef.current = positions;
+      }
+      throttledSync();
     }
 
-    throttledSync();
-    // Immediate curve update for smooth drag
-    if (connectionStyle === 'bezier') {
-      updateAllEdgeCurves();
-    }
-  }, [throttledSync]);
+    // Immediate curve update for smooth drag (always do this for endpoints)
+    // Use local curve update instead of full updateAllEdgeCurves for performance if possible,
+    // but updateAllEdgeCurves is already optimized via batch.
+    updateAllEdgeCurves();
+  }, [throttledSync, updateAllEdgeCurves]);
 
   const handlePositionCommit = useCallback((nodeId: string) => {
     const cy = cyRef.current;
@@ -1725,37 +1931,55 @@ export function GraphPane({
     }
   }, []);
 
-  const handlePortMouseDown = useCallback((nodeId: string, port: 'input' | 'output', e: React.MouseEvent) => {
-    // Only allow dragging from output ports to start a new connection
-    if (port !== 'output') return;
-    
-    const position = getPointerPositionFromMouseEvent(containerRef.current, e.nativeEvent);
-    if (!position) return;
+  const handlePortMouseDown = useCallback((nodeId: string, port: PortKind, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
 
+    // Only allow starting drag from output/right/left ports (acting as source) 
+    // or we could allow dragging FROM input to output? 
+    // Standard behavior: Drag from Output -> Input.
+    // For bidirectional/side ports: Let's assume they can act as Source OR Target.
+    // Simplifying: Allow dragging FROM any port.
+    
+    // However, if we want to enforce One-Way by default, usually we drag from Output.
+    // Let's assume 'left'/'right' can also start connections.
+    
+    // We need the screen position of the port
+    const portPos = getCyPortPosition(cyRef.current!, nodeId, port);
+    if (!portPos) return;
+
+    // Convert screen pos to ensure we have a valid starting point
+    // We already have portPos in screen coords from getCyPortPosition (which returns screen coords)
+    
+    // We need screen coordinates for the drag line which is in an SVG overlay 
+    // The SVG overlay is fixed to the viewport? No, it's usually absolute.
+    // GraphPane.css -> .vuhlp-graph__edge-drag-layer
+    
+    // We need to resolve pointer position relative to the container.
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    if (!containerRect) return;
+    
     setNewEdgeDrag({
       sourceId: nodeId,
-      currentPosition: position,
+      sourcePort: port,
+      currentPosition: portPos,
     });
     // Deselect potentially selected node to avoid dragging it
     if (selectedNodeId) onNodeSelect(null);
   }, [onNodeSelect, selectedNodeId]);
 
-  const handlePortClick = useCallback((nodeId: string, port: 'input' | 'output', _e: React.MouseEvent) => {
+  const handlePortClick = useCallback((nodeId: string, port: PortKind, _e: React.MouseEvent) => {
     // If clicking the same port, toggle off
     if (portTooltip?.nodeId === nodeId && portTooltip?.port === port) {
       setPortTooltip(null);
       return;
     }
 
-    // Toggle highlight
-    if (highlightedPort?.nodeId === nodeId && highlightedPort?.port === port) {
-      setHighlightedPort(null);
-      setPortTooltip(null);
-    } else {
-      setHighlightedPort({ nodeId, port });
-      setPortTooltip({ nodeId, port });
-    }
-  }, [portTooltip, highlightedPort]);
+    setPortTooltip({
+      nodeId,
+      port,
+    });
+  }, [portTooltip]);
 
   const handleNodeContextMenu = useCallback((nodeId: string, e: React.MouseEvent) => {
     e.preventDefault();
@@ -2011,7 +2235,7 @@ export function GraphPane({
           {run && onNodeCreate && (
              <button
                 className="vuhlp-graph__control-btn"
-                onClick={() => onNodeCreate('mock', 'New Agent')} // Default to mock for now
+                onClick={() => setAddAgentModal({ ...addAgentModal, open: true, label: '', customSystemPrompt: '', useCustomPrompt: false })}
                 title="Add Agent Node"
                 style={{ marginLeft: 8 }}
               >
@@ -2141,10 +2365,10 @@ export function GraphPane({
 
         {/* Windows Layer - HTML nodes on top of canvas */}
         {run && run.nodes && (
-          <div className="vuhlp-graph__windows-layer">
+          <div className="vuhlp-graph__windows-layer" ref={windowsLayerRef}>
             {visibleNodes.map((node: Node) => {
               const scaledSize = getScaledSize(node.id);
-              const screenPos = getScreenPosition(node.id, scaledSize);
+              const screenPos = getRelativePosition(node.id, scaledSize);
               const trackedState = getNodeTrackedState(run.id, node.id);
               const isDimmed = selectedNodeId ? !focusNodeIds.has(node.id) : false;
 
@@ -2179,7 +2403,7 @@ export function GraphPane({
         )}
 
         {newEdgeDrag && (() => {
-          const sourcePort = getPortPosition(newEdgeDrag.sourceId, 'output');
+          const sourcePort = getPortPosition(newEdgeDrag.sourceId, newEdgeDrag.sourcePort);
           if (!sourcePort) return null;
           return (
             <svg className="vuhlp-graph__edge-drag-layer" aria-hidden="true">
@@ -2483,8 +2707,76 @@ export function GraphPane({
           onClick={(e) => e.stopPropagation()}
         >
           <div className="vuhlp-graph__context-menu-header">
-            {edgeContextMenu.sourceLabel} → {edgeContextMenu.targetLabel}
+            {edgeContextMenu.sourceLabel} {edgeContextMenu.bidirectional ? '↔' : '→'} {edgeContextMenu.targetLabel}
           </div>
+          <div className="vuhlp-graph__context-menu-divider" />
+          <button
+            className="vuhlp-graph__context-menu-item"
+            onClick={() => {
+              onEdgeUpdate?.(edgeContextMenu.edgeId, { bidirectional: !edgeContextMenu.bidirectional });
+              setEdgeContextMenu(null);
+            }}
+            disabled={!onEdgeUpdate}
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path fillRule="evenodd" d="M1 11.5a.5.5 0 0 0 .5.5h11.793l-3.147 3.146a.5.5 0 0 0 .708.708l4-4a.5.5 0 0 0 0-.708l-4-4a.5.5 0 0 0-.708.708L13.293 11H1.5a.5.5 0 0 0-.5.5zm14-7a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 4H14.5a.5.5 0 0 0 .5-.5z"/>
+            </svg>
+            {edgeContextMenu.bidirectional ? 'Make Directional (One-Way)' : 'Make Bidirectional'}
+          </button>
+          {!edgeContextMenu.bidirectional && (
+            <>
+              <div className="vuhlp-graph__context-menu-divider" />
+              <button
+                className="vuhlp-graph__context-menu-item"
+                onClick={() => {
+                   onEdgeUpdate?.(edgeContextMenu.edgeId, { 
+                     source: edgeContextMenu.targetId,
+                     target: edgeContextMenu.sourceId,
+                   });
+                   setEdgeContextMenu(null);
+                }}
+                disabled={!onEdgeUpdate}
+              >
+               <svg viewBox="0 0 16 16" fill="currentColor">
+                  <path fillRule="evenodd" d="M11.5 15a.5.5 0 0 0 .5-.5V2.707l3.146 3.147a.5.5 0 0 0 .708-.708l-4-4a.5.5 0 0 0-.708 0l-4 4a.5.5 0 1 0 .708.708L11 2.707V14.5a.5.5 0 0 0 .5.5zm-7-14a.5.5 0 0 1 .5.5v11.793l3.146-3.147a.5.5 0 0 1 .708.708l-4 4a.5.5 0 0 1-.708 0l-4-4a.5.5 0 0 1 .708-.708L4 13.293V1.5a.5.5 0 0 1 .5-.5z"/>
+               </svg>
+               Flip Direction
+              </button>
+            </>
+          )}
+          {!edgeContextMenu.bidirectional && (
+            <>
+              <div className="vuhlp-graph__context-menu-divider" />
+              <button
+                className="vuhlp-graph__context-menu-item"
+                onClick={() => {
+                  // Flip direction: Swap source and target
+                  // Note: The backend/provider needs to handle this update properly
+                  // For the UI, we just flip the IDs
+                   onEdgeUpdate?.(edgeContextMenu.edgeId, { 
+                     source: edgeContextMenu.targetId, // We don't have IDs here directly in prop, need to fetch from edge?
+                     // Ah, edgeContextMenu only has string labels? 
+                     // Wait, looking at ContextMenuState definition... 
+                     // It has edgeId. I don't have sourceId/targetId in the state object.
+                     // I need to update where setEdgeContextMenu is called to include IDs.
+                   });
+                   // Actually, checking lines 2595-2630...
+                   // The state `EdgeContextMenuState` (lines 280-287) has: 
+                   // edgeId, sourceLabel, targetLabel, bidirectional.
+                   // It MISSES sourceId and targetId.
+                   // I cannot implement this without those IDs. 
+                   // I will ABORT this chunk and update the definition first or fetching logic.
+                   setEdgeContextMenu(null);
+                }}
+                disabled={true} 
+              >
+               <svg viewBox="0 0 16 16" fill="currentColor">
+                  <path fillRule="evenodd" d="M11.5 15a.5.5 0 0 0 .5-.5V2.707l3.146 3.147a.5.5 0 0 0 .708-.708l-4-4a.5.5 0 0 0-.708 0l-4 4a.5.5 0 1 0 .708.708L11 2.707V14.5a.5.5 0 0 0 .5.5zm-7-14a.5.5 0 0 1 .5.5v11.793l3.146-3.147a.5.5 0 0 1 .708.708l-4 4a.5.5 0 0 1-.708 0l-4-4a.5.5 0 0 1 .708-.708L4 13.293V1.5a.5.5 0 0 1 .5-.5z"/>
+               </svg>
+               Flip Direction
+              </button>
+            </>
+          )}
           <div className="vuhlp-graph__context-menu-divider" />
           <button
             className="vuhlp-graph__context-menu-item vuhlp-graph__context-menu-item--danger"
@@ -2496,6 +2788,141 @@ export function GraphPane({
             </svg>
             Remove Edge
           </button>
+        </div>
+      )}
+
+      {/* Canvas Context Menu (Add Agent) */}
+      {canvasContextMenu && (
+        <div
+          className="vuhlp-graph__context-menu"
+          style={{ left: canvasContextMenu.x, top: canvasContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="vuhlp-graph__context-menu-item"
+            onClick={() => {
+              setAddAgentModal({ ...addAgentModal, open: true, label: '', customSystemPrompt: '', useCustomPrompt: false });
+              setCanvasContextMenu(null);
+            }}
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2Z"/>
+            </svg>
+            Add Agent
+          </button>
+        </div>
+      )}
+
+      {/* Add Agent Modal */}
+      {addAgentModal.open && (
+        <div
+          className="vuhlp-graph__modal-overlay"
+          onClick={() => setAddAgentModal({ ...addAgentModal, open: false })}
+        >
+          <div
+            className="vuhlp-graph__modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="vuhlp-graph__modal-header">
+              <h3>Add Agent</h3>
+              <button
+                className="vuhlp-graph__modal-close"
+                onClick={() => setAddAgentModal({ ...addAgentModal, open: false })}
+              >
+                &times;
+              </button>
+            </div>
+            <div className="vuhlp-graph__modal-body">
+              <div className="vuhlp-graph__modal-field">
+                <label htmlFor="agent-label">Label</label>
+                <input
+                  id="agent-label"
+                  type="text"
+                  placeholder="Enter agent label..."
+                  value={addAgentModal.label}
+                  onChange={(e) => setAddAgentModal({ ...addAgentModal, label: e.target.value })}
+                  autoFocus
+                />
+              </div>
+              <div className="vuhlp-graph__modal-field">
+                <label htmlFor="agent-provider">Provider</label>
+                <select
+                  id="agent-provider"
+                  value={addAgentModal.providerId}
+                  onChange={(e) => setAddAgentModal({ ...addAgentModal, providerId: e.target.value })}
+                >
+                  {PROVIDER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="vuhlp-graph__modal-field vuhlp-graph__modal-field--checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={addAgentModal.useCustomPrompt}
+                    onChange={(e) => setAddAgentModal({ ...addAgentModal, useCustomPrompt: e.target.checked })}
+                  />
+                  Use Custom System Prompt
+                </label>
+              </div>
+              {addAgentModal.useCustomPrompt ? (
+                <div className="vuhlp-graph__modal-field">
+                  <label htmlFor="agent-prompt">Custom System Prompt</label>
+                  <textarea
+                    id="agent-prompt"
+                    placeholder="Enter custom system prompt..."
+                    value={addAgentModal.customSystemPrompt}
+                    onChange={(e) => setAddAgentModal({ ...addAgentModal, customSystemPrompt: e.target.value })}
+                    rows={6}
+                  />
+                </div>
+              ) : (
+                <div className="vuhlp-graph__modal-field">
+                  <label htmlFor="agent-role">Role</label>
+                  <select
+                    id="agent-role"
+                    value={addAgentModal.role}
+                    onChange={(e) => setAddAgentModal({ ...addAgentModal, role: e.target.value })}
+                  >
+                    <option value="investigator">Investigator</option>
+                    <option value="planner">Planner</option>
+                    <option value="implementer">Implementer</option>
+                    <option value="reviewer">Reviewer</option>
+                  </select>
+                </div>
+              )}
+            </div>
+            <div className="vuhlp-graph__modal-footer">
+              <button
+                className="vuhlp-graph__modal-btn vuhlp-graph__modal-btn--secondary"
+                onClick={() => setAddAgentModal({ ...addAgentModal, open: false })}
+              >
+                Cancel
+              </button>
+              <button
+                className="vuhlp-graph__modal-btn vuhlp-graph__modal-btn--primary"
+                onClick={() => {
+                  if (onNodeCreate) {
+                    const options = addAgentModal.useCustomPrompt
+                      ? { customSystemPrompt: addAgentModal.customSystemPrompt }
+                      : { role: addAgentModal.role };
+                    onNodeCreate(
+                      addAgentModal.providerId,
+                      addAgentModal.label || 'New Agent',
+                      options
+                    );
+                  }
+                  setAddAgentModal({ ...addAgentModal, open: false });
+                }}
+                disabled={!onNodeCreate}
+              >
+                Create
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

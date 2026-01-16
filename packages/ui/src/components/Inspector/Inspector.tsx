@@ -33,7 +33,10 @@ export interface InspectorProps {
   providers?: Array<{ id: string; displayName: string }>;
   onUpdateNode?: (runId: string, nodeId: string, updates: Record<string, unknown>) => void;
   // Git repository status
+  // Git repository status
   isGitRepo?: boolean;
+  // Global Event Tracking (System View)
+  trackedStateMap?: Record<string, NodeTrackedState>;
 }
 
 type TabId = 'overview' | 'conversation' | 'graph' | 'tools' | 'files' | 'context' | 'events' | 'console';
@@ -98,6 +101,37 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'console', label: 'Console' },
 ];
 
+function EventItem({ event }: { event: any }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div
+      className={`vuhlp-inspector__event ${isExpanded ? 'vuhlp-inspector__event--expanded' : ''}`}
+      onClick={() => setIsExpanded(!isExpanded)}
+    >
+      <div className="vuhlp-inspector__event-header">
+        <span className="vuhlp-inspector__event-time">
+          {new Date(event.timestamp).toLocaleTimeString()}
+        </span>
+        {event._nodeLabel && (
+          <span className="vuhlp-inspector__event-badge">
+            [{event._nodeLabel}]
+          </span>
+        )}
+        <span className="vuhlp-inspector__event-type">{event.type}</span>
+        <span className="vuhlp-inspector__event-message">{event.message}</span>
+      </div>
+      {isExpanded && (
+        <div className="vuhlp-inspector__event-details" onClick={(e) => e.stopPropagation()}>
+          <pre className="vuhlp-inspector__json-block">
+             {event.raw ? formatJsonWithHighlight(event.raw) : event.message}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Inspector({
   node,
   logs,
@@ -115,12 +149,14 @@ export function Inspector({
   onRemoveConnection,
   onGroupChanges,
   providers = [],
+  trackedStateMap,
   onUpdateNode,
   isGitRepo,
 }: InspectorProps) {
   const [activeTab, setActiveTab] = useState<TabId>('conversation');
   const [chatInput, setChatInput] = useState('');
   const [eventFilter, setEventFilter] = useState('');
+  const [showAllNodes, setShowAllNodes] = useState(false); // Global View Toggle
   const [newInputNodeId, setNewInputNodeId] = useState('');
   const [newOutputNodeId, setNewOutputNodeId] = useState('');
   const [isEditingProvider, setIsEditingProvider] = useState(false);
@@ -192,16 +228,34 @@ export function Inspector({
   };
 
   // Filter events
+  // Filter events (Local or Global)
   const filteredEvents = useMemo(() => {
-    if (!trackedState?.events) return [];
-    if (!eventFilter) return trackedState.events;
+    let sourceEvents: Array<any> = [];
+
+    // Determine source: Global or Local
+    if (showAllNodes && trackedStateMap) {
+      // Flatten all events from all nodes
+      sourceEvents = Object.entries(trackedStateMap).flatMap(([nodeId, state]) => 
+        state.events.map(e => ({
+          ...e,
+          _nodeLabel: nodes.find(n => n.id === nodeId)?.label || nodeId.substring(0, 8)
+        }))
+      ).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    } else if (trackedState?.events) {
+      sourceEvents = trackedState.events;
+    }
+
+    if (!sourceEvents.length) return [];
+    if (!eventFilter) return sourceEvents;
+    
     const lower = eventFilter.toLowerCase();
-    return trackedState.events.filter(
+    return sourceEvents.filter(
       (e) =>
         e.type.toLowerCase().includes(lower) ||
-        e.message.toLowerCase().includes(lower)
+        (e.message && e.message.toLowerCase().includes(lower)) ||
+        (e._nodeLabel && e._nodeLabel.toLowerCase().includes(lower))
     );
-  }, [trackedState?.events, eventFilter]);
+  }, [trackedState?.events, trackedStateMap, eventFilter, showAllNodes, nodes]);
 
   // Extract file changes from artifacts
   const fileArtifacts = useMemo(() => {
@@ -710,25 +764,33 @@ export function Inspector({
         {/* Events Tab */}
         {activeTab === 'events' && (
           <div className="vuhlp-inspector__events">
-            <div className="vuhlp-inspector__events-filter">
-              <input
-                type="text"
-                value={eventFilter}
-                onChange={(e) => setEventFilter(e.target.value)}
-                placeholder="Filter events..."
-                className="vuhlp-inspector__events-input"
-              />
+            <div className="vuhlp-inspector__events-header">
+              <div className="vuhlp-inspector__events-filter">
+                <input
+                  type="text"
+                  value={eventFilter}
+                  onChange={(e) => setEventFilter(e.target.value)}
+                  placeholder="Filter events..."
+                  className="vuhlp-inspector__events-input"
+                />
+              </div>
+              {trackedStateMap && (
+                <label className="vuhlp-inspector__events-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showAllNodes}
+                    onChange={(e) => setShowAllNodes(e.target.checked)}
+                  />
+                  <span>Show All Nodes</span>
+                </label>
+              )}
             </div>
             <div className="vuhlp-inspector__events-list">
               {filteredEvents.length === 0 ? (
                 <div className="vuhlp-inspector__events-empty">No events</div>
               ) : (
                 filteredEvents.map((event) => (
-                  <div key={event.id} className="vuhlp-inspector__event">
-                    <span className="vuhlp-inspector__event-time">{formatTime(event.timestamp)}</span>
-                    <span className="vuhlp-inspector__event-type">{event.type}</span>
-                    <span className="vuhlp-inspector__event-message">{event.message}</span>
-                  </div>
+                  <EventItem key={event.id} event={event} />
                 ))
               )}
             </div>

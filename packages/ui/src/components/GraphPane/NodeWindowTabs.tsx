@@ -145,6 +145,39 @@ function CollapsibleJsonBlock({ data, rawContent }: { data: Record<string, unkno
   );
 }
 
+// Collapsible block for Reasoning/Thinking content
+function CollapsibleReasoningBlock({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Generate a preview of the reasoning
+  const preview = useMemo(() => {
+    const lines = content.split('\n');
+    const firstLine = lines[0].trim();
+    if (firstLine.length > 60) {
+      return firstLine.slice(0, 60) + '...';
+    }
+    return firstLine;
+  }, [content]);
+
+  return (
+    <div className="term-reasoning-collapsible">
+      <button
+        className="term-reasoning-toggle"
+        onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+      >
+        <span className={`term-reasoning-arrow ${expanded ? 'expanded' : ''}`}>▶</span>
+        <span className="term-reasoning-label">Thinking Process</span>
+        {!expanded && <span className="term-reasoning-preview">{preview}</span>}
+      </button>
+      {expanded && (
+        <div className="term-reasoning-content">
+          {content}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Tool status icons mapping (unicode symbols, no emojis)
 const TOOL_STATUS_ICONS: Record<string, string> = {
   proposed: '○',
@@ -231,8 +264,9 @@ function ParsedMessageContent({ content }: { content: string }): ReactNode {
           default:
             // For long text, use truncation
             const text = segment.content;
-            if (text.length > 2000) {
-              return <TruncatedText key={idx} text={text} maxLength={2000} />;
+            // Effectively disable truncation for normal messages by setting a very high limit
+            if (text.length > 500000) {
+              return <TruncatedText key={idx} text={text} maxLength={500000} />;
             }
             // Render markdown for assistant messages
             return <MarkdownContent key={idx} content={text} />;
@@ -260,7 +294,7 @@ function MessageBlock({ msg, isPending }: MessageBlockProps) {
       </div>
       <div className="term-msg__content">
         {isReasoning ? (
-            <div className="term-msg__reasoning">{msg.content}</div>
+            <CollapsibleReasoningBlock content={msg.content} />
         ) : (
           <ParsedMessageContent content={msg.content} />
         )}
