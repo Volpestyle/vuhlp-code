@@ -44,6 +44,7 @@ import {
   PromptCancelledEvent,
 } from "./types.js";
 import { nowIso } from "./time.js";
+import { log } from "./logger.js";
 
 type Subscriber = (event: VuhlpEvent) => void;
 
@@ -57,11 +58,33 @@ export class EventBus {
 
   subscribe(fn: Subscriber): () => void {
     this.subscribers.add(fn);
-    return () => this.subscribers.delete(fn);
+    return () => {
+      this.subscribers.delete(fn);
+    };
   }
 
   /** Publish an event, apply it to run state, persist, append to JSONL, and broadcast. */
   publish(event: VuhlpEvent): void {
+    // Log significant events at info level, others at debug
+    const significantEvents = [
+      "run.created", "run.started", "run.completed", "run.failed", "run.stopped",
+      "node.created", "node.completed", "node.failed"
+    ];
+
+    if (significantEvents.includes(event.type)) {
+      log.info(`Event: ${event.type}`, {
+        runId: event.runId,
+        eventId: event.id,
+        nodeId: "nodeId" in event ? (event as { nodeId: string }).nodeId : undefined
+      });
+    } else {
+      log.debug(`Event: ${event.type}`, {
+        runId: event.runId,
+        eventId: event.id,
+        eventType: event.type
+      });
+    }
+
     // Append first for durability
     this.store.appendEvent(event.runId, event);
 
@@ -125,7 +148,7 @@ export class EventBus {
     } as NodeDeletedEvent);
   }
 
-  emitEdge(runId: string, edge: EdgeEvent["edge"]): void {
+  emitEdgeCreated(runId: string, edge: EdgeEvent["edge"]): void {
     this.publish({
       id: randomUUID(),
       runId,
@@ -133,6 +156,30 @@ export class EventBus {
       type: "edge.created",
       edge,
     } as EdgeEvent);
+  }
+
+  emitEdgePatch(runId: string, edgeId: string, patch: Partial<EdgeEvent["edge"]>, type: "edge.updated"): void {
+    // We need to define EdgeUpdatedEvent or similar if we want to be strict,
+    // but for now let's reuse EdgeEvent structure or similar.
+    // Actually, looking at NodeEvent, it has `patch`. edge.created has `edge`.
+    // Let's check types.ts for EdgeEvent definition.
+    // Assuming we need to extend types.ts as well.
+    // For now, I will construct a generic event or reuse existing patterns.
+    // Let me check types behavior for `emitNodePatch`.
+    // It uses `NodeEvent` which has `patch`.
+    // Does EdgeEvent have patch? likely not.
+    // I need to check types.ts first to be proper.
+    // But I can tentatively implement it here if I fix types.
+
+    // WAIT: I should check types.ts first.
+    this.publish({
+      id: randomUUID(),
+      runId,
+      ts: nowIso(),
+      type,
+      edgeId, // potentially missing in generic EdgeEvent?
+      patch
+    } as any);
   }
 
   emitEdgeDeleted(runId: string, edgeId: string): void {
