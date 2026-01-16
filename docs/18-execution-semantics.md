@@ -36,7 +36,6 @@ A **Node** is an addressable unit of computation.
 Nodes can represent:
 - an agent session (Codex / Claude / Gemini / mock)
 - a tool step (verification, merge, doc sync)
-- a gate/router/join
 
 ### Edge
 An **Edge** defines how outputs from one node are delivered to another.
@@ -95,11 +94,10 @@ A node’s trigger mode MUST be one of:
 
 - `manual_only`: node runs only when the user triggers a turn.
 - `on_any_input`: run when **any** new input arrives.
-- `on_all_inputs`: run only when **all required inputs** are present (fan-in).
 - `scheduled`: runtime-controlled periodic/tick-based runs.
 
 **Strong recommendation:**
-- Use `JoinGate` for fan-in instead of `on_all_inputs` in arbitrary agent nodes.
+- Let the Orchestrator manage fan-in synchronization logic.
 
 ### Inputs
 Nodes receive inputs as a list of payload envelopes.
@@ -270,9 +268,9 @@ Behavior:
 Behavior:
 - Coder produces diff → Verifier runs tests → failures return → Coder patches → ... until pass.
 
-### 3) Fan-in (ResearchA + ResearchB → Join → Synthesizer)
-- Use `JoinGate(all)` to wait for both research nodes.
-- Synthesizer consumes the aggregated payload.
+### 3) Fan-in (ResearchA + ResearchB → Synchronizer)
+- Orchestrator waits for both research nodes to complete.
+- Orchestrator spawns Synthesizer to consume the aggregated payload.
 
 ---
 
@@ -286,6 +284,5 @@ To implement this spec cleanly, vuhlp SHOULD expose:
 - standardized payload envelope and context pack types
 
 See also:
-- `docs/19-join-gates-and-routing.md`
 - `docs/20-loop-safety-and-nonprogress.md`
 - `docs/21-context-packs.md`

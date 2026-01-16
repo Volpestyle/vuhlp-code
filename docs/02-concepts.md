@@ -57,7 +57,10 @@ Common Roles:
 An **Edge** defines the flow of information between nodes.
 
 ### Structure
-`Node A (Output) -> Node B (Input)`
+Connections are **Bidirectional** by default.
+`Node A <-> Node B`
+
+This enables natural conversation flows where agents can reply to each other without needing multiple connections. You can still enforce directional flows (`Node A -> Node B`) if needed.
 
 ### Typed Payloads
 Edges do not just forward raw text. They carry structured **Envelopes**:

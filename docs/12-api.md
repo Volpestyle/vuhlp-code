@@ -463,7 +463,7 @@ Body:
 
 - `sourceId` (required): Source node ID
 - `targetId` (required): Target node ID
-- `type` (optional): Edge type - `handoff` (default), `dependency`, `report`, `gate`
+- `type` (optional): Edge type - `handoff` (default), `dependency`, `report`
 - `label` (optional): Display label
 
 Response:

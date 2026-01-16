@@ -61,6 +61,62 @@ flowchart TB
   Codex -->|Events| Engine
 ```
 
+## Monorepo Structure
+
+vuhlp is organized as a pnpm monorepo:
+
+```
+vuhlp-code/
+├── apps/
+│   └── daemon/              # Main vuhlp daemon (control plane)
+│       ├── src/
+│       │   ├── core/        # Graph engine, scheduler, store, types
+│       │   ├── providers/   # Provider adapters (Claude, Codex, Gemini)
+│       │   └── index.ts     # HTTP/WebSocket server entry
+│       ├── client/          # Embedded web UI (React)
+│       └── vuhlp.config.json
+│
+├── packages/
+│   ├── ui/                  # Shared UI components
+│   │   ├── brutalist-ui/    # Brutalist design system
+│   │   └── sleek-ui/        # Alternative sleek design
+│   ├── cli/                 # (Planned) Standalone CLI tool
+│   └── backend-py/          # (Experimental) Python backend utilities
+│
+├── docs/                    # Documentation (this folder)
+│   ├── schemas/             # JSON schemas
+│   └── examples/            # Example configs and prompts
+│
+└── sandbox/                 # Test workspace for development
+```
+
+### Package Descriptions
+
+| Package | Status | Description |
+|---------|--------|-------------|
+| `apps/daemon` | **Active** | Main vuhlp daemon with HTTP/WS server, graph engine, and embedded UI |
+| `packages/ui` | **Active** | Shared React UI components (GraphPane, NodeWindow, Inspector) |
+| `packages/cli` | Planned | Standalone CLI for headless vuhlp operations |
+| `packages/backend-py` | Experimental | Python utilities for backend integrations |
+
+### Key Source Directories
+
+**`apps/daemon/src/core/`** — The heart of vuhlp:
+- `orchestrator.ts` — Main orchestration loop and phase management
+- `nodeExecutor.ts` — Provider process spawning and turn execution
+- `graphScheduler.ts` — Concurrency control and node scheduling
+- `eventBus.ts` — Event publishing and state broadcasting
+- `store.ts` — Event-sourced state persistence
+- `types.ts` — Canonical type definitions
+- `promptFactory.ts` — Prompt construction with context packs
+
+**`apps/daemon/src/providers/`** — Provider adapters:
+- `claudeCli.ts` — Claude Code CLI adapter
+- `codexCli.ts` — OpenAI Codex CLI adapter
+- `geminiCli.ts` — Google Gemini CLI adapter
+- `mock.ts` — Mock provider for testing
+- `mappers/` — Event normalization for each provider
+
 ## Design Principles
 
 - **Graph-First Orchestration**: The system behavior is defined by the topology of the graph, not a hardcoded state machine.

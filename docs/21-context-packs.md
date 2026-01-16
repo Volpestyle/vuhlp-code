@@ -19,7 +19,7 @@ A **Context Pack** is a JSON object that can be:
 
 - attached to a node turn as input
 - forwarded across edges
-- merged by JoinGate
+- merged by Orchestrator
 - stored as an artifact for replay/debugging
 
 Schema:

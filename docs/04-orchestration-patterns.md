@@ -39,22 +39,22 @@ Create cycles in the graph to enable self-healing and iteration.
 - **Max Iterations**: Preventing infinite cycles.
 - **Stall Detection**: Halting if 3 consecutive failures produce identical verification logs.
 
-## 4. Fan-In and Synchronization (Join)
+## 4. Fan-In and Synchronization (Orchestrator-Managed)
 
-When multiple agents work in parallel, you need a way to combine their outputs.
+When multiple agents work in parallel, the Orchestrator manages the synchronization directly.
 
-**Example**: `(Frontend, Backend) -> IntegrationVerifier`
+**Example**: `(Frontend, Backend) -> Integration`
 
-1. **Orchestrator**: Spawns two parallel tasks: `Frontend Task` and `Backend Task`.
-2. **Outputs**: Both tasks produce diffs/artifacts independently.
-3. **JoinGate (IntegrationVerifier)**:
-   - **Trigger Mode**: `On All Inputs`.
-   - It waits until *both* upstream tasks have emitted their "Done" payloads.
-   - It merges the artifacts (resolving non-conflicting files automatically) and runs integration tests.
-4. **Router**:
-   - If Merge Fails -> Sends "Merge Conflict" payload back to Orchestrator.
-   - If Tests Fail -> Sends "Bug Report" back to respective Implementers.
-   - If Success -> Merges to main workspace.
+1. **Orchestrator**: Spawns `Frontend Task` and `Backend Task`.
+2. **Parallel Work**: Both agents work independently.
+3. **Completion**:
+   - `Frontend Task` reports "Done".
+   - `Backend Task` reports "Done".
+4. **Orchestrator Decision**:
+   - The Orchestrator sees both are complete.
+   - It then decides to spawn `IntegrationVerifier` or merge the code itself.
+
+There is no "JoinGate" node. The join logic resides in the Orchestrator's intelligence, which handles the synchronization.
 
 ## 5. The Docs-First Lifecycle
 
@@ -81,9 +81,34 @@ For high-complexity tasks, use a Supervisor pattern to manage the above patterns
 - **Spokes**: Multiple specialized Maker/Researcher nodes.
 
 **Workflow**:
-1. **Delegation**: The Orchestrator breaks down the user prompt and prompts specific sub-nodes.
+1. **Delegation**: The Orchestrator breaks down the user prompt and spawns sub-nodes using the `spawn_node` command.
 2. **Parallel Execution**: Sub-nodes work in parallel (in Auto mode).
 3. **Reconciliation**: Sub-nodes report back their findings or patches. The Orchestrator reviews the combined result, resolves conflicts (functioning as a manual JoinGate), and finalizes the work.
+
+**Example - Spawning Parallel Workers**:
+```json
+{
+  "command": "spawn_node",
+  "args": {
+    "role": "implementer",
+    "label": "Frontend Builder",
+    "instructions": "Build the React components for the dashboard..."
+  }
+}
+```
+
+```json
+{
+  "command": "spawn_node",
+  "args": {
+    "role": "implementer",
+    "label": "Backend Builder",
+    "instructions": "Implement the API endpoints for dashboard data..."
+  }
+}
+```
+
+> See [prompts.md](./prompts.md#4-graph-commands-reference) for the full `spawn_node` command specification.
 
 ## Impact of Global Modes
 

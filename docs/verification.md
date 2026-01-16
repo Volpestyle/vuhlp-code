@@ -143,4 +143,4 @@ These are the routes present in the v0 daemon:
 
 ⸻
 
-If you tell me what you’ve implemented beyond v0 (especially Auto/Interactive mode toggle, join gates, loop safety), I can give you a second checklist of specific “this should happen, then that should happen” tests that directly validate those newer docs (e.g., “switch to interactive mid-run halts scheduling after current turn boundary,” “JoinGate waits for both workers,” “loop halts on non-progress”).
+If you tell me what you’ve implemented beyond v0 (especially Auto/Interactive mode toggle, loop safety), I can give you a second checklist of specific “this should happen, then that should happen” tests that directly validate those newer docs (e.g., “switch to interactive mid-run halts scheduling after current turn boundary,” “loop halts on non-progress”).
