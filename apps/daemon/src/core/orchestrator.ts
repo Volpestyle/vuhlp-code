@@ -3,9 +3,13 @@ import path from "node:path";
 import { EventBus } from "./eventBus.js";
 import { RunStore } from "./store.js";
 import { nowIso } from "./time.js";
+import { log } from "./logger.js";
 import {
   NodeRecord,
   EdgeRecord,
+  EdgeType,
+  NodeStatus,
+  EdgeEvent,
   RoleId,
   InteractionMode,
   RunMode,
@@ -42,16 +46,19 @@ import { DocsSyncWorkflow } from "./workflows/docsSync.js";
 
 import { NodeExecutor } from "./nodeExecutor.js";
 import { GraphScheduler } from "./graphScheduler.js";
+import { NodeSummarizerService } from "./nodeSummarizer.js";
 
 // Graph Command Types
 interface GraphCommandSpawn {
   command: "spawn_node";
   args: {
-    role: RoleId; // e.g. "implementer"
+    role?: RoleId; // e.g. "implementer" - now optional
     label: string; // e.g. "Frontend Builder"
     instructions: string; // e.g. "Build the login page..."
     input?: Record<string, unknown>;
     taskId?: string;
+    customSystemPrompt?: string; // Custom system prompt - overrides role-based prompt
+    policy?: { allowedTools?: string[]; approvalMode?: "always" | "high_risk_only" | "never" }; // Node policy override
   };
 }
 
@@ -157,6 +164,7 @@ export class OrchestratorEngine {
   // NEW Components
   public nodeExecutor: NodeExecutor;
   private scheduler: GraphScheduler;
+  private summarizer: NodeSummarizerService;
 
   constructor(params: {
     store: RunStore;
@@ -203,6 +211,10 @@ export class OrchestratorEngine {
       { maxConcurrency: this.cfg.scheduler.maxConcurrency }
     );
 
+    // Start background summarizer
+    this.summarizer = new NodeSummarizerService(this.store, this.bus, this.providers);
+    this.summarizer.start();
+
     // Initialize Workflows with context adapter
     // We bind methods to 'this' to ensure correct context when called by workflows
     const workflowContext: any = {
@@ -235,8 +247,10 @@ export class OrchestratorEngine {
   }
 
   stopRun(runId: string): boolean {
+    log.info("Stopping run", { runId });
     this.scheduler.stop(runId);
     this.bus.emitRunPatch(runId, { id: runId, status: "failed" }, "run.failed");
+    log.info("Run stopped", { runId });
     return true;
   }
 
@@ -246,12 +260,14 @@ export class OrchestratorEngine {
   }
 
   pauseRun(runId: string): boolean {
+    log.info("Pausing run", { runId });
     this.scheduler.pause(runId);
     this.bus.emitRunPatch(runId, { id: runId, status: "paused" }, "run.paused");
     return true;
   }
 
   resumeRun(runId: string, feedback?: string): boolean {
+    log.info("Resuming run", { runId, hasFeedback: !!feedback });
     if (feedback) {
       this.store.createArtifact({
         runId,
@@ -495,16 +511,47 @@ export class OrchestratorEngine {
     const run = this.store.getRun(runId);
     if (!run) return;
     const prev = run.phase;
+    log.info("Phase transition", { runId, from: prev, to: newPhase, reason });
     run.phase = newPhase;
     this.store.persistRun(run);
     this.bus.emitRunPhaseChanged(runId, newPhase, prev, reason);
   }
 
-  private createTaskNode(params: { runId: string; parentNodeId: string; label: string; role: RoleId; providerId: string; input?: unknown; taskId?: string }): NodeRecord {
+  private createTaskNode(params: {
+    runId: string;
+    parentNodeId: string;
+    label: string;
+    role?: RoleId;
+    providerId: string;
+    input?: unknown;
+    taskId?: string;
+    customSystemPrompt?: string;
+    policy?: { allowedTools?: string[]; approvalMode?: "always" | "high_risk_only" | "never" };
+  }): NodeRecord {
     const id = randomUUID();
+    log.debug("Creating task node", {
+      runId: params.runId,
+      nodeId: id,
+      label: params.label,
+      role: params.role,
+      providerId: params.providerId,
+      hasCustomPrompt: !!params.customSystemPrompt
+    });
     const node: NodeRecord = {
-      id, runId: params.runId, parentNodeId: params.parentNodeId, type: "task", label: params.label, role: params.role,
-      providerId: params.providerId, taskId: params.taskId, status: "queued", createdAt: nowIso(), input: params.input, triggerMode: "any_input"
+      id,
+      runId: params.runId,
+      parentNodeId: params.parentNodeId,
+      type: "task",
+      label: params.label,
+      role: params.role,
+      providerId: params.providerId,
+      taskId: params.taskId,
+      status: "queued",
+      createdAt: nowIso(),
+      input: params.input,
+      triggerMode: "any_input",
+      customSystemPrompt: params.customSystemPrompt,
+      policy: params.policy,
     };
     this.bus.emitNodePatch(params.runId, id, node, "node.created");
     return node;
@@ -513,29 +560,43 @@ export class OrchestratorEngine {
   public createEdge(runId: string, from: string, to: string, type: EdgeRecord["type"], label?: string): void {
     const id = randomUUID();
     const edge: EdgeRecord = {
-      id, runId, from, to, type, label, createdAt: nowIso(), deliveryPolicy: "queue", pendingEnvelopes: []
+      id, runId, from, to, type, label, createdAt: nowIso(), deliveryPolicy: "queue", pendingEnvelopes: [], bidirectional: true
     };
     this.store.addEdge(runId, edge);
-    this.bus.emitEdge(runId, edge);
+    this.bus.emitEdgeCreated(runId, edge);
   }
 
   private executeGraphCommand(runId: string, parentNodeId: string, cmd: GraphCommand): string {
     if (cmd.command === "spawn_node") {
-      const { role, label, instructions, input } = cmd.args;
+      const { role, label, instructions, input, customSystemPrompt, policy } = cmd.args;
+      log.info("Executing graph command: spawn_node", {
+        runId,
+        parentNodeId,
+        role,
+        label,
+        hasCustomPrompt: !!customSystemPrompt
+      });
+
+      // Resolve provider: use role-based mapping if role provided, otherwise default to mock
+      const effectiveRole = role ?? "implementer";
+      const providerId = this.cfg.roles[effectiveRole] ?? "mock";
 
       // 1. Create the new node
       const newNode = this.createTaskNode({
         runId,
         parentNodeId,
-        role: role ?? "implementer",
+        role: effectiveRole,
         label: label ?? "Agent",
-        providerId: this.cfg.roles[role] ?? "mock", // Resolve provider from role
-        taskId: cmd.args.taskId, // Pass the Task ID context
+        providerId,
+        taskId: cmd.args.taskId,
+        customSystemPrompt,
+        policy,
         input: {
           ...input,
           initialInstructions: instructions // Pass instructions to the new node
         }
       });
+
       // Force persist
       const run = this.store.getRun(runId);
       if (run) {
@@ -543,14 +604,18 @@ export class OrchestratorEngine {
         this.store.persistRun(run);
       }
 
-      // 2. Create Connecton (Parent -> Child) (Handoff)
-      this.createEdge(runId, parentNodeId, newNode.id, "handoff", "delegates-to");
+      // 2. Create Connection (Parent <-> Child) (Bidirectional Handoff)
+      this.createEdge(runId, parentNodeId, newNode.id, "handoff", "collaborates-with");
 
-      // 3. Create Report Edge (Child -> Parent)
-      this.createEdge(runId, newNode.id, parentNodeId, "report", "reports-to");
+      // 3. (Removed redundant report edge)
 
       this.bus.emitNodeProgress(runId, parentNodeId, `[GRAPH] Spawned node '${label}' (${newNode.id})`);
-      console.log(`[Orchestrator] Successfully spawned node '${label}' (${newNode.id}) from parent ${parentNodeId}`);
+      log.info("Node spawned successfully", {
+        runId,
+        parentNodeId,
+        newNodeId: newNode.id,
+        label
+      });
       return `[SYSTEM] Graph Command Executed: Node '${label}' (${newNode.id}) created and connected.\n`;
     }
     return "";
@@ -562,9 +627,22 @@ export class OrchestratorEngine {
     providerId: string;
     parentNodeId?: string;
     input?: Record<string, unknown>;
+    customSystemPrompt?: string;
+    policy?: { allowedTools?: string[]; approvalMode?: "always" | "high_risk_only" | "never" };
   }): NodeRecord {
+    log.info("Spawning node via API", {
+      runId,
+      label: params.label,
+      role: params.role,
+      providerId: params.providerId,
+      hasCustomPrompt: !!params.customSystemPrompt
+    });
+
     const run = this.store.getRun(runId);
-    if (!run) throw new Error(`Run not found: ${runId}`);
+    if (!run) {
+      log.error("Cannot spawn node: run not found", { runId });
+      throw new Error(`Run not found: ${runId}`);
+    }
 
     const parentNodeId = params.parentNodeId ?? run.rootOrchestratorNodeId;
 
@@ -574,17 +652,20 @@ export class OrchestratorEngine {
       label: params.label,
       role: params.role ?? "implementer",
       providerId: params.providerId,
-      input: params.input
+      input: params.input,
+      customSystemPrompt: params.customSystemPrompt,
+      policy: params.policy,
     });
 
     // Persist
     run.nodes[newNode.id] = newNode;
     this.store.persistRun(run);
 
-    // Auto-connect to parent (bilateral handoff/report)
-    this.createEdge(runId, parentNodeId, newNode.id, "handoff", "delegates-to");
-    this.createEdge(runId, newNode.id, parentNodeId, "report", "reports-to");
+    // Auto-connect to parent (bidirectional handoff)
+    this.createEdge(runId, parentNodeId, newNode.id, "handoff", "collaborates-with");
+    // Removed duplicate "report" edge as it is now redundant with bidirectional support
 
+    log.info("Node spawned via API", { runId, nodeId: newNode.id, label: params.label });
     return newNode;
   }
 
@@ -628,10 +709,23 @@ export class OrchestratorEngine {
   }
 
   async startRun(runId: string): Promise<void> {
+    const startTime = Date.now();
+    log.info("Starting run", { runId });
+
     const run = this.store.getRun(runId);
-    if (!run) throw new Error(`Run not found: ${runId}`);
+    if (!run) {
+      log.error("Cannot start run: not found", { runId });
+      throw new Error(`Run not found: ${runId}`);
+    }
 
     const rootNodeId = run.rootOrchestratorNodeId;
+    log.debug("Run configuration", {
+      runId,
+      rootNodeId,
+      repoPath: run.repoPath,
+      mode: run.mode,
+      globalMode: run.globalMode
+    });
 
     this.bus.emitRunPatch(runId, { id: runId, status: "running" }, "run.started");
     this.bus.emitNodePatch(runId, rootNodeId, { status: "queued" }, "node.progress");
@@ -640,18 +734,41 @@ export class OrchestratorEngine {
     this.bus.emitNodeProgress(runId, rootNodeId, "BOOT: Loading project and detecting repo state...");
 
     // Detect repo facts and docs inventory
+    log.debug("Detecting repo facts", { runId, repoPath: run.repoPath });
     run.repoFacts = this.detectRepoFacts(run.repoPath);
     run.docsInventory = this.detectDocsInventory(run.repoPath);
     this.store.persistRun(run);
 
+    // Load dynamic prompts from docs (Docs-First Architecture)
+    this.promptFactory.loadFromDocs(run.repoPath);
+
+    log.info("Repo analysis complete", {
+      runId,
+      language: run.repoFacts.language,
+      hasTests: run.repoFacts.hasTests,
+      hasDocs: run.repoFacts.hasDocs,
+      isGitRepo: run.repoFacts.isGitRepo,
+      missingDocs: run.docsInventory?.missingRequired?.length ?? 0
+    });
+
     this.bus.emitNodeProgress(runId, rootNodeId, `BOOT: Detected language=${run.repoFacts.language}, hasTests=${run.repoFacts.hasTests}, hasDocs=${run.repoFacts.hasDocs}`);
 
     // Collect harness health (simplified)
+    log.debug("Checking provider health", { runId });
     const providers = this.providers.list();
     const results = await Promise.all(providers.map(async p => ({
       id: p.id,
       health: await p.healthCheck().catch(e => ({ ok: false, message: String(e) }))
     })));
+
+    const healthySummary = results.filter(r => r.health.ok).map(r => r.id);
+    log.info("Provider health check complete", {
+      runId,
+      total: results.length,
+      healthy: healthySummary.length,
+      healthyProviders: healthySummary
+    });
+
     const art = this.store.createArtifact({
       runId,
       nodeId: rootNodeId,
@@ -663,8 +780,10 @@ export class OrchestratorEngine {
     this.bus.emitArtifact(runId, art);
 
     // Root orchestrator workspace
+    log.debug("Preparing workspace", { runId, rootNodeId });
     const rootWs = await this.workspace.prepareWorkspace({ repoPath: run.repoPath, runId, nodeId: rootNodeId });
     this.bus.emitNodePatch(runId, rootNodeId, { workspacePath: rootWs }, "node.progress");
+    log.debug("Workspace prepared", { runId, workspacePath: rootWs });
 
     if (!run.globalMode) {
       run.globalMode = "PLANNING";
@@ -691,6 +810,12 @@ export class OrchestratorEngine {
 
     this.transitionPhase(runId, "EXECUTE", "Ready for graph execution");
 
+    const bootDuration = Date.now() - startTime;
+    log.info("Run boot complete, starting scheduler", {
+      runId,
+      bootDurationMs: bootDuration
+    });
+
     // Handoff to scheduler
     await this.scheduler.start(runId);
   }
@@ -701,14 +826,19 @@ export class OrchestratorEngine {
    */
   async recoverRun(runId: string): Promise<void> {
     const run = this.store.getRun(runId);
-    if (!run) return;
+    if (!run) {
+      log.warn("Cannot recover run: not found", { runId });
+      return;
+    }
 
-    console.log(`[Orchestrator] Recovering run ${runId} in phase ${run.phase}`);
+    log.info("Recovering run", {
+      runId,
+      phase: run.phase,
+      status: run.status,
+      nodeCount: Object.keys(run.nodes).length
+    });
 
     // Ensure run is marked as running if it was active
-    // If it was "queued" (from our cleanup), we should probably set it to "running" globally
-    // so the UI knows it's active, OR just rely on scheduler picking up "queued" nodes?
-    // The run.status itself should be "running" if the scheduler is active.
     if (run.status !== "running" && run.status !== "paused") {
       run.status = "running";
       this.store.persistRun(run);
@@ -716,11 +846,8 @@ export class OrchestratorEngine {
     }
 
     // Start the scheduler loop
-    // No await here? We want to start it in background usually? 
-    // But start() is async and blocks until loop finishes.
-    // So we should NOT await it if calling from a synchronous/startup context that iterates multiple runs.
     this.scheduler.start(runId).catch(e => {
-      console.error(`[Orchestrator] Failed to recover run ${runId}`, e);
+      log.error("Failed to recover run", { runId, error: e instanceof Error ? e.message : String(e) });
     });
   }
 

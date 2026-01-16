@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ToolProposal, ApprovalStatus, ApprovalResolution } from "./types.js";
 import { nowIso } from "./time.js";
 import { EventBus } from "./eventBus.js";
+import { log } from "./logger.js";
 
 /**
  * ApprovalRequest represents a pending tool execution that requires user approval.
@@ -66,6 +67,14 @@ export class ApprovalQueue {
     const timeoutMs = params.timeoutMs ?? this.cfg.defaultTimeoutMs ?? 0;
     const now = nowIso();
 
+    log.info("Approval requested", {
+      approvalId: id,
+      runId: params.runId,
+      nodeId: params.nodeId,
+      toolName: params.tool.name,
+      timeoutMs: timeoutMs > 0 ? timeoutMs : undefined
+    });
+
     const request: ApprovalRequest = {
       id,
       runId: params.runId,
@@ -110,8 +119,17 @@ export class ApprovalQueue {
   resolve(approvalId: string, resolution: ApprovalResolution): boolean {
     const request = this.requests.get(approvalId);
     if (!request || request.status !== "pending") {
+      log.debug("Cannot resolve approval: not found or already resolved", { approvalId });
       return false;
     }
+
+    log.info("Approval resolved", {
+      approvalId,
+      runId: request.runId,
+      nodeId: request.nodeId,
+      toolName: request.tool.name,
+      status: resolution.status
+    });
 
     // Clear timeout if set
     const timeout = this.timeoutHandles.get(approvalId);
@@ -274,6 +292,14 @@ export class ApprovalQueue {
     if (!request || request.status !== "pending") {
       return;
     }
+
+    log.warn("Approval timed out", {
+      approvalId,
+      runId: request.runId,
+      nodeId: request.nodeId,
+      toolName: request.tool.name,
+      timeoutMs: request.timeoutMs
+    });
 
     if (this.cfg.autoDenyOnTimeout !== false) {
       this.resolve(approvalId, {

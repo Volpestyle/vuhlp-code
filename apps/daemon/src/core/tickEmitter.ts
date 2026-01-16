@@ -121,7 +121,6 @@ export class TickEmitter {
     const totalTasks = taskDag?.steps.length ?? 0;
     const doneTasks = nodes.filter((n) => n.status === "completed" && n.type === "task").length;
     const blockedTasks = nodes.filter((n) =>
-      n.status === "blocked_dependency" ||
       n.status === "blocked_approval" ||
       n.status === "blocked_manual_input"
     ).length;

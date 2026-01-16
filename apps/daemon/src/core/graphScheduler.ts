@@ -5,6 +5,7 @@ import { EventBus } from "./eventBus.js";
 import { ChatManager } from "./chatManager.js";
 import { NodeExecutor } from "./nodeExecutor.js";
 import { RunRecord, Envelope } from "./types.js";
+import { log } from "./logger.js";
 
 interface SchedulerConfig {
     maxConcurrency: number;
@@ -32,7 +33,12 @@ export class GraphScheduler {
      * Start the scheduler loop for a specific run.
      */
     async start(runId: string): Promise<void> {
-        if (this.activeLoops.has(runId)) return;
+        if (this.activeLoops.has(runId)) {
+            log.debug("Scheduler already running for run", { runId });
+            return;
+        }
+
+        log.info("Starting scheduler", { runId, maxConcurrency: this.config.maxConcurrency });
 
         const controller = new AbortController();
         this.loopControllers.set(runId, controller);
@@ -50,6 +56,7 @@ export class GraphScheduler {
         try {
             await loopPromise;
         } finally {
+            log.info("Scheduler stopped", { runId });
             this.activeLoops.delete(runId);
             this.loopControllers.delete(runId);
             this.pauseSignals.delete(runId);
@@ -57,6 +64,7 @@ export class GraphScheduler {
     }
 
     stop(runId: string): void {
+        log.info("Stopping scheduler", { runId });
         const controller = this.loopControllers.get(runId);
         if (controller) {
             controller.abort();
@@ -67,28 +75,33 @@ export class GraphScheduler {
     }
 
     pause(runId: string): boolean {
-        if (!this.activeLoops.has(runId)) return false;
-        if (this.pauseSignals.has(runId)) return true;
+        if (!this.activeLoops.has(runId)) {
+            log.debug("Cannot pause: scheduler not running", { runId });
+            return false;
+        }
+        if (this.pauseSignals.has(runId)) {
+            log.debug("Scheduler already paused", { runId });
+            return true;
+        }
 
+        log.info("Pausing scheduler", { runId });
         let resolve: () => void = () => { };
         const promise = new Promise<void>((r) => { resolve = r; });
         this.pauseSignals.set(runId, { resolve, promise });
-
-        // Abort current execution step signals to interrupt ASAP? 
-        // We don't have direct access to node-level signals here easily unless we track them.
-        // For V0 refactor, let's rely on the loop checking pause state.
 
         return true;
     }
 
     resume(runId: string): boolean {
         const pause = this.pauseSignals.get(runId);
-        if (!pause) return false;
+        if (!pause) {
+            log.debug("Cannot resume: scheduler not paused", { runId });
+            return false;
+        }
 
+        log.info("Resuming scheduler", { runId });
         pause.resolve();
         this.pauseSignals.delete(runId);
-        // If controller was aborted to pause, we might need to reset it?
-        // In this model, we don't abort controller to pause, we just wait on promise.
 
         return true;
     }
@@ -134,9 +147,19 @@ export class GraphScheduler {
                     // We don't disturb 'running' nodes as they will pick up messages in their current or next tick?
                     // Actually, if it's running, it might arguably be blocked on manual input, but let's ensure it's queued if it's not running.
                     if (node && node.status !== "running" && node.status !== "queued") {
-                        node.status = "queued";
-                        this.bus.emitNodePatch(runId, nodeId, { status: "queued" }, "node.progress");
-                        wokenCount++;
+                        // DRY RUN CHECK: prevent infinite wake-up loops
+                        // Only wake up if the node will ACTUALLY consume the message.
+                        const wouldConsume = this.consumeChatMessages(runId, nodeId, { dryRun: true });
+
+                        if (wouldConsume) {
+                            node.status = "queued";
+                            this.bus.emitNodePatch(runId, nodeId, { status: "queued" }, "node.progress");
+                            wokenCount++;
+                        } else {
+                            // Can't consume? Then don't wake it. It might be waiting for other conditions/inputs.
+                            // If it's a "global" message not addressed to anyone, and NOONE consumes it, it stays pending.
+                            // That's fine, better than spinning.
+                        }
                     }
                 }
                 if (wokenCount > 0) this.store.persistRun(run);
@@ -159,10 +182,20 @@ export class GraphScheduler {
             // 3. Scan for Ready Nodes
             const readyNodes = this.getReadyNodes(runId);
 
+            if (readyNodes.length > 0) {
+                log.debug("Scheduler tick: found ready nodes", {
+                    runId,
+                    readyCount: readyNodes.length,
+                    inFlightCount: this.inFlight.size
+                });
+            }
+
             for (const nodeId of readyNodes) {
                 if (this.inFlight.has(nodeId)) continue;
 
                 this.inFlight.add(nodeId);
+                log.debug("Queuing node for execution", { runId, nodeId, inFlightCount: this.inFlight.size });
+
                 // Fire and forget (managed by inFlight set)
                 void (async () => {
                     const release = await this.semaphore.acquire();
@@ -182,11 +215,7 @@ export class GraphScheduler {
                             chatContext
                         );
 
-                        // Handle output dispatching here?
-                        // Or let NodeExecutor do it? 
-                        // Original: Orchestrator did dispatch. 
-                        // Let's keep NodeExecutor focused on execution, Scheduler focused on data flow?
-                        // Doing dispatch HERE means we need to read the node output from store.
+                        // Dispatch output to connected edges
                         const updatedRun = this.store.getRun(runId);
                         const updatedNode = updatedRun?.nodes[nodeId];
                         if (updatedNode?.status === "completed") {
@@ -194,7 +223,12 @@ export class GraphScheduler {
                         }
 
                     } catch (e) {
-                        console.error(`Execution failed for ${nodeId}`, e);
+                        const err = e instanceof Error ? e : new Error(String(e));
+                        log.error("Scheduler: node execution failed", {
+                            runId,
+                            nodeId,
+                            error: err.message
+                        });
                     } finally {
                         release();
                         this.inFlight.delete(nodeId);
@@ -216,7 +250,7 @@ export class GraphScheduler {
             .map(n => n.id);
     }
 
-    private consumeChatMessages(runId: string, nodeId: string): string | undefined {
+    private consumeChatMessages(runId: string, nodeId: string, options?: { dryRun?: boolean }): string | undefined {
         const run = this.store.getRun(runId);
         const rootNodeId = run?.rootOrchestratorNodeId;
         const rootNode = rootNodeId ? run?.nodes[rootNodeId] : undefined;
@@ -259,7 +293,7 @@ export class GraphScheduler {
                 if (!target) return true; // Node deleted?
             }
             return false;
-        });
+        }, options?.dryRun);
 
         return result.formatted || undefined;
     }
@@ -288,27 +322,81 @@ export class GraphScheduler {
         const run = this.store.getRun(runId);
         if (!run) return;
 
-        const outgoingEdges = Object.values(run.edges).filter(e => e.from === nodeId);
-        for (const edge of outgoingEdges) {
-            const envelope: Envelope = {
-                kind: "handoff",
-                fromNodeId: nodeId,
-                toNodeId: edge.to,
-                payload: {
-                    message: String(output), // Simple cast for now
-                    structured: typeof output === 'object' ? output as any : undefined
+        // Loop Breaker / Noise Suppression
+        // If the output is a simple acknowledgment or "DONE" status, we suppress dispatch
+        // to prevent infinite "Report" -> "Ack" -> "Report" loops between agents.
+        let shouldDispatchPayload = true;
+
+        if (typeof output === 'string') {
+            const s = output.trim();
+            if (s.length === 0) shouldDispatchPayload = false;
+            else {
+                // Remove punctuation and lowercase
+                const lower = s.toLowerCase().replace(/[.,!]/g, '');
+                const stopWords = new Set([
+                    "done", "ok", "okay", "received", "acknowledged",
+                    "good", "great", "thanks", "thank you", "no problem",
+                    "understood", "copy that", "affirmatve", "rogue"
+                ]);
+
+                // Allow up to 2 words (e.g. "Done." or "Copy that")
+                const wordCount = lower.split(/\s+/).length;
+
+                if (wordCount <= 3 && (stopWords.has(lower) || stopWords.has(lower.split(' ')[0]))) {
+                    shouldDispatchPayload = false;
                 }
-            };
-            if (!edge.pendingEnvelopes) edge.pendingEnvelopes = [];
-            edge.pendingEnvelopes.push(envelope);
 
-            this.bus.emitHandoffSent(runId, nodeId, edge.to, edge.id, {});
+                // Check for JSON-like status: DONE in string format
+                if (s.match(/^\{?\s*"status":\s*"DONE"\s*\}?$/i)) {
+                    shouldDispatchPayload = false;
+                }
+            }
+        } else if (typeof output === 'object' && output) {
+            const rec = output as Record<string, unknown>;
+            // If it's just { status: "DONE" } with no other data
+            if (rec.status === 'DONE') {
+                // Check if there are other meaningful fields (ignore 'action' which is internal)
+                const keys = Object.keys(rec).filter(k => k !== 'status' && k !== 'action');
+                if (keys.length === 0) shouldDispatchPayload = false;
+            }
+        }
 
-            // Wake up target
-            const target = run.nodes[edge.to];
-            if (target && target.status !== "running" && target.control !== "MANUAL") {
-                target.status = "queued";
-                this.bus.emitNodePatch(runId, target.id, { status: "queued" }, "node.progress");
+        if (!shouldDispatchPayload) {
+            log.info("GraphScheduler: Suppressing payload dispatch (Ack/Done)", { runId, nodeId });
+        }
+
+        const outgoingEdges = Object.values(run.edges).filter(e => e.from === nodeId);
+        // Also find reverse edges (where we are the target, but it's bidirectional)
+        const reverseEdges = Object.values(run.edges).filter(e => e.to === nodeId && e.bidirectional);
+
+        const allActiveEdges = [...outgoingEdges, ...reverseEdges];
+
+        for (const edge of allActiveEdges) {
+            // Determine target
+            const targetNodeId = edge.from === nodeId ? edge.to : edge.from;
+
+            // Handoff/Report Edges (Data Flow)
+            if (shouldDispatchPayload && (edge.type === "handoff" || edge.type === "report" || edge.type === "default")) {
+                const envelope: Envelope = {
+                    kind: "handoff",
+                    fromNodeId: nodeId,
+                    toNodeId: targetNodeId,
+                    payload: {
+                        message: String(output), // Simple cast for now
+                        structured: typeof output === 'object' ? output as any : undefined
+                    }
+                };
+                if (!edge.pendingEnvelopes) edge.pendingEnvelopes = [];
+                edge.pendingEnvelopes.push(envelope);
+
+                this.bus.emitHandoffSent(runId, nodeId, targetNodeId, edge.id, {});
+
+                // Wake up target if it was just waiting for data (queued/running nodes are handled by loop)
+                const target = run.nodes[targetNodeId];
+                if (target && target.status !== "running" && target.control !== "MANUAL") {
+                    target.status = "queued";
+                    this.bus.emitNodePatch(runId, target.id, { status: "queued" }, "node.progress");
+                }
             }
         }
         this.store.persistRun(run);

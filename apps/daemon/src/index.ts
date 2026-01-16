@@ -2,10 +2,12 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import http from "node:http";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express, { type Response } from "express";
 import { WebSocketServer, WebSocket } from "ws";
 
+import { initLogger, log } from "./core/logger.js";
 import { loadConfig, saveConfig } from "./config.js";
 import { RunStore } from "./core/store.js";
 import { EventBus } from "./core/eventBus.js";
@@ -24,6 +26,8 @@ type WsClientState = {
 };
 
 let cfg = loadConfig();
+initLogger(cfg.logging);
+
 const store = new RunStore({ dataDir: cfg.dataDir! });
 const bus = new EventBus(store);
 const providers = new ProviderRegistry(cfg.providers!);
@@ -139,6 +143,13 @@ app.post("/api/runs", async (req, res) => {
     return;
   }
 
+  log.info("Creating new run", {
+    promptLength: prompt.length,
+    repoPath,
+    mode,
+    globalMode
+  });
+
   const run = store.createRun({
     prompt,
     repoPath,
@@ -149,8 +160,14 @@ app.post("/api/runs", async (req, res) => {
     policy,
   });
 
+  log.info("Run created", { runId: run.id, rootNodeId: run.rootOrchestratorNodeId });
+
   // Kick off the run asynchronously (within process).
   orchestrator.startRun(run.id).catch((e) => {
+    log.error("Run crashed during startup", {
+      runId: run.id,
+      error: e instanceof Error ? e.message : String(e)
+    });
     bus.emitRunPatch(run.id, { id: run.id, status: "failed" }, "run.failed");
     bus.emitNodeProgress(run.id, run.rootOrchestratorNodeId, `Run crashed: ${e?.message ?? String(e)}`, { error: e });
   });
@@ -170,19 +187,30 @@ app.get("/api/runs/:runId", (req, res) => {
 // Create a new node
 app.post("/api/runs/:runId/nodes", (req, res) => {
   const { runId } = req.params;
-  const { providerId, label, role, parentNodeId, input } = req.body;
+  const {
+    providerId,
+    label,
+    role,
+    parentNodeId,
+    input,
+    customSystemPrompt,
+    policy,
+  } = req.body;
 
   try {
     const node = orchestrator.spawnNode(runId, {
       providerId,
       label,
-      role: role as RoleId,
+      role: role as RoleId | undefined,
       parentNodeId,
       input,
+      customSystemPrompt,
+      policy,
     });
     res.json({ ok: true, node });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const error = e instanceof Error ? e : new Error(String(e));
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -251,6 +279,81 @@ app.delete("/api/runs/:runId/nodes/:nodeId", (req, res) => {
 
   bus.emitNodeDeleted(runId, nodeId);
   res.json({ ok: true });
+});
+
+// Create an edge
+app.post("/api/runs/:runId/edges", (req, res) => {
+  const { runId } = req.params;
+  const { sourceId, targetId, type } = req.body;
+
+  const run = store.getRun(runId);
+  if (!run) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+
+  // Validate nodes exist
+  if (!run.nodes[sourceId] || !run.nodes[targetId]) {
+    res.status(400).json({ error: "source or target node not found" });
+    return;
+  }
+
+  const edgeId = req.body.id || crypto.randomUUID();
+  const edge = {
+    id: edgeId,
+    runId,
+    from: sourceId,
+    to: targetId,
+    type: type || "default",
+    createdAt: nowIso(),
+    bidirectional: true,
+    deliveryPolicy: "queue" as const,
+    pendingEnvelopes: [],
+  };
+
+  store.addEdge(runId, edge);
+  bus.emitEdgeCreated(runId, edge);
+
+  res.json({ ok: true, edge });
+});
+
+app.delete("/api/runs/:runId/edges/:edgeId", (req, res) => {
+  const { runId, edgeId } = req.params;
+
+  const run = store.getRun(runId);
+  if (!run) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+
+  const edge = store.removeEdge(runId, edgeId);
+  if (!edge) {
+    res.status(404).json({ error: "edge not found" });
+    return;
+  }
+
+  bus.emitEdgeDeleted(runId, edgeId);
+  res.json({ ok: true });
+});
+
+app.patch("/api/runs/:runId/edges/:edgeId", (req, res) => {
+  const { runId, edgeId } = req.params;
+  const updates = req.body;
+
+  const run = store.getRun(runId);
+  if (!run) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+
+  const updatedEdge = store.updateEdge(runId, edgeId, updates);
+  if (!updatedEdge) {
+    res.status(404).json({ error: "edge not found" });
+    return;
+  }
+
+  bus.emitEdgePatch(runId, edgeId, updates, "edge.updated");
+  res.json({ ok: true, edge: updatedEdge });
 });
 
 // Archive a run (soft-delete)
@@ -352,6 +455,30 @@ app.post("/api/runs/:runId/resume", (req, res) => {
   const feedback = req.body?.feedback ? String(req.body.feedback) : undefined;
   const ok = orchestrator.resumeRun(req.params.runId, feedback);
   res.json({ ok });
+});
+
+app.post("/api/runs/:runId/policy/skip_cli_permissions", (req, res) => {
+  const { skip } = req.body;
+  if (typeof skip !== "boolean") {
+    res.status(400).json({ error: "skip (boolean) is required" });
+    return;
+  }
+
+  const run = store.getRun(req.params.runId);
+  if (!run) {
+    res.status(404).json({ error: "run not found" });
+    return;
+  }
+
+  // Update policy
+  store.updateRun(run.id, {
+    policy: {
+      ...run.policy,
+      skipCliPermissions: skip
+    }
+  });
+
+  res.json({ ok: true, skip });
 });
 
 app.get("/api/runs/:runId/artifacts/:artifactId/download", (req, res) => {
@@ -478,7 +605,7 @@ const isResolvableApprovalStatus = (value: unknown): value is ApprovalStatus => 
 
 const respondApprovalError = (res: Response, context: string, err: unknown): void => {
   const error = err instanceof Error ? err : new Error("Unknown approvals error");
-  console.error(`[approvals] ${context}`, error);
+  log.error("Approvals API error", { context, error: error.message });
   res.status(500).json({ error: error.message });
 };
 
@@ -1084,13 +1211,19 @@ new WebSocketServer({ server }).on("connection", (ws: WebSocket) => {
     try {
       const data = JSON.parse(String(msg));
       if (data.type === "subscribe") {
-        if (data.runId) state.runIds.add(data.runId);
+        if (data.runId) {
+          state.runIds.add(data.runId);
+          log.debug("WS client subscribed to run", { runId: data.runId });
+        }
       }
       if (data.type === "unsubscribe") {
-        if (data.runId) state.runIds.delete(data.runId);
+        if (data.runId) {
+          state.runIds.delete(data.runId);
+          log.debug("WS client unsubscribed from run", { runId: data.runId });
+        }
       }
     } catch (e) {
-      console.error("WS error", e);
+      log.warn("WS message parse error", { error: e instanceof Error ? e.message : String(e) });
     }
   });
 
@@ -1101,8 +1234,8 @@ new WebSocketServer({ server }).on("connection", (ws: WebSocket) => {
 
 // --- Startup Cleanup ---
 async function cleanupZombieState() {
-  console.log("🧹 Running startup cleanup...");
-  const runs = store.listRunsFiltered(false); // Include archived? Maybe just active ones.
+  log.info("Running startup cleanup");
+  const runs = store.listRunsFiltered(false);
   let recoveredCount = 0;
 
   for (const run of runs) {
@@ -1111,10 +1244,8 @@ async function cleanupZombieState() {
     let hasChanges = false;
     for (const node of Object.values(run.nodes)) {
       if (node.status === "running") {
-        console.log(`⚠️ Recovering zombie node ${node.id} in run ${run.id} (running -> queued)`);
+        log.warn("Recovering zombie node", { runId: run.id, nodeId: node.id, label: node.label });
         node.status = "queued";
-        // Also emit patch so UI updates if it connects immediately
-        // (Though UI connects after server starts, so initial fetch will get clean state)
         hasChanges = true;
         recoveredCount++;
       }
@@ -1125,19 +1256,32 @@ async function cleanupZombieState() {
     }
 
     // Resume scheduler for this run if it's active (running/queued)
-    // We already reset running nodes to queued, so now we just need the loop to run.
     if (run.status === "running" || run.status === "queued" || run.status === "paused") {
-      console.log(`🔄 Resuming scheduler for run ${run.id}`);
-      // No await, fire and forget background loop
-      orchestrator.recoverRun(run.id).catch(e => console.error(e));
+      log.info("Resuming scheduler for run", { runId: run.id, phase: run.phase });
+      orchestrator.recoverRun(run.id).catch(e => {
+        log.error("Failed to recover run", { runId: run.id, error: e instanceof Error ? e.message : String(e) });
+      });
     }
   }
-  console.log(`✅ Cleanup complete. Recovered ${recoveredCount} zombie nodes.`);
+  log.info("Startup cleanup complete", { recoveredZombieNodes: recoveredCount });
 }
 
 cleanupZombieState();
 
 const port = cfg.server?.port ?? 4317;
+
+server.on("error", (e: any) => {
+  if (e.code === "EADDRINUSE") {
+    log.error("Port is already in use", { port, error: "EADDRINUSE" });
+    console.error(`\nError: Port ${port} is already in use.`);
+    console.error("Please stop the existing process or change the port in vuhlp.config.json\n");
+    process.exit(1);
+  } else {
+    log.error("Server error", { error: e });
+    throw e;
+  }
+});
+
 server.listen(port, () => {
-  console.log(`Daemon listening on port ${port}`);
+  log.info("Daemon started", { port, dataDir: store.getDataDir() });
 });

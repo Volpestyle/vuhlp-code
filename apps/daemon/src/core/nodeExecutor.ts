@@ -14,14 +14,17 @@ import { PromptFactory } from "./promptFactory.js";
 import { ContextPackBuilder } from "./contextPackBuilder.js";
 import { NodeRecord, Envelope, ManualTurnOptions, RunPhase, RoleId } from "./types.js";
 import { nowIso } from "./time.js";
+import { log } from "./logger.js";
 
 interface GraphCommandSpawn {
     command: "spawn_node";
     args: {
-        role: RoleId;
+        role?: RoleId;
         label: string;
         instructions: string;
         input?: Record<string, unknown>;
+        customSystemPrompt?: string;
+        policy?: { allowedTools?: string[]; approvalMode?: "always" | "high_risk_only" | "never" };
     };
 }
 
@@ -53,16 +56,17 @@ function parseGraphCommand(text: string): GraphCommand | null {
     if (!text) return null;
 
     // Helper to validate and return the command
-    const validate = (json: any): GraphCommand | null => {
-        if (json && typeof json === 'object' && json.command === "spawn_node" && json.args) {
-            console.log(`[NodeExecutor] Valid spawn_node command detected:`, json.args.label);
-            return json as GraphCommand;
+    const validate = (json: unknown): GraphCommand | null => {
+        if (json && typeof json === 'object' && (json as Record<string, unknown>).command === "spawn_node" && (json as Record<string, unknown>).args) {
+            const typedJson = json as GraphCommand;
+            log.debug("Valid spawn_node command detected", { label: typedJson.args.label });
+            return typedJson;
         }
         return null;
     };
 
     try {
-        console.log(`[NodeExecutor] Parsing graph command (text length: ${text.length})...`);
+        log.debug("Parsing graph command", { textLength: text.length });
         // 1. Try parsing Markdown Code Blocks
         // Relaxed regex to allow optional language tag
         const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
@@ -120,7 +124,7 @@ function parseGraphCommand(text: string): GraphCommand | null {
             }
         }
     } catch (e) {
-        console.error(`[NodeExecutor] Parse error:`, e);
+        log.warn("Graph command parse error", { error: e instanceof Error ? e.message : String(e) });
     }
     return null;
 }
@@ -150,10 +154,30 @@ export class NodeExecutor {
         getGlobalMode: () => string,
         additionalPromptText?: string
     ): Promise<void> {
+        const startTime = Date.now();
         const run = this.store.getRun(runId);
-        if (!run) return;
+        if (!run) {
+            log.warn("Cannot execute node: run not found", { runId, nodeId });
+            return;
+        }
         const node = run.nodes[nodeId];
-        if (!node) return;
+        if (!node) {
+            log.warn("Cannot execute node: node not found", { runId, nodeId });
+            return;
+        }
+
+
+
+        log.info("Executing node", {
+            runId,
+            nodeId,
+            label: node.label,
+            role: node.role,
+            providerId: node.providerId,
+            turnCount: node.turnCount ?? 0,
+            envelopeCount: inputEnvelopes.length,
+            hasAdditionalPrompt: !!additionalPromptText
+        });
 
         // Mark as running
         this.bus.emitNodePatch(runId, nodeId, { status: "running", startedAt: nowIso() }, "node.started");
@@ -164,14 +188,28 @@ export class NodeExecutor {
             const provider = this.providers.get(providerId);
 
             if (!provider) {
+                log.error("Provider not found for node", { runId, nodeId, providerId });
                 throw new Error(`Provider not found: ${providerId}`);
             }
 
             // Prepare Prompt/Context
-            let prompt = "";
             const effectiveMode = getGlobalMode();
-            let systemPreamble = "";
 
+            // 1. System Specification (Architectural Vision)
+            let finalPrompt = this.promptFactory.buildSystemContext() + "\n\n";
+
+            // 2. Identity & Role
+            // Check for custom system prompt first - if provided, use it instead of role-based prompts
+            if (node.customSystemPrompt) {
+                finalPrompt += node.customSystemPrompt + "\n\n";
+            } else if (nodeId === run.rootOrchestratorNodeId) {
+                finalPrompt += this.promptFactory.buildOrchestratorPrompt() + "\n\n";
+            } else {
+                finalPrompt += this.promptFactory.buildSubAgentPrompt(node.role ?? "implementer") + "\n\n";
+            }
+
+            // 3. Operational Context (Modes & Capabilities)
+            let systemPreamble = "";
             if (effectiveMode === "PLANNING") {
                 systemPreamble = "MODE: PLANNING. You are in read-only planning mode.\n" +
                     "- You MAY read files and docs.\n" +
@@ -190,7 +228,7 @@ To spawn a node, output a JSON block with the following structure:
 {
   "command": "spawn_node",
   "args": {
-    "role": "implementer", // or "planner", "reviewer", "investigator"
+    "role": "implementer",
     "label": "Agent Name",
     "instructions": "Specific instructions for the agent...",
     "input": { ... }
@@ -198,6 +236,8 @@ To spawn a node, output a JSON block with the following structure:
 }
 \`\`\`
 Use this when you need to paralellize work or delegate a specific sub-task.\n\n`;
+
+            finalPrompt += systemPreamble;
 
             // Context Block construction
             let contextBlock = "";
@@ -214,55 +254,56 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
                 }
             }
 
-            // Prompt Construction logic
+            // 4. Specific Task / Input Processing
+            let taskPrompt = "";
             const initialInstructions = (node.input as any)?.initialInstructions as string | undefined;
 
             if ((!node.turnCount || node.turnCount === 0) && inputEnvelopes.length === 0) {
                 // First turn / Boot checks
                 if (initialInstructions) {
-                    prompt = `### Role: ${node.role}\n\nTasks:\n${initialInstructions}\n\n` + contextBlock;
+                    taskPrompt = `### Specific Instructions\n${initialInstructions}\n\n` + contextBlock;
                 } else if (nodeId === run.rootOrchestratorNodeId) {
-                    prompt = (run.prompt || "Ready for instructions.") + "\n" + contextBlock;
+                    taskPrompt = `### Current Task\n${run.prompt || "Ready for instructions."}\n\n` + contextBlock;
                 } else {
                     // Fallback for sub-agents without explicit instructions (shouldn't happen often if spawned correctly)
-                    prompt = `You have been spawned as ${node.role} (${node.label}).\nWaiting for specific instructions via Handoff.` + "\n" + contextBlock;
+                    taskPrompt = `### Waiting for Instructions\nWaiting for specific instructions via Handoff.\n` + contextBlock;
                 }
-            } else if (inputEnvelopes.length > 0) {
+            } else if (inputEnvelopes.length > 0) { // Continuation Logic
                 // Build prompt from envelopes
-                prompt = "Incoming transmissions:\n\n";
+                taskPrompt = "Incoming transmissions:\n\n";
                 for (const env of inputEnvelopes) {
-                    prompt += `--- From Node ${env.fromNodeId} ---\n`;
-                    prompt += `${env.payload.message ?? "(No message)"}\n`;
+                    taskPrompt += `--- From Node ${env.fromNodeId} ---\n`;
+                    taskPrompt += `${env.payload.message ?? "(No message)"}\n`;
                     if (env.payload.structured) {
-                        prompt += `Data: ${JSON.stringify(env.payload.structured, null, 2)}\n`;
+                        taskPrompt += `Data: ${JSON.stringify(env.payload.structured, null, 2)}\n`;
                     }
                     if (env.payload.artifacts?.length) {
-                        prompt += `Artifacts: ${env.payload.artifacts.map(a => a.ref).join(", ")}\n`;
+                        taskPrompt += `Artifacts: ${env.payload.artifacts.map(a => a.ref).join(", ")}\n`;
                     }
-                    prompt += "\n";
+                    taskPrompt += "\n";
                 }
-                prompt += "\nBased on the above inputs, proceed with your task.";
+                taskPrompt += "\nBased on the above inputs, proceed with your task.";
             } else {
                 // Tick-based
                 const lastOutput = node.output ? JSON.stringify(node.output).slice(0, 500) : "none";
 
                 // If there are chat messages, clarify when to output DONE vs continue conversation
                 if (additionalPromptText) {
-                    prompt = `Tick (Loop Continuation).\n` +
+                    taskPrompt = `Tick (Loop Continuation).\n` +
                         `Global Mode: ${effectiveMode}\n` +
                         `Previous Output: ${lastOutput}\n\n` +
                         `The user has sent you a message. Respond appropriately.\n` +
                         `- If they gave you a task and you have completed it, output { "status": "DONE" }.\n` +
                         `- If you need more information or clarification, ask and wait.`;
                 } else {
-                    prompt = `Tick (Loop Continuation).\n` +
+                    taskPrompt = `Tick (Loop Continuation).\n` +
                         `Global Mode: ${effectiveMode}\n` +
                         `Previous Output: ${lastOutput}\n\n` +
                         `Continue execution. If task is done, output { "status": "DONE" }.`;
                 }
             }
 
-            let finalPrompt = systemPreamble + prompt;
+            finalPrompt += taskPrompt;
 
             // Append injected chat
             if (additionalPromptText) {
@@ -319,11 +360,31 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
             node.turnCount = (node.turnCount ?? 0) + 1;
             this.store.persistRun(run);
 
-        } catch (error: any) {
-            if (signal.aborted || error.message === "aborted") {
+            const duration = Date.now() - startTime;
+            log.info("Node execution completed", {
+                runId,
+                nodeId,
+                label: node.label,
+                durationMs: duration,
+                turnCount: node.turnCount,
+                stallCount
+            });
+
+        } catch (error: unknown) {
+            const duration = Date.now() - startTime;
+            const err = error instanceof Error ? error : new Error(String(error));
+
+            if (signal.aborted || err.message === "aborted") {
+                log.info("Node execution aborted", { runId, nodeId, durationMs: duration });
                 this.bus.emitNodePatch(runId, nodeId, { status: "queued" }, "node.progress");
             } else {
-                this.bus.emitNodePatch(runId, nodeId, { status: "failed", error: { message: error.message } }, "node.failed");
+                log.error("Node execution failed", {
+                    runId,
+                    nodeId,
+                    error: err.message,
+                    durationMs: duration
+                });
+                this.bus.emitNodePatch(runId, nodeId, { status: "failed", error: { message: err.message } }, "node.failed");
             }
             throw error;
         }
@@ -336,11 +397,20 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
         // Optional: consume messages callback to inject pending chat
         consumePendingMessages?: () => string
     ): Promise<{ success: boolean; error?: string; output?: unknown }> {
+        const startTime = Date.now();
+        log.info("Executing manual turn", { runId, nodeId, messageLength: userMessage.length });
+
         const run = this.store.getRun(runId);
-        if (!run) return { success: false, error: "Run not found" };
+        if (!run) {
+            log.warn("Manual turn failed: run not found", { runId, nodeId });
+            return { success: false, error: "Run not found" };
+        }
 
         const node = run.nodes[nodeId];
-        if (!node) return { success: false, error: "Node not found" };
+        if (!node) {
+            log.warn("Manual turn failed: node not found", { runId, nodeId });
+            return { success: false, error: "Node not found" };
+        }
 
         // Mark starting
         this.bus.emitNodePatch(runId, nodeId, { status: "running", startedAt: nowIso() }, "node.started");
@@ -348,7 +418,10 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
         try {
             const providerId = node.providerId ?? "mock";
             const provider = this.providers.get(providerId);
-            if (!provider) throw new Error("Provider not found");
+            if (!provider) {
+                log.error("Manual turn failed: provider not found", { runId, nodeId, providerId });
+                throw new Error("Provider not found");
+            }
 
             // Build manual prompt
             const basePrompt = this.promptFactory.buildManualTurnPrompt(userMessage);
@@ -372,11 +445,16 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
             this.bus.emitNodePatch(runId, nodeId, { status: "completed", output }, "node.completed");
             this.store.persistRun(run);
 
+            const duration = Date.now() - startTime;
+            log.info("Manual turn completed", { runId, nodeId, durationMs: duration, turnNum });
             return { success: true, output };
 
-        } catch (e: any) {
-            this.bus.emitNodePatch(runId, nodeId, { status: "failed", error: { message: e.message } }, "node.failed");
-            return { success: false, error: e.message };
+        } catch (e: unknown) {
+            const duration = Date.now() - startTime;
+            const err = e instanceof Error ? e : new Error(String(e));
+            log.error("Manual turn failed", { runId, nodeId, error: err.message, durationMs: duration });
+            this.bus.emitNodePatch(runId, nodeId, { status: "failed", error: { message: err.message } }, "node.failed");
+            return { success: false, error: err.message };
         }
     }
 
@@ -387,6 +465,14 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
         params: { prompt: string; outputSchemaName?: "plan" | "repo-brief" },
         signal: AbortSignal
     ): Promise<unknown> {
+        const startTime = Date.now();
+        log.debug("Running provider task", {
+            runId,
+            nodeId: node.id,
+            providerId: provider.id,
+            promptLength: params.prompt.length
+        });
+
         const wsPath = await this.workspace.prepareWorkspace({
             repoPath: this.store.getRun(runId)!.repoPath,
             runId,
@@ -397,6 +483,7 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
         // Session logic
         const existingSession = this.sessionRegistry.getByNodeId(node.id);
         const sessionId = node.providerSessionId ?? existingSession?.providerSessionId;
+        log.debug("Provider session", { runId, nodeId: node.id, sessionId: sessionId ?? "new" });
 
         let finalOutput: unknown = undefined;
 
@@ -458,6 +545,12 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
         if (typeof finalOutput === "string") {
             const cmd = parseGraphCommand(finalOutput);
             if (cmd) {
+                log.info("Graph command intercepted from output", {
+                    runId,
+                    nodeId: node.id,
+                    command: cmd.command,
+                    label: cmd.args.label
+                });
                 const result = this.onGraphCommand(runId, node.id, cmd);
                 finalOutput += "\n\n" + result;
             }
@@ -466,6 +559,7 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
         // Git Diff Capture
         const diff = this.workspace.captureGitDiff(wsPath);
         if (diff.ok && (diff.diff.trim().length || diff.status.trim().length)) {
+            log.debug("Captured git diff", { runId, nodeId: node.id, diffSize: diff.diff.length });
             const diffArt = this.store.createArtifact({
                 runId,
                 nodeId: node.id,
@@ -477,6 +571,14 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
             });
             this.bus.emitArtifact(runId, diffArt);
         }
+
+        const duration = Date.now() - startTime;
+        log.debug("Provider task completed", {
+            runId,
+            nodeId: node.id,
+            durationMs: duration,
+            outputType: typeof finalOutput
+        });
 
         return finalOutput;
     }
@@ -523,6 +625,9 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
             case "message.delta":
                 this.bus.emitMessageDelta(runId, node.id, ev.delta, ev.index);
                 break;
+            case "message.reasoning":
+                this.bus.emitMessageReasoning(runId, node.id, ev.content);
+                break;
             case "message.final":
                 this.bus.emitMessageFinal(runId, node.id, ev.content, ev.tokenCount);
                 break;
@@ -534,10 +639,15 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
                 // If the agent uses a native tool call for spawn_node, we intercept it here
                 // and execute it as a Graph Command immediately.
                 if (ev.tool.name === "spawn_node") {
-                    console.log(`[NodeExecutor] Intercepting native tool call: spawn_node`, ev.tool.args);
+                    log.info("Intercepting native spawn_node tool call", {
+                        runId,
+                        nodeId: node.id,
+                        toolId: ev.tool.id,
+                        label: (ev.tool.args as Record<string, unknown>)?.label
+                    });
                     const cmd: GraphCommand = {
                         command: "spawn_node",
-                        args: ev.tool.args as any
+                        args: ev.tool.args as GraphCommandSpawn["args"]
                     };
                     const result = this.onGraphCommand(runId, node.id, cmd);
 
@@ -557,12 +667,25 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
 
                 // When permissions are enabled, request approval and forward response to CLI
                 if (permissionsEnabled) {
+                    log.debug("Requesting tool approval", {
+                        runId,
+                        nodeId: node.id,
+                        toolName: ev.tool.name,
+                        toolId: ev.tool.id
+                    });
                     try {
                         const resolution = await this.approvalQueue.requestApproval({
                             runId,
                             nodeId: node.id,
                             tool: ev.tool,
                             context: `Tool: ${ev.tool.name}\nArgs: ${JSON.stringify(ev.tool.args, null, 2)}`,
+                        });
+
+                        log.info("Tool approval resolved", {
+                            runId,
+                            nodeId: node.id,
+                            toolName: ev.tool.name,
+                            status: resolution.status
                         });
 
                         // Send approval response to CLI stdin
@@ -581,8 +704,14 @@ Use this when you need to paralellize work or delegate a specific sub-task.\n\n`
                         } else if (resolution.status === "modified" && resolution.modifiedArgs) {
                             this.bus.emitNodeProgress(runId, node.id, `Tool ${ev.tool.name} approved with modifications`);
                         }
-                    } catch {
+                    } catch (e) {
                         // Approval request failed or timed out
+                        log.warn("Tool approval failed", {
+                            runId,
+                            nodeId: node.id,
+                            toolName: ev.tool.name,
+                            error: e instanceof Error ? e.message : String(e)
+                        });
                         this.bus.emitNodeProgress(runId, node.id, `Tool ${ev.tool.name} approval failed/timed out`);
                     }
                 }

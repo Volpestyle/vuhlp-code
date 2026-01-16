@@ -13,6 +13,11 @@ export interface VuhlpConfig {
   node_defaults?: { defaultMode?: "auto" | "manual"; maxTurnsPerLoop?: number };
   workspace?: { mode?: "shared" | "worktree" | "copy"; rootDir?: string; cleanupOnDone?: boolean };
   verification?: { commands?: string[] };
+  logging?: {
+    level?: "debug" | "info" | "warn" | "error";
+    dir?: string;
+    retentionDays?: string;
+  };
 }
 
 export function loadConfig(): VuhlpConfig {
@@ -65,6 +70,11 @@ export function loadConfig(): VuhlpConfig {
   cfg.workspace.rootDir = cfg.workspace.rootDir ?? ".vuhlp/workspaces";
   cfg.workspace.cleanupOnDone = cfg.workspace.cleanupOnDone ?? false;
   cfg.verification = cfg.verification ?? { commands: [] };
+
+  cfg.logging = cfg.logging ?? {};
+  cfg.logging.level = cfg.logging.level ?? "info";
+  cfg.logging.dir = cfg.logging.dir ?? "logs";
+  cfg.logging.retentionDays = cfg.logging.retentionDays ?? "14d";
 
   return cfg;
 }

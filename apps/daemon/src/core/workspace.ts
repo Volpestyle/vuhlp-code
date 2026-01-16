@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { log } from "./logger.js";
 
 export type WorkspaceMode = "shared" | "worktree" | "copy";
 
@@ -21,7 +22,17 @@ export class WorkspaceManager {
   async prepareWorkspace(params: { repoPath: string; runId: string; nodeId: string }): Promise<string> {
     const repoPath = path.resolve(params.repoPath);
 
-    if (this.mode === "shared") return repoPath;
+    log.debug("Preparing workspace", {
+      runId: params.runId,
+      nodeId: params.nodeId,
+      mode: this.mode,
+      repoPath
+    });
+
+    if (this.mode === "shared") {
+      log.debug("Using shared workspace", { runId: params.runId, path: repoPath });
+      return repoPath;
+    }
 
     const rootDirAbs = path.isAbsolute(this.rootDir)
       ? this.rootDir
@@ -34,6 +45,7 @@ export class WorkspaceManager {
       // Node 22 supports fs.cpSync.
       // Note: this can be slow on large repos.
       if (!fs.existsSync(wsPath) || fs.readdirSync(wsPath).length === 0) {
+        log.debug("Copying workspace", { runId: params.runId, from: repoPath, to: wsPath });
         fs.cpSync(repoPath, wsPath, {
           recursive: true,
           dereference: false,
@@ -52,7 +64,10 @@ export class WorkspaceManager {
       // Best-effort: create a git worktree.
       // If it fails, fallback to shared.
       const gitOk = this.isGitRepo(repoPath);
-      if (!gitOk) return repoPath;
+      if (!gitOk) {
+        log.debug("Not a git repo, falling back to shared", { runId: params.runId });
+        return repoPath;
+      }
 
       const branchName = `vuhlp/${params.runId}/${params.nodeId}`.slice(0, 200);
       const res = spawnSync("git", ["worktree", "add", "-B", branchName, wsPath, "HEAD"], {
@@ -60,9 +75,13 @@ export class WorkspaceManager {
         encoding: "utf-8",
       });
       if (res.status !== 0) {
-        // Some git versions require different args; fallback
+        log.debug("Worktree creation failed, falling back to shared", {
+          runId: params.runId,
+          error: res.stderr
+        });
         return repoPath;
       }
+      log.debug("Worktree created", { runId: params.runId, path: wsPath, branch: branchName });
       return wsPath;
     }
 

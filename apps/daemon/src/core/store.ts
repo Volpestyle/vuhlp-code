@@ -304,6 +304,21 @@ export class RunStore {
   }
 
   /**
+   * Generic update for run properties.
+   */
+  updateRun(runId: string, patch: Partial<RunRecord>): RunRecord | null {
+    const run = this.getRun(runId);
+    if (!run) return null;
+
+    Object.assign(run, patch);
+    run.updatedAt = nowIso();
+
+    this.runs.set(runId, run);
+    this.persistRun(run);
+    return run;
+  }
+
+  /**
    * List runs with optional archived filter.
    */
   listRunsFiltered(includeArchived: boolean = false): RunRecord[] {
@@ -327,6 +342,19 @@ export class RunStore {
     const edge = run.edges[edgeId];
     if (!edge) return null;
     delete run.edges[edgeId];
+    this.persistRun(run);
+    return edge;
+  }
+
+  updateEdge(runId: string, edgeId: string, patch: Partial<EdgeRecord>): EdgeRecord | null {
+    const run = this.getRun(runId);
+    if (!run) return null;
+    const edge = run.edges[edgeId];
+    if (!edge) return null;
+
+    Object.assign(edge, patch);
+    run.updatedAt = nowIso();
+
     this.persistRun(run);
     return edge;
   }

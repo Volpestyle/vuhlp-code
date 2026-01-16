@@ -210,7 +210,7 @@ export class ChatManager {
    * Atomically consume pending messages based on a selector function.
    * Only messages that return true from the selector are marked processed and returned.
    */
-  consumeMessages(runId: string, selector: (msg: ChatMessageRecord) => boolean): { formatted: string; messages: ChatMessageRecord[] } {
+  consumeMessages(runId: string, selector: (msg: ChatMessageRecord) => boolean, dryRun = false): { formatted: string; messages: ChatMessageRecord[] } {
     const allPending = this.getPendingMessages(runId);
     if (allPending.length === 0) {
       return { formatted: "", messages: [] };
@@ -221,7 +221,9 @@ export class ChatManager {
       return { formatted: "", messages: [] };
     }
 
-    this.markProcessed(runId, selectedMessages.map((m) => m.id));
+    if (!dryRun) {
+      this.markProcessed(runId, selectedMessages.map((m) => m.id));
+    }
 
     return {
       formatted: this.formatChatMessages(selectedMessages),
