@@ -1,4 +1,4 @@
-# Graph Rules and Scheduling (v2)
+# Graph Rules and Scheduling
 
 This document defines the graph execution rules, edge behavior, and scheduling loop. The goal is to keep behavior deterministic, visible, and safe without imposing hard run-length caps.
 

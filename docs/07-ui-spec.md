@@ -1,6 +1,11 @@
-# UI Spec (v2)
+# UI Spec
 
 This document defines the non‑negotiable UI and interaction model. The UI should feel like a multi‑terminal graph of agents with full observability.
+
+## Rendering (non‑negotiable)
+- Use a **custom WebGL renderer** for the graph canvas.
+- Avoid off‑the‑shelf graph renderers (e.g., Cytoscape) for the main canvas.
+- The renderer must support smooth edge routing, port snapping, and live animation.
 
 ## Core UX modes (non‑negotiable)
 The UI has three viewing modes:

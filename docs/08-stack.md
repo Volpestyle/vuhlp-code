@@ -1,4 +1,4 @@
-# Suggested Stack (v2)
+# Suggested Stack
 
 This is a short recommendation for the optimal stack to build vuhlp from scratch.
 
@@ -14,9 +14,9 @@ This is a short recommendation for the optimal stack to build vuhlp from scratch
 - SQLite for runs, events, indexes.
 - Filesystem for artifacts (diffs, logs, prompts, transcripts).
 
-**UI:** React + Vite
-- Mature graph ecosystem and fast iteration.
-- Canvas-based graph rendering (Cytoscape or custom).
+**UI:** React + Vite + custom WebGL renderer
+- WebGL is required for fluid graph motion and edge routing.
+- Custom renderer ensures port snapping and smooth re-routing.
 
 **Schemas:** JSON Schema + TypeScript types
 - Keep the contract authoritative and portable.

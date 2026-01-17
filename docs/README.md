@@ -1,4 +1,4 @@
-# vuhlp docs v2
+# vuhlp docs
 
 This folder is the source‑of‑truth spec for rebuilding the application from scratch with improved behavior and clarity.
 
@@ -21,6 +21,6 @@ This folder is the source‑of‑truth spec for rebuilding the application from 
 - `docs/templates/investigator.md`
 
 ## Notes
-- v2 is a redesign: improved behavior is specified even if v0 is different.
+- This is a redesign: improved behavior is specified even if a prior implementation differs.
 - Local‑first only: no cloud or multi‑tenant concerns.
 - Full visibility is mandatory: prompts, diffs, and events must be logged.

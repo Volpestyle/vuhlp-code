@@ -1,4 +1,4 @@
-# Orchestration Modes and Loop Safety (v2)
+# Orchestration Modes and Loop Safety
 
 This document defines orchestration modes and the system’s loop safety strategy. The goal is to allow long-running autonomous workflows without wasteful loops, while keeping the user fully informed and in control.
 

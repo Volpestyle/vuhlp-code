@@ -1,4 +1,4 @@
-# Communication and Context (v2)
+# Communication and Context
 
 This document defines how agents communicate, how context is packaged, and how the UI tracks real-time agent state. The goal is to keep handoffs fast, deterministic, and token-efficient while preserving full observability.
 

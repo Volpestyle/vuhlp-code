@@ -1,6 +1,6 @@
 [template]
 name = "planner"
-version = "v2"
+version = "1"
 capabilities = ["read_repo", "write_docs"]
 constraints = ["planning_only", "no_code_edits"]
 

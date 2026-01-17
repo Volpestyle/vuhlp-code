@@ -1,4 +1,4 @@
-# Agent Parameters and Permissions (v2)
+# Agent Parameters and Permissions
 
 This document defines the configurable parameters for agent nodes and how permissions are enforced. The goal is to make agent behavior predictable, safe, and fully observable.
 

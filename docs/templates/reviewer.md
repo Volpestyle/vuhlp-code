@@ -1,6 +1,6 @@
 [template]
 name = "reviewer"
-version = "v2"
+version = "1"
 capabilities = ["run_commands", "read_repo", "review_diffs"]
 constraints = ["no_unlogged_edits", "report_risks"]
 

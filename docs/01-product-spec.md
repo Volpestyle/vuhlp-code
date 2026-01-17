@@ -1,4 +1,4 @@
-# Product Spec (v2)
+# Product Spec
 
 ## Purpose
 Build a local-first, graph-based orchestration harness for multiple coding agents. The system should make agent autonomy safe, visible, and controllable without forcing a fixed pipeline. Users can build custom workflows by wiring agent nodes together, while an orchestrator can supervise and coordinate complex tasks when needed.

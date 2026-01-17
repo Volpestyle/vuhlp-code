@@ -1,6 +1,6 @@
 [template]
 name = "investigator"
-version = "v2"
+version = "1"
 capabilities = ["read_repo", "summarize"]
 constraints = ["no_code_edits", "report_findings"]
 

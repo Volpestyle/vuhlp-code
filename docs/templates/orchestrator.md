@@ -1,6 +1,6 @@
 [template]
 name = "orchestrator"
-version = "v2"
+version = "1"
 capabilities = ["spawn_nodes", "delegate", "review_diffs", "approve_spawns"]
 constraints = ["log_decisions", "respect_mode_gates", "avoid_unlogged_edits"]
 

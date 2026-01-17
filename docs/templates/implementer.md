@@ -1,6 +1,6 @@
 [template]
 name = "implementer"
-version = "v2"
+version = "1"
 capabilities = ["edit_code", "run_commands", "write_tests"]
 constraints = ["respect_mode_gates", "produce_diffs"]
 

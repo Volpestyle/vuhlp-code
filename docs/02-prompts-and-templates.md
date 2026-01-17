@@ -1,4 +1,4 @@
-# Prompts and Agent Templates (v2)
+# Prompts and Agent Templates
 
 This document defines how prompts are structured and how template-based agents are configured. The goal is to support highly autonomous agents while keeping orchestration behavior predictable and explainable.
 
@@ -67,12 +67,12 @@ The task payload should include:
 ## Agent templates
 Templates are stored as editable prompt files. They are intended as starting points, not constraints. Each template is a single file so users can version and replace it.
 
-Template files (v2):
-- `docs/docs-v2/templates/orchestrator.md`
-- `docs/docs-v2/templates/planner.md`
-- `docs/docs-v2/templates/implementer.md`
-- `docs/docs-v2/templates/reviewer.md`
-- `docs/docs-v2/templates/investigator.md`
+Template files:
+- `docs/templates/orchestrator.md`
+- `docs/templates/planner.md`
+- `docs/templates/implementer.md`
+- `docs/templates/reviewer.md`
+- `docs/templates/investigator.md`
 
 ### Orchestrator (default supervisor)
 - Delegates work to other agents.
@@ -105,7 +105,7 @@ Each template should include a small, structured preamble block at the top:
 ```
 [template]
 name = "orchestrator"
-version = "v2"
+version = "1"
 capabilities = ["spawn_nodes", "delegate", "review_diffs"]
 constraints = ["log_decisions", "avoid_unlogged_edits"]
 ```

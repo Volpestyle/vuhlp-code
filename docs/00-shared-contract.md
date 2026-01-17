@@ -1,9 +1,9 @@
-# Shared Contract v2 (Build Alignment)
+# Shared Contract (Build Alignment)
 
 Use this as the single source of truth for runtime ↔ provider ↔ UI integration. If anything conflicts, this contract wins.
 
 ## Versioning
-- `contractVersion = "v2"` (required in run state).
+- `contractVersion = "1"` (required in run state).
 - Breaking changes require a new version and a migration note.
 
 ## Identifiers & time
@@ -27,7 +27,7 @@ Event logs are append-only JSONL files, ordered by write time.
 ```json
 {
   "id": "run-uuid",
-  "contractVersion": "v2",
+  "contractVersion": "1",
   "status": "queued | running | paused | completed | failed",
   "phase": "BOOT | EXECUTE | VERIFY | DOCS_SYNC | DONE",
   "mode": "AUTO | INTERACTIVE",
