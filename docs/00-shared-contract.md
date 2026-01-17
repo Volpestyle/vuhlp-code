@@ -29,7 +29,6 @@ Event logs are append-only JSONL files, ordered by write time.
   "id": "run-uuid",
   "contractVersion": "1",
   "status": "queued | running | paused | completed | failed",
-  "phase": "BOOT | EXECUTE | VERIFY | DOCS_SYNC | DONE",
   "mode": "AUTO | INTERACTIVE",
   "globalMode": "PLANNING | IMPLEMENTATION",
   "createdAt": "2026-01-01T00:00:00Z",
@@ -220,7 +219,7 @@ Defaults:
 
 ## Event stream (WS)
 Consumers must support:
-- `run.patch`, `run.phase`, `run.mode`, `run.stalled`
+- `run.patch`, `run.mode`, `run.stalled`
 - `node.patch`, `node.progress`
 - `edge.created`, `edge.deleted`
 - `handoff.sent`
@@ -234,6 +233,7 @@ Consumers must support:
 - `GET /api/runs` -> list runs
 - `GET /api/runs/:id` -> run snapshot
 - `GET /api/runs/:id/events` -> event history
+- `DELETE /api/runs/:id` -> delete run
 - `POST /api/runs/:id/nodes` -> create node
 - `PATCH /api/runs/:id/nodes/:nodeId` -> update node
 - `POST /api/runs/:id/edges` -> create edge
