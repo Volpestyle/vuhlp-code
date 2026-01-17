@@ -1,0 +1,172 @@
+.new-node-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 5, 8, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1200;
+}
+
+.new-node-modal {
+  width: min(520px, calc(100vw - var(--space-8)));
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.new-node-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--color-border-strong);
+  background: var(--color-bg-primary);
+}
+
+.new-node-modal__title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+.new-node-modal__close {
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text-secondary);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.new-node-modal__close:hover {
+  border-color: var(--color-text-muted);
+  color: var(--color-text-primary);
+}
+
+.new-node-modal__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.new-node-modal__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.new-node-modal__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
+}
+
+.new-node-modal__section-title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.new-node-modal__label {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.new-node-modal__input,
+.new-node-modal__select {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-sm);
+}
+
+.new-node-modal__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.new-node-modal__toggle input {
+  accent-color: var(--color-accent);
+}
+
+.new-node-modal__input:focus,
+.new-node-modal__select:focus {
+  outline: none;
+  border-color: var(--color-accent-dim);
+}
+
+.new-node-modal__error {
+  padding: var(--space-2) var(--space-3);
+  background: rgba(240, 106, 122, 0.12);
+  border: 1px solid rgba(240, 106, 122, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--color-status-failed);
+  font-size: var(--font-size-sm);
+}
+
+.new-node-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+.new-node-modal__button {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-display);
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.new-node-modal__button--ghost {
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-text-secondary);
+}
+
+.new-node-modal__button--ghost:hover {
+  border-color: var(--color-text-muted);
+  color: var(--color-text-primary);
+}
+
+.new-node-modal__button--primary {
+  background: var(--color-accent);
+  border: 1px solid var(--color-accent);
+  color: var(--color-bg-primary);
+}
+
+.new-node-modal__button--primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

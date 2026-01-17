@@ -1,0 +1,56 @@
+.edge-inspector__route {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.edge-inspector__node {
+  font-family: var(--font-display);
+  color: var(--color-text-primary);
+}
+
+.edge-inspector__arrow {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-base);
+}
+
+.edge-inspector__type {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.edge-inspector__direction-toggle {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.edge-inspector__direction-button {
+  appearance: none;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-family: var(--font-display);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.edge-inspector__direction-button--active {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+
+.edge-inspector__direction-button:hover {
+  border-color: var(--color-text-muted);
+  color: var(--color-text-primary);
+}

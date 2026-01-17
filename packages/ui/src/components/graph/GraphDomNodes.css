@@ -1,0 +1,78 @@
+.graph-dom-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.graph-dom-layer--focused {
+  pointer-events: none;
+}
+
+.graph-dom-node {
+  position: absolute;
+  transform-origin: top left;
+  pointer-events: auto;
+  will-change: transform;
+}
+
+.graph-dom-layer--focused .graph-dom-node {
+  pointer-events: none;
+}
+
+.graph-dom-node .node-card {
+  width: 100%;
+  height: 100%;
+  transition: border-color var(--transition-base), box-shadow var(--transition-base), background var(--transition-base);
+}
+
+.graph-dom-node--collapsed .node-card {
+  height: auto;
+}
+
+.graph-dom-node--collapsed .graph-dom-port {
+  display: none;
+}
+
+.graph-dom-port {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-elevated);
+  appearance: none;
+  outline: none;
+  padding: 0;
+  cursor: crosshair;
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition: opacity var(--transition-fast), transform var(--transition-fast), background var(--transition-fast);
+}
+
+.graph-dom-node:hover .graph-dom-port {
+  opacity: 1;
+}
+
+.graph-dom-port--top {
+  top: 0;
+  left: 50%;
+}
+
+.graph-dom-port--right {
+  right: 0;
+  top: 50%;
+  transform: translate(50%, -50%);
+}
+
+.graph-dom-port--bottom {
+  bottom: 0;
+  left: 50%;
+  transform: translate(-50%, 50%);
+}
+
+.graph-dom-port--left {
+  left: 0;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
