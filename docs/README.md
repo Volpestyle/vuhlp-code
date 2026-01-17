@@ -3,13 +3,14 @@
 This folder is the source‑of‑truth spec for rebuilding the application from scratch with improved behavior and clarity.
 
 ## Doc order
-1. `docs/01-product-spec.md`
-2. `docs/02-prompts-and-templates.md`
-3. `docs/03-agent-parameters-and-permissions.md`
-4. `docs/04-communication-and-context.md`
-5. `docs/05-graph-rules-and-scheduling.md`
-6. `docs/06-orchestration-modes-and-loop-safety.md`
-7. `docs/07-ui-spec.md`
+1. `docs/00-shared-contract.md`
+2. `docs/01-product-spec.md`
+3. `docs/02-prompts-and-templates.md`
+4. `docs/03-agent-parameters-and-permissions.md`
+5. `docs/04-communication-and-context.md`
+6. `docs/05-graph-rules-and-scheduling.md`
+7. `docs/06-orchestration-modes-and-loop-safety.md`
+8. `docs/07-ui-spec.md`
 
 ## Templates
 - `docs/templates/orchestrator.md`
