@@ -11,6 +11,7 @@ This folder is the source‑of‑truth spec for rebuilding the application from 
 6. `docs/05-graph-rules-and-scheduling.md`
 7. `docs/06-orchestration-modes-and-loop-safety.md`
 8. `docs/07-ui-spec.md`
+9. `docs/08-stack.md`
 
 ## Templates
 - `docs/templates/orchestrator.md`
