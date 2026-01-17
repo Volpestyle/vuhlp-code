@@ -1,0 +1,13 @@
+{
+  "name": "vuhlp",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "pnpm --filter @vuhlp/daemon dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint"
+  }
+}

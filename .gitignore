@@ -6,4 +6,3 @@ coverage
 .env.local
 *.log
 /data
-/tmp
