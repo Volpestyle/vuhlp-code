@@ -3,6 +3,8 @@
  * Displays pending approval requests for user action
  */
 
+import { createPortal } from 'react-dom';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import type { ApprovalRequest } from '@vuhlp/contracts';
 import { useRunStore } from '../stores/runStore';
 import { resolveApproval } from '../lib/api';
@@ -16,6 +18,46 @@ interface ApprovalQueueProps {
 export function ApprovalQueue({ approvals }: ApprovalQueueProps) {
   const removeApproval = useRunStore((s) => s.removeApproval);
   const run = useRunStore((s) => s.run);
+
+  // Drag state
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<{ startX: number; startY: number; initialX: number; initialY: number } | null>(null);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+
+    const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: position?.x ?? rect.left,
+      initialY: position?.y ?? rect.top,
+    };
+    e.preventDefault();
+  }, [position]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragRef.current) return;
+      const dx = e.clientX - dragRef.current.startX;
+      const dy = e.clientY - dragRef.current.startY;
+      setPosition({
+        x: dragRef.current.initialX + dx,
+        y: dragRef.current.initialY + dy,
+      });
+    };
+
+    const handleMouseUp = () => {
+      dragRef.current = null;
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   const handleApprove = (approval: ApprovalRequest) => {
     void resolveApproval(approval.approvalId, { status: 'approved' })
@@ -39,9 +81,13 @@ export function ApprovalQueue({ approvals }: ApprovalQueueProps) {
 
   if (approvals.length === 0) return null;
 
-  return (
-    <div className="approval-queue">
-      <div className="approval-queue__header">
+  const style = position
+    ? { left: position.x, top: position.y, right: 'auto', bottom: 'auto' }
+    : undefined;
+
+  return createPortal(
+    <div className={`approval-queue ${position ? 'approval-queue--dragged' : ''}`} style={style}>
+      <div className="approval-queue__header approval-queue__header--draggable" onMouseDown={handleMouseDown}>
         <span className="approval-queue__count">{approvals.length}</span>
         <span className="approval-queue__title">Pending Approvals</span>
       </div>
@@ -79,6 +125,7 @@ export function ApprovalQueue({ approvals }: ApprovalQueueProps) {
           </div>
         ))}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

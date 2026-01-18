@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Stage, Container, Graphics } from '@pixi/react';
 import * as PIXI from 'pixi.js';
+import { Plus, Minus } from 'iconoir-react';
 import { useGraphStore } from '../../stores/graph-store';
 import { useRunStore } from '../../stores/runStore';
 import { getFocusZoomLevels, getViewportForNode } from '../../lib/graphFocus';
@@ -9,6 +10,7 @@ import type { VisualEdge, VisualNode } from '../../types/graph';
 import { GraphEdge } from './GraphEdge';
 import { GraphDomNodes } from './GraphDomNodes';
 import { NodeFocusOverlay } from './NodeFocusOverlay';
+import { GraphMinimap } from './GraphMinimap';
 import './GraphCanvas.css';
 
 type EdgePreview = {
@@ -17,7 +19,11 @@ type EdgePreview = {
   to: { x: number; y: number };
 };
 
-export const GraphCanvas: React.FC = () => {
+interface GraphCanvasProps {
+  onOpenNewNode?: () => void;
+}
+
+export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
   const { nodes, edges, updateNodePosition, viewport, setViewport } = useGraphStore();
   const selectNode = useRunStore((s) => s.selectNode);
   const selectEdge = useRunStore((s) => s.selectEdge);
@@ -196,11 +202,11 @@ export const GraphCanvas: React.FC = () => {
   );
 
   const findClosestPort = useCallback(
-    (point: { x: number; y: number }, excludeNodeId: string) => {
+    (point: { x: number; y: number }, ignorePort?: { nodeId: string; index: number }) => {
       let closest: { nodeId: string; portIndex: number; distance: number } | null = null;
       nodesRef.current.forEach((node) => {
-        if (node.id === excludeNodeId) return;
         for (const port of getNodePorts(node)) {
+          if (ignorePort && node.id === ignorePort.nodeId && port.index === ignorePort.index) continue;
           const dx = point.x - port.x;
           const dy = point.y - port.y;
           const distance = Math.hypot(dx, dy);
@@ -209,7 +215,8 @@ export const GraphCanvas: React.FC = () => {
           }
         }
       });
-      if (!closest || closest.distance > EDGE_SNAP_RADIUS) return null;
+      if (!closest) return null;
+      if (closest.distance > EDGE_SNAP_RADIUS) return null;
       return closest;
     },
     [getNodePorts, EDGE_SNAP_RADIUS]
@@ -283,6 +290,20 @@ export const GraphCanvas: React.FC = () => {
       height: dimensions.height,
     };
   }, [viewMode, selectedNodeId, nodes, dimensions, animateViewportTo]);
+
+  useEffect(() => {
+    if (viewMode !== 'fullscreen' || !selectedNodeId) return;
+    if (animationRef.current) return;
+    const node = nodes.find((item) => item.id === selectedNodeId);
+    if (!node || !dimensions.width || !dimensions.height) return;
+    const { fullZoom } = getFocusZoomLevels(node, dimensions);
+    const targetViewport = getViewportForNode(node, dimensions, fullZoom);
+    const dx = Math.abs(viewport.x - targetViewport.x);
+    const dy = Math.abs(viewport.y - targetViewport.y);
+    const dz = Math.abs(viewport.zoom - targetViewport.zoom);
+    if (dx < 0.5 && dy < 0.5 && dz < 0.005) return;
+    setViewport(targetViewport, false);
+  }, [viewMode, selectedNodeId, nodes, dimensions, viewport.x, viewport.y, viewport.zoom, setViewport]);
 
   useEffect(() => {
     if (viewMode === 'fullscreen') return;
@@ -359,7 +380,7 @@ export const GraphCanvas: React.FC = () => {
         const point = getCanvasPoint(event);
         if (point) {
           const worldPoint = toWorldPoint(point);
-          const target = findClosestPort(worldPoint, edgeDragRef.current.fromNodeId);
+          const target = findClosestPort(worldPoint, { nodeId: edgeDragRef.current.fromNodeId, index: edgeDragRef.current.fromPortIndex });
           if (target) {
             const edgeExists = edgesRef.current.some(
               (edge) =>
@@ -367,11 +388,12 @@ export const GraphCanvas: React.FC = () => {
                 (edge.bidirectional && edge.from === target.nodeId && edge.to === edgeDragRef.current?.fromNodeId)
             );
             if (!edgeExists) {
+              const isSelfLoop = edgeDragRef.current.fromNodeId === target.nodeId;
               const newEdge: VisualEdge = {
                 id: crypto.randomUUID(),
                 from: edgeDragRef.current.fromNodeId,
                 to: target.nodeId,
-                bidirectional: true,
+                bidirectional: !isSelfLoop,
                 type: 'handoff',
                 label: ''
               };
@@ -435,6 +457,7 @@ export const GraphCanvas: React.FC = () => {
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       if (!canvasRef.current) return;
+      if (viewMode === 'fullscreen') return;
       const target = e.target as Element | null;
       if (target?.closest('[data-graph-zoom-block]')) return;
       if (target && !canvasRef.current.contains(target)) return;
@@ -589,6 +612,45 @@ export const GraphCanvas: React.FC = () => {
           </button>
         </div>
       )}
+      <div className="graph-canvas__zoom">
+        <button
+          className="graph-canvas__zoom-btn"
+          onClick={() => setViewport({ ...viewport, zoom: Math.max(0.1, viewport.zoom / 1.1) }, viewMode !== 'fullscreen')}
+          title="Zoom out (-)"
+          disabled={viewMode === 'fullscreen'}
+        >
+          <Minus width={16} height={16} />
+        </button>
+        <div className="graph-canvas__zoom-value">
+          {Math.round(viewport.zoom * 100)}%
+        </div>
+        <button
+          className="graph-canvas__zoom-btn"
+          onClick={() => setViewport({ ...viewport, zoom: Math.min(6, viewport.zoom * 1.1) }, viewMode !== 'fullscreen')}
+          title="Zoom in (+)"
+          disabled={viewMode === 'fullscreen'}
+        >
+          <Plus width={16} height={16} />
+        </button>
+      </div>
+
+      
+      {/* Graph Controls */}
+      <div className="graph-canvas__controls">
+        {onOpenNewNode && (
+          <button
+            className="graph-canvas__control-btn"
+            onClick={onOpenNewNode}
+            disabled={!run}
+            title="Create new node (shift+n)"
+          >
+            <Plus width={20} height={20} />
+            <span className="graph-canvas__control-label">New Node</span>
+          </button>
+        )}
+      </div>
+
+      <GraphMinimap />
       <NodeFocusOverlay viewportSize={dimensions} />
     </div>
   );

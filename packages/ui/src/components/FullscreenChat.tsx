@@ -3,18 +3,38 @@
  * Shows a single node's chat in fullscreen with real-time streaming
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { NodeState } from '@vuhlp/contracts';
-import { useRunStore, type ChatMessage } from '../stores/runStore';
+import { useRunStore, type ChatMessage, type ToolEvent, type TurnStatusEvent, type TimelineEvent } from '../stores/runStore';
 import { postChat } from '../lib/api';
 import { StatusBadge } from './StatusBadge';
 import { ProviderBadge } from './ProviderBadge';
+import { TimelineItem } from './TimelineItem';
+import { ThinkingSpinner } from './ThinkingSpinner';
 import { SendDiagonal } from 'iconoir-react';
+import { useChatAutoScroll } from '../hooks/useChatAutoScroll';
 import './FullscreenChat.css';
 
 type ChatVariant = 'full' | 'mid';
+const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
 
-const EMPTY_MESSAGES: ChatMessage[] = [];
+const buildNodeTimeline = (
+  messages: ChatMessage[],
+  tools: ToolEvent[],
+  statuses: TurnStatusEvent[]
+): TimelineEvent[] => {
+  const timeline: TimelineEvent[] = [
+    ...messages.map((message) => ({ type: 'message' as const, data: message })),
+    ...tools.map((tool) => ({ type: 'tool' as const, data: tool })),
+    ...statuses.map((status) => ({ type: 'status' as const, data: status })),
+  ];
+
+  return timeline.sort((a, b) => {
+    const timeA = new Date(a.type === 'message' ? a.data.createdAt : a.data.timestamp).getTime();
+    const timeB = new Date(b.type === 'message' ? b.data.createdAt : b.data.timestamp).getTime();
+    return timeA - timeB;
+  });
+};
 
 interface FullscreenChatProps {
   node: NodeState;
@@ -29,47 +49,89 @@ export function FullscreenChat({
 }: FullscreenChatProps) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
   const runId = useRunStore((s) => s.run?.id);
   const addChatMessage = useRunStore((s) => s.addChatMessage);
-  const messages = useRunStore((s) => s.chatMessages[node.id] ?? EMPTY_MESSAGES);
+  const updateChatMessageStatus = useRunStore((s) => s.updateChatMessageStatus);
+  const messages = useRunStore((s) => s.chatMessages[node.id]);
+  const toolEvents = useRunStore((s) => s.toolEvents);
+  const turnStatusEvents = useRunStore((s) => s.turnStatusEvents);
+  const wsConnectionStatus = useRunStore((s) => s.ui.wsConnectionStatus);
+  const nodeToolEvents = useMemo(
+    () => toolEvents.filter((event) => event.nodeId === node.id),
+    [toolEvents, node.id]
+  );
+  const nodeStatusEvents = useMemo(
+    () => turnStatusEvents.filter((event) => event.nodeId === node.id),
+    [turnStatusEvents, node.id]
+  );
+  const safeMessages = messages ?? EMPTY_CHAT_MESSAGES;
+  const timeline = useMemo(
+    () => buildNodeTimeline(safeMessages, nodeToolEvents, nodeStatusEvents),
+    [safeMessages, nodeToolEvents, nodeStatusEvents]
+  );
   const showInput = interactive && variant === 'full';
 
-  // Auto-scroll to bottom when new messages arrive
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  useChatAutoScroll({ scrollRef: messagesScrollRef, timeline, resetKey: node.id });
 
   // Simulated streaming indicator based on node connection state
   useEffect(() => {
     setIsStreaming(node.connection?.streaming ?? false);
   }, [node.connection?.streaming]);
 
+  const sendMessage = useCallback(
+    async (messageId: string, content: string) => {
+      if (!runId) {
+        updateChatMessageStatus(node.id, messageId, {
+          pending: false,
+          sendError: 'No active run',
+        });
+        return;
+      }
+      try {
+        await postChat(runId, node.id, content, true);
+        updateChatMessageStatus(node.id, messageId, { pending: false });
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Failed to send message';
+        console.error('[fullscreen-chat] failed to send', error);
+        updateChatMessageStatus(node.id, messageId, {
+          pending: false,
+          sendError: errorMessage,
+        });
+      }
+    },
+    [runId, node.id, updateChatMessageStatus]
+  );
+
   const handleSend = () => {
     if (!input.trim()) return;
 
     const now = new Date().toISOString();
+    const messageId = `local-${crypto.randomUUID()}`;
     const newMessage: ChatMessage = {
-      id: `local-${crypto.randomUUID()}`,
+      id: messageId,
       nodeId: node.id,
       role: 'user',
       content: input,
       createdAt: now,
+      pending: true,
     };
     addChatMessage(newMessage);
     setInput('');
-
-    if (runId) {
-      void postChat(runId, node.id, input, true).catch((error) => {
-        console.error('[fullscreen-chat] failed to send', error);
-      });
-    } else {
-      console.warn('[fullscreen-chat] cannot send message without active run');
-    }
+    void sendMessage(messageId, input);
   };
 
+  const handleRetry = useCallback(
+    (messageId: string, content: string) => {
+      updateChatMessageStatus(node.id, messageId, { pending: true, sendError: undefined });
+      void sendMessage(messageId, content);
+    },
+    [node.id, updateChatMessageStatus, sendMessage]
+  );
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
       e.preventDefault();
       handleSend();
     }
@@ -86,10 +148,33 @@ export function FullscreenChat({
             <StatusBadge status={node.status} />
             {isStreaming && (
               <span className="fullscreen-chat__streaming">
-                <span className="fullscreen-chat__streaming-dot" />
+                <ThinkingSpinner size="sm" />
                 Streaming
               </span>
             )}
+            <span
+              className={`fullscreen-chat__connection fullscreen-chat__connection--${wsConnectionStatus}`}
+              title={
+                wsConnectionStatus === 'connected'
+                  ? 'Connected'
+                  : wsConnectionStatus === 'connecting'
+                    ? 'Connecting...'
+                    : wsConnectionStatus === 'error'
+                      ? 'Connection error'
+                      : 'Disconnected'
+              }
+            >
+              <span className="fullscreen-chat__connection-dot" />
+              {wsConnectionStatus !== 'connected' && (
+                <span className="fullscreen-chat__connection-text">
+                  {wsConnectionStatus === 'connecting'
+                    ? 'Connecting...'
+                    : wsConnectionStatus === 'error'
+                      ? 'Connection error'
+                      : 'Disconnected'}
+                </span>
+              )}
+            </span>
           </div>
         </div>
         <div className="fullscreen-chat__summary">
@@ -98,8 +183,8 @@ export function FullscreenChat({
       </header>
 
       {/* Messages */}
-      <div className="fullscreen-chat__messages">
-        {messages.length === 0 ? (
+      <div className="fullscreen-chat__messages" ref={messagesScrollRef}>
+        {timeline.length === 0 && node.status !== 'running' ? (
           <div className="fullscreen-chat__empty">
             <p className="fullscreen-chat__empty-text">
               Start a conversation with {node.label}
@@ -109,24 +194,40 @@ export function FullscreenChat({
             </p>
           </div>
         ) : (
-          messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`fullscreen-chat__message fullscreen-chat__message--${msg.role}`}
-            >
-              <div className="fullscreen-chat__message-header">
-                <span className="fullscreen-chat__message-role">{msg.role}</span>
-                <span className="fullscreen-chat__message-time">
-                  {new Date(msg.createdAt).toLocaleTimeString('en-US', { hour12: false })}
-                </span>
-              </div>
-              <div className="fullscreen-chat__message-content">
-                {msg.content}
-              </div>
-            </div>
-          ))
+          <>
+            {timeline.map((item) => (
+              <TimelineItem
+                key={`${item.type}-${item.data.id}`}
+                item={item}
+                onRetry={handleRetry}
+              />
+            ))}
+            {(() => {
+              const lastItem = timeline[timeline.length - 1];
+              const isStreamingMessage = lastItem?.type === 'message' && (lastItem.data.streaming || lastItem.data.thinkingStreaming);
+
+              if (node.status === 'running' && !isStreamingMessage) {
+                return (
+                  <div className="timeline-message timeline-message--assistant timeline-message--streaming">
+                    <div className="timeline-message__header">
+                      <span className="timeline-message__role">assistant</span>
+                      <div className="timeline-message__meta">
+                        <span className="timeline-message__streaming">
+                          <ThinkingSpinner size="sm" />
+                          thinking
+                        </span>
+                      </div>
+                    </div>
+                    <div className="timeline-message__content">
+                      <ThinkingSpinner size="lg" />
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+          </>
         )}
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Input */}

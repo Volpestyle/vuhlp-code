@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { RunState } from '@vuhlp/contracts';
-import { createRun, deleteRun, getRun, listRuns } from '../lib/api';
+import { deleteRun, getRun, listRuns } from '../lib/api';
 import { useRunStore } from '../stores/runStore';
 import { RefreshDouble, Plus, Check, Xmark, EditPencil, Trash, SidebarCollapse, SidebarExpand } from 'iconoir-react';
+import { NewRunModal } from './NewRunModal';
 import './SessionPanel.css';
 
 const RUN_STORAGE_KEY = 'vuhlp-active-run-id';
@@ -122,26 +123,21 @@ export function SessionPanel({ collapsed = false }: SessionPanelProps) {
     [activeRunId, selectEdge, selectNode, setRun, switchingId, upsertRun]
   );
 
-  const handleCreateRun = useCallback(async () => {
-    if (creating) return;
+  const handleCreateRun = useCallback(() => {
     setCreating(true);
     setEditingId(null);
     setEditValue('');
     setError(null);
-    try {
-      const created = await createRun();
-      setRun(created);
-      selectNode(null);
-      selectEdge(null);
-      upsertRun(created);
-      persistRunSelection(created.id);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-    } finally {
+  }, []);
+
+  const handleRunCreated = useCallback(
+    (run: RunState) => {
+      upsertRun(run);
+      persistRunSelection(run.id);
       setCreating(false);
-    }
-  }, [creating, selectEdge, selectNode, setRun, upsertRun]);
+    },
+    [upsertRun]
+  );
 
   const handleStartRename = useCallback(
     (runId: string) => {
@@ -210,12 +206,7 @@ export function SessionPanel({ collapsed = false }: SessionPanelProps) {
             upsertRun(selected);
             persistRunSelection(selected.id);
           } else {
-            const created = await createRun();
-            setRun(created);
-            selectNode(null);
-            selectEdge(null);
-            upsertRun(created);
-            persistRunSelection(created.id);
+            setCreating(true);
           }
         }
       } catch (err) {
@@ -280,7 +271,6 @@ export function SessionPanel({ collapsed = false }: SessionPanelProps) {
               className="session-panel__button session-panel__button--primary"
               type="button"
               onClick={handleCreateRun}
-              disabled={creating}
               title="Create new session"
               aria-label="Create new session"
             >
@@ -309,7 +299,6 @@ export function SessionPanel({ collapsed = false }: SessionPanelProps) {
               className="session-panel__button session-panel__button--primary"
               type="button"
               onClick={handleCreateRun}
-              disabled={creating}
             >
               Create session
             </button>
@@ -359,6 +348,11 @@ export function SessionPanel({ collapsed = false }: SessionPanelProps) {
                           <span>{edgeCount} edges</span>
                           <span>{formatTime(run.updatedAt)}</span>
                         </div>
+                        {run.cwd && (
+                          <div className="session-panel__item-cwd" title={run.cwd}>
+                            {run.cwd.split('/').pop() || run.cwd}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <button
@@ -378,6 +372,11 @@ export function SessionPanel({ collapsed = false }: SessionPanelProps) {
                           <span>{edgeCount} edges</span>
                           <span>{formatTime(run.updatedAt)}</span>
                         </div>
+                        {run.cwd && (
+                          <div className="session-panel__item-cwd" title={run.cwd}>
+                            {run.cwd.split('/').pop() || run.cwd}
+                          </div>
+                        )}
                       </button>
                     )}
                     <div className="session-panel__item-actions">
@@ -435,6 +434,12 @@ export function SessionPanel({ collapsed = false }: SessionPanelProps) {
           </ul>
         )}
       </div>
+
+      <NewRunModal
+        open={creating}
+        onClose={() => setCreating(false)}
+        onSuccess={handleRunCreated}
+      />
     </div>
   );
 }

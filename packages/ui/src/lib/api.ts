@@ -10,7 +10,9 @@ import type {
   DeleteNodeResponse,
   DeleteEdgeResponse,
   GetArtifactResponse,
+  GetRoleTemplateResponse,
   GetRunResponse,
+  GetRunEventsResponse,
   ListRunsResponse,
   PostChatRequest,
   PostChatResponse,
@@ -20,7 +22,8 @@ import type {
   UpdateNodeRequest,
   UpdateNodeResponse,
   UpdateRunRequest,
-  UpdateRunResponse
+  UpdateRunResponse,
+  ListDirectoryResponse
 } from "@vuhlp/contracts";
 
 const DEFAULT_API_URL = "http://localhost:4000";
@@ -63,6 +66,11 @@ export async function listRuns(): Promise<ListRunsResponse["runs"]> {
 export async function getRun(runId: string): Promise<GetRunResponse["run"]> {
   const response = await fetchJson<GetRunResponse>(`/api/runs/${runId}`);
   return response.run;
+}
+
+export async function getRunEvents(runId: string): Promise<GetRunEventsResponse["events"]> {
+  const response = await fetchJson<GetRunEventsResponse>(`/api/runs/${runId}/events`);
+  return response.events;
 }
 
 export async function deleteRun(runId: string): Promise<DeleteRunResponse["runId"]> {
@@ -156,6 +164,10 @@ export async function getArtifactContent(runId: string, artifactId: string): Pro
   return fetchJson<GetArtifactResponse>(`/api/runs/${runId}/artifacts/${artifactId}`);
 }
 
+export async function getRoleTemplate(name: string): Promise<GetRoleTemplateResponse> {
+  return fetchJson<GetRoleTemplateResponse>(`/api/templates/${encodeURIComponent(name)}`);
+}
+
 export async function resolveApproval(
   approvalId: string,
   resolution: ApprovalResolution,
@@ -168,4 +180,10 @@ export async function resolveApproval(
     body: JSON.stringify(body)
   });
   return response.approvalId;
+}
+
+export async function listDirectory(path?: string): Promise<ListDirectoryResponse> {
+  const params = new URLSearchParams();
+  if (path) params.set("path", path);
+  return fetchJson<ListDirectoryResponse>(`/api/fs/list?${params.toString()}`);
 }

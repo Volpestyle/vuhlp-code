@@ -11,13 +11,35 @@
  * - Controls: interrupt, queue message, reset context
  */
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import type { NodeState, Artifact, Envelope, EdgeState, ProviderName, NodeCapabilities, NodePermissions } from '@vuhlp/contracts';
-import { useRunStore, type ToolEvent, type ChatMessage } from '../stores/runStore';
-import { createEdge, deleteEdge, deleteNode, getArtifactContent, postChat, resetNode, updateNode } from '../lib/api';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject } from 'react';
+import type {
+  NodeState,
+  Artifact,
+  Envelope,
+  EdgeState,
+  ProviderName,
+  NodeCapabilities,
+  NodePermissions,
+  GetRoleTemplateResponse,
+  UsageTotals
+} from '@vuhlp/contracts';
+import { useRunStore, type ChatMessage, type ToolEvent, type TurnStatusEvent, type NodeLogEntry, type TimelineEvent } from '../stores/runStore';
+import { useChatAutoScroll } from '../hooks/useChatAutoScroll';
+import { TimelineItem } from './TimelineItem';
+import {
+  createEdge,
+  deleteEdge,
+  deleteNode,
+  getArtifactContent,
+  getRoleTemplate,
+  postChat,
+  resetNode,
+  updateNode
+} from '../lib/api';
 import { StatusBadge } from './StatusBadge';
 import { ProviderBadge } from './ProviderBadge';
-import { RefreshDouble, Trash, Check, Eye } from 'iconoir-react';
+import { ThinkingSpinner } from './ThinkingSpinner';
+import { RefreshDouble, Trash, Check, Eye, NavArrowDown, NavArrowRight } from 'iconoir-react';
 import './NodeInspector.css';
 
 interface NodeInspectorProps {
@@ -28,7 +50,10 @@ type InspectorTab = 'overview' | 'chat' | 'handoffs' | 'prompts' | 'transcripts'
 const PROVIDER_OPTIONS: ProviderName[] = ['claude', 'codex', 'gemini', 'custom'];
 const PERMISSIONS_MODE_OPTIONS: Array<NodePermissions['cliPermissionsMode']> = ['skip', 'gated'];
 const ROLE_TEMPLATE_OPTIONS = ['orchestrator', 'planner', 'implementer', 'reviewer', 'investigator'];
-const EMPTY_MESSAGES: ChatMessage[] = [];
+const TEMPLATE_PREVIEW_HEIGHT_STORAGE_KEY = 'vuhlp-template-preview-height';
+const DEFAULT_TEMPLATE_PREVIEW_HEIGHT = 160;
+const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
+
 
 type NodeConfigDraft = {
   label: string;
@@ -43,6 +68,24 @@ const areCapabilitiesEqual = (a: NodeCapabilities, b: NodeCapabilities) =>
 
 const arePermissionsEqual = (a: NodePermissions, b: NodePermissions) =>
   a.cliPermissionsMode === b.cliPermissionsMode && a.spawnRequiresApproval === b.spawnRequiresApproval;
+
+const buildNodeTimeline = (
+  messages: ChatMessage[],
+  tools: ToolEvent[],
+  statuses: TurnStatusEvent[]
+): TimelineEvent[] => {
+  const timeline: TimelineEvent[] = [
+    ...messages.map((message) => ({ type: 'message' as const, data: message })),
+    ...tools.map((tool) => ({ type: 'tool' as const, data: tool })),
+    ...statuses.map((status) => ({ type: 'status' as const, data: status })),
+  ];
+
+  return timeline.sort((a, b) => {
+    const timeA = new Date(a.type === 'message' ? a.data.createdAt : a.data.timestamp).getTime();
+    const timeB = new Date(b.type === 'message' ? b.data.createdAt : b.data.timestamp).getTime();
+    return timeA - timeB;
+  });
+};
 
 export function NodeInspector({ node }: NodeInspectorProps) {
   const [activeTab, setActiveTab] = useState<InspectorTab>('overview');
@@ -62,23 +105,56 @@ export function NodeInspector({ node }: NodeInspectorProps) {
   });
   const [configSaving, setConfigSaving] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [templatePreview, setTemplatePreview] = useState<GetRoleTemplateResponse | null>(null);
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const [templatePreviewHeight, setTemplatePreviewHeight] = useState(() => {
+    if (typeof window === 'undefined') return DEFAULT_TEMPLATE_PREVIEW_HEIGHT;
+    const stored = window.localStorage.getItem(TEMPLATE_PREVIEW_HEIGHT_STORAGE_KEY);
+    const parsed = stored ? Number(stored) : Number.NaN;
+    return Number.isFinite(parsed) ? parsed : DEFAULT_TEMPLATE_PREVIEW_HEIGHT;
+  });
   const [artifactContent, setArtifactContent] = useState<Record<string, string>>({});
   const [loadingArtifactId, setLoadingArtifactId] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
+  const templatePreviewRef = useRef<HTMLPreElement | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const getNodeArtifacts = useRunStore((s) => s.getNodeArtifacts);
   const getNodeEdges = useRunStore((s) => s.getNodeEdges);
-  const getNodeToolEvents = useRunStore((s) => s.getNodeToolEvents);
+
   const recentHandoffs = useRunStore((s) => s.recentHandoffs);
   const runId = useRunStore((s) => s.run?.id);
+  const runUsage = useRunStore((s) => s.run?.usage);
   const removeNode = useRunStore((s) => s.removeNode);
   const removeEdge = useRunStore((s) => s.removeEdge);
   const addEdge = useRunStore((s) => s.addEdge);
   const addChatMessage = useRunStore((s) => s.addChatMessage);
-  const messages = useRunStore((s) => s.chatMessages[node.id] ?? EMPTY_MESSAGES);
+  const clearNodeMessages = useRunStore((s) => s.clearNodeMessages);
+  const messages = useRunStore((s) => s.chatMessages[node.id]);
+  const toolEvents = useRunStore((s) => s.toolEvents);
+  const turnStatusEvents = useRunStore((s) => s.turnStatusEvents);
+  const nodeLogs = useRunStore((s) => s.nodeLogs);
+  const nodeToolEvents = useMemo(
+    () => toolEvents.filter((event) => event.nodeId === node.id),
+    [toolEvents, node.id]
+  );
+  const nodeStatusEvents = useMemo(
+    () => turnStatusEvents.filter((event) => event.nodeId === node.id),
+    [turnStatusEvents, node.id]
+  );
+  const nodeLogTail = useMemo<NodeLogEntry[]>(
+    () => nodeLogs[node.id] ?? [],
+    [nodeLogs, node.id]
+  );
+  const safeMessages = messages ?? EMPTY_CHAT_MESSAGES;
+  const timeline = useMemo(
+    () => buildNodeTimeline(safeMessages, nodeToolEvents, nodeStatusEvents),
+    [safeMessages, nodeToolEvents, nodeStatusEvents]
+  );
 
   const artifacts = getNodeArtifacts(node.id);
   const edges = getNodeEdges(node.id);
-  const toolEvents = getNodeToolEvents(node.id);
+
   const nodeHandoffs = recentHandoffs.filter(
     (h) => h.fromNodeId === node.id || h.toNodeId === node.id
   );
@@ -114,6 +190,70 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     node.capabilities,
     node.permissions,
   ]);
+
+  useEffect(() => {
+    if (promptOverrideMode !== 'template') {
+      setTemplatePreview(null);
+      setTemplateLoading(false);
+      setTemplateError(null);
+      return;
+    }
+    const name = configDraft.roleTemplate.trim();
+    if (!name) {
+      setTemplatePreview(null);
+      setTemplateLoading(false);
+      setTemplateError(null);
+      return;
+    }
+    let cancelled = false;
+    setTemplateLoading(true);
+    setTemplateError(null);
+    void getRoleTemplate(name)
+      .then((template) => {
+        if (cancelled) return;
+        setTemplatePreview(template);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setTemplateError(message);
+        setTemplatePreview(null);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setTemplateLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [configDraft.roleTemplate, promptOverrideMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        TEMPLATE_PREVIEW_HEIGHT_STORAGE_KEY,
+        String(Math.round(templatePreviewHeight))
+      );
+    } catch {
+      // Ignore storage errors (private mode or blocked storage).
+    }
+  }, [templatePreviewHeight]);
+
+  useEffect(() => {
+    if (promptOverrideMode !== 'template') return;
+    const element = templatePreviewRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const nextHeight = Math.round(entry.contentRect.height);
+        setTemplatePreviewHeight((prev) => (prev === nextHeight ? prev : nextHeight));
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [promptOverrideMode]);
 
   const roleTemplateOptions = useMemo(() => {
     const options = [...ROLE_TEMPLATE_OPTIONS];
@@ -175,6 +315,13 @@ export function NodeInspector({ node }: NodeInspectorProps) {
   const handleSendMessage = (interrupt: boolean) => {
     const content = messageInput.trim();
     if (!content) return;
+    const normalized = content.toLowerCase();
+    if (normalized === '/new' || normalized === '/clear') {
+      setMessageInput('');
+      setMessageError(null);
+      handleResetContext();
+      return;
+    }
     if (!runId) {
       setMessageError('Start a run to send messages.');
       console.warn('[inspector] cannot send message without active run');
@@ -284,6 +431,9 @@ export function NodeInspector({ node }: NodeInspectorProps) {
   };
 
   const handleResetContext = () => {
+    clearNodeMessages(node.id);
+    setMessageInput('');
+    setMessageError(null);
     if (!runId) {
       console.warn('[inspector] cannot reset context without active run');
       return;
@@ -349,14 +499,21 @@ export function NodeInspector({ node }: NodeInspectorProps) {
 
   const tabs: { id: InspectorTab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
-    { id: 'chat', label: 'Chat', count: messages.length },
+
+    { id: 'chat', label: 'Chat' },
     { id: 'handoffs', label: 'Handoffs', count: nodeHandoffs.length },
     { id: 'prompts', label: 'Prompts', count: prompts.length },
     { id: 'transcripts', label: 'Transcripts', count: transcripts.length },
     { id: 'diffs', label: 'Diffs', count: diffs.length },
     { id: 'artifacts', label: 'Artifacts', count: artifacts.length },
-    { id: 'tools', label: 'Tools', count: toolEvents.length },
   ];
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      handleSendMessage(false);
+    }
+  };
 
   return (
     <div className="inspector">
@@ -431,11 +588,12 @@ export function NodeInspector({ node }: NodeInspectorProps) {
       </nav>
 
       {/* Content */}
-      <div className="inspector__content">
+      <div className="inspector__content" ref={contentRef}>
         {activeTab === 'overview' && (
           <OverviewTab
             node={node}
             edges={edges}
+            nodeLogs={nodeLogTail}
             configDraft={configDraft}
             configDirty={configDirty}
             configSaving={configSaving}
@@ -446,6 +604,11 @@ export function NodeInspector({ node }: NodeInspectorProps) {
             roleTemplateOptions={roleTemplateOptions}
             promptOverrideMode={promptOverrideMode}
             customPromptValid={customPromptValid}
+            templatePreview={templatePreview}
+            templateLoading={templateLoading}
+            templateError={templateError}
+            templatePreviewRef={templatePreviewRef}
+            templatePreviewHeight={templatePreviewHeight}
             onPromptOverrideModeChange={setPromptOverrideMode}
             onCapabilityToggle={handleCapabilityToggle}
             onPermissionsModeChange={handlePermissionsModeChange}
@@ -453,10 +616,17 @@ export function NodeInspector({ node }: NodeInspectorProps) {
             onSaveConfig={handleSaveConfig}
             onDeleteEdge={handleDeleteEdge}
             onSaveEdgeLabel={handleSaveEdgeLabel}
+            runUsage={runUsage}
           />
         )}
         {activeTab === 'chat' && (
-          <ChatTab messages={messages} nodeLabel={node.label} />
+          <ChatTab
+            timeline={timeline}
+            nodeLabel={node.label}
+            nodeStatus={node.status}
+            nodeId={node.id}
+            scrollRef={contentRef}
+          />
         )}
         {activeTab === 'handoffs' && (
           <HandoffsTab handoffs={nodeHandoffs} nodeId={node.id} />
@@ -487,9 +657,6 @@ export function NodeInspector({ node }: NodeInspectorProps) {
         {activeTab === 'artifacts' && (
           <ArtifactsTab artifacts={artifacts} />
         )}
-        {activeTab === 'tools' && (
-          <ToolsTab toolEvents={toolEvents} />
-        )}
       </div>
 
       {/* Controls */}
@@ -500,6 +667,7 @@ export function NodeInspector({ node }: NodeInspectorProps) {
             placeholder="Send message to node..."
             value={messageInput}
             onChange={handleMessageChange}
+            onKeyDown={handleKeyDown}
             rows={2}
           />
           {messageError && <div className="inspector__error">{messageError}</div>}
@@ -527,14 +695,32 @@ export function NodeInspector({ node }: NodeInspectorProps) {
   );
 }
 
-function ChatTab({ messages, nodeLabel }: { messages: ChatMessage[]; nodeLabel: string }) {
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+function ChatTab({
+  timeline,
+  nodeLabel,
+  nodeStatus,
+  nodeId,
+  scrollRef,
+}: {
+  timeline: TimelineEvent[];
+  nodeLabel: string;
+  nodeStatus?: string;
+  nodeId: string;
+  scrollRef: RefObject<HTMLDivElement>;
+}) {
+  const isStreaming = useMemo(() => {
+    const lastMessage = [...timeline].reverse().find((item) => item.type === 'message');
+    return Boolean(
+      lastMessage?.type === 'message' && (lastMessage.data.streaming || lastMessage.data.thinkingStreaming)
+    );
+  }, [timeline]);
+  const autoScrollKey = useMemo(
+    () => `${nodeStatus ?? ''}-${isStreaming ? '1' : '0'}`,
+    [nodeStatus, isStreaming]
+  );
+  useChatAutoScroll({ scrollRef, timeline, updateKey: autoScrollKey, resetKey: nodeId });
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  if (messages.length === 0) {
+  if (timeline.length === 0 && nodeStatus !== 'running') {
     return (
       <div className="inspector__empty">
         <span className="inspector__empty-text">Start a conversation with {nodeLabel}</span>
@@ -544,29 +730,25 @@ function ChatTab({ messages, nodeLabel }: { messages: ChatMessage[]; nodeLabel: 
 
   return (
     <div className="inspector__section inspector__chat">
-      {messages.map((msg) => (
-        <div
-          key={msg.id}
-          className={`inspector__chat-message inspector__chat-message--${msg.role} ${msg.streaming ? 'inspector__chat-message--streaming' : ''}`}
-        >
-          <div className="inspector__chat-header">
-            <span className="inspector__chat-role">{msg.role}</span>
-            <div className="inspector__chat-meta">
-              {msg.streaming && (
-                <span className="inspector__chat-streaming">
-                  <span className="inspector__chat-streaming-dot" />
-                  streaming
-                </span>
-              )}
-              <span className="inspector__chat-time">
-                {new Date(msg.createdAt).toLocaleTimeString('en-US', { hour12: false })}
+      {timeline.map((item) => (
+        <TimelineItem key={`${item.type}-${item.data.id}`} item={item} />
+      ))}
+      {nodeStatus === 'running' && !isStreaming && (
+        <div className="timeline-message timeline-message--assistant timeline-message--streaming">
+          <div className="timeline-message__header">
+            <span className="timeline-message__role">assistant</span>
+            <div className="timeline-message__meta">
+              <span className="timeline-message__streaming timeline-message__streaming--thinking">
+                <ThinkingSpinner size="sm" />
+                thinking
               </span>
             </div>
           </div>
-          <div className="inspector__chat-content">{msg.content}</div>
+          <div className="timeline-message__content">
+            <ThinkingSpinner size="lg" />
+          </div>
         </div>
-      ))}
-      <div ref={messagesEndRef} />
+      )}
     </div>
   );
 }
@@ -574,6 +756,7 @@ function ChatTab({ messages, nodeLabel }: { messages: ChatMessage[]; nodeLabel: 
 function OverviewTab({
   node,
   edges,
+  nodeLogs,
   configDraft,
   configDirty,
   configSaving,
@@ -584,16 +767,23 @@ function OverviewTab({
   roleTemplateOptions,
   promptOverrideMode,
   customPromptValid,
+  templatePreview,
+  templateLoading,
+  templateError,
+  templatePreviewRef,
+  templatePreviewHeight,
   onPromptOverrideModeChange,
   onCapabilityToggle,
   onPermissionsModeChange,
   onSpawnApprovalToggle,
   onSaveConfig,
   onDeleteEdge,
-  onSaveEdgeLabel
+  onSaveEdgeLabel,
+  runUsage
 }: {
   node: NodeState;
   edges: EdgeState[];
+  nodeLogs: NodeLogEntry[];
   configDraft: NodeConfigDraft;
   configDirty: boolean;
   configSaving: boolean;
@@ -604,6 +794,11 @@ function OverviewTab({
   roleTemplateOptions: string[];
   promptOverrideMode: 'template' | 'custom';
   customPromptValid: boolean;
+  templatePreview: GetRoleTemplateResponse | null;
+  templateLoading: boolean;
+  templateError: string | null;
+  templatePreviewRef: RefObject<HTMLPreElement>;
+  templatePreviewHeight: number;
   onPromptOverrideModeChange: (mode: 'template' | 'custom') => void;
   onCapabilityToggle: (key: keyof NodeCapabilities) => void;
   onPermissionsModeChange: (mode: NodePermissions['cliPermissionsMode']) => void;
@@ -611,11 +806,22 @@ function OverviewTab({
   onSaveConfig: () => void;
   onDeleteEdge: (edgeId: string) => void;
   onSaveEdgeLabel: (edgeId: string, label: string) => void;
+  runUsage?: UsageTotals;
 }) {
   const formatTime = (iso: string) => {
     const date = new Date(iso);
     return date.toLocaleTimeString('en-US', { hour12: false });
   };
+  const formatTokens = (value?: number) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return '—';
+    }
+    return value.toLocaleString('en-US');
+  };
+  const nodeUsage = node.usage;
+  const hasUsage = Boolean(nodeUsage || runUsage);
+
+  const [isTemplatePreviewExpanded, setIsTemplatePreviewExpanded] = useState(false);
 
   return (
     <div className="inspector__section">
@@ -659,6 +865,46 @@ function OverviewTab({
               <option value="custom">CUSTOM</option>
             </select>
           </label>
+          {promptOverrideMode === 'template' && (
+            <div className="inspector__field inspector__field--full">
+              <div 
+                className="inspector__section-header" 
+                onClick={() => setIsTemplatePreviewExpanded(!isTemplatePreviewExpanded)}
+                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}
+              >
+                {isTemplatePreviewExpanded ? (
+                  <NavArrowDown width={14} height={14} />
+                ) : (
+                  <NavArrowRight width={14} height={14} />
+                )}
+                <span className="inspector__field-label" style={{ marginBottom: 0 }}>Template Preview</span>
+              </div>
+              
+              {isTemplatePreviewExpanded && (
+                <>
+                  {templateError && (
+                    <span className="inspector__field-hint inspector__field-hint--error">
+                      {templateError}
+                    </span>
+                  )}
+                  <pre
+                    className="inspector__template-preview"
+                    ref={templatePreviewRef}
+                    style={{ height: `${templatePreviewHeight}px` }}
+                  >
+                    {templateLoading
+                      ? <span className="inspector__loading"><ThinkingSpinner size="sm" /> Loading template</span>
+                      : templatePreview?.content ?? 'Select a role template to preview.'}
+                  </pre>
+                  {!templateLoading && templatePreview && !templatePreview.found && (
+                    <span className="inspector__field-hint inspector__field-hint--error">
+                      Template file not found in docs/templates.
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+          )}
           {promptOverrideMode === 'custom' && (
             <label className="inspector__field inspector__field--full">
               <span className="inspector__field-label">Custom Prompt</span>
@@ -756,6 +1002,18 @@ function OverviewTab({
             <span className="inspector__kv-key">Streaming</span>
             <span className="inspector__kv-value">{node.connection?.streaming ? 'Yes' : 'No'}</span>
           </div>
+          {node.connection?.lastHeartbeatAt && (
+            <div className="inspector__kv">
+              <span className="inspector__kv-key">Last Heartbeat</span>
+              <span className="inspector__kv-value">{formatTime(node.connection.lastHeartbeatAt)}</span>
+            </div>
+          )}
+          {node.connection?.lastOutputAt && (
+            <div className="inspector__kv">
+              <span className="inspector__kv-key">Last Output</span>
+              <span className="inspector__kv-value">{formatTime(node.connection.lastOutputAt)}</span>
+            </div>
+          )}
           <div className="inspector__kv">
             <span className="inspector__kv-key">Session ID</span>
             <span className="inspector__kv-value inspector__kv-value--mono">
@@ -775,6 +1033,56 @@ function OverviewTab({
             </div>
           )}
         </div>
+      </div>
+
+      {nodeLogs.length > 0 && (
+        <div className="inspector__group">
+          <h3 className="inspector__group-title">CLI Output (tail)</h3>
+          <div className="inspector__log">
+            {nodeLogs.map((entry) => (
+              <div key={entry.id} className="inspector__log-line">
+                <span className={`inspector__log-source inspector__log-source--${entry.source}`}>
+                  {entry.source}
+                </span>
+                <span className="inspector__log-time">{formatTime(entry.timestamp)}</span>
+                <span className="inspector__log-text">{entry.line}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Usage */}
+      <div className="inspector__group">
+        <h3 className="inspector__group-title">Usage</h3>
+        {hasUsage ? (
+          <div className="inspector__kv-list">
+            {nodeUsage && (
+              <>
+                <div className="inspector__kv">
+                  <span className="inspector__kv-key">Node Prompt</span>
+                  <span className="inspector__kv-value">{formatTokens(nodeUsage.promptTokens)}</span>
+                </div>
+                <div className="inspector__kv">
+                  <span className="inspector__kv-key">Node Completion</span>
+                  <span className="inspector__kv-value">{formatTokens(nodeUsage.completionTokens)}</span>
+                </div>
+                <div className="inspector__kv">
+                  <span className="inspector__kv-key">Node Total</span>
+                  <span className="inspector__kv-value">{formatTokens(nodeUsage.totalTokens)}</span>
+                </div>
+              </>
+            )}
+            {runUsage && (
+              <div className="inspector__kv">
+                <span className="inspector__kv-key">Run Total</span>
+                <span className="inspector__kv-value">{formatTokens(runUsage.totalTokens)}</span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="inspector__summary">No usage telemetry yet.</p>
+        )}
       </div>
 
       {/* Edges */}
@@ -985,7 +1293,7 @@ function TextArtifactsTab({
                   disabled={isLoading}
                   title="View"
                 >
-                  {isLoading ? 'Loading' : <Eye width={14} height={14} />}
+                  {isLoading ? <ThinkingSpinner size="sm" /> : <Eye width={14} height={14} />}
                 </button>
               </div>
             )}
@@ -1016,56 +1324,6 @@ function ArtifactsTab({ artifacts }: { artifacts: Artifact[] }) {
             <span className="inspector__artifact-name">{artifact.name}</span>
           </div>
           <span className="inspector__artifact-path">{artifact.path}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ToolsTab({ toolEvents }: { toolEvents: ToolEvent[] }) {
-  if (toolEvents.length === 0) {
-    return (
-      <div className="inspector__empty">
-        <span className="inspector__empty-text">No tool events yet</span>
-      </div>
-    );
-  }
-
-  const getStatusColor = (status: ToolEvent['status']) => {
-    switch (status) {
-      case 'proposed': return 'inspector__tool-status--proposed';
-      case 'started': return 'inspector__tool-status--started';
-      case 'completed': return 'inspector__tool-status--completed';
-      case 'failed': return 'inspector__tool-status--failed';
-      default: return '';
-    }
-  };
-
-  return (
-    <div className="inspector__section">
-      {toolEvents.map((event) => (
-        <div key={event.id} className="inspector__tool">
-          <div className="inspector__tool-header">
-            <span className="inspector__tool-name">{event.tool.name}</span>
-            <span className={`inspector__tool-status ${getStatusColor(event.status)}`}>
-              {event.status}
-            </span>
-          </div>
-          <div className="inspector__tool-time">
-            {new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}
-          </div>
-          {Object.keys(event.tool.args).length > 0 && (
-            <div className="inspector__tool-args">
-              <pre className="inspector__tool-args-code">
-                {JSON.stringify(event.tool.args, null, 2)}
-              </pre>
-            </div>
-          )}
-          {event.error && (
-            <div className="inspector__tool-error">
-              {event.error.message}
-            </div>
-          )}
         </div>
       ))}
     </div>

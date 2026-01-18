@@ -4,6 +4,7 @@
   flex-direction: column;
   width: 100%;
   height: 100%;
+  flex-grow: 1;
   background: var(--color-bg-secondary);
 }
 
@@ -54,6 +55,58 @@
   border-radius: 50%;
   background: var(--color-status-running);
   animation: pulse 1s ease-in-out infinite;
+}
+
+/* Connection Status Indicator */
+.fullscreen-chat__connection {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-family: var(--font-display);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.fullscreen-chat__meta:hover .fullscreen-chat__connection--connected {
+  opacity: 1;
+}
+
+.fullscreen-chat__connection--connecting,
+.fullscreen-chat__connection--disconnected,
+.fullscreen-chat__connection--error {
+  opacity: 1;
+}
+
+.fullscreen-chat__connection-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transition: background var(--transition-fast);
+}
+
+.fullscreen-chat__connection--connected .fullscreen-chat__connection-dot {
+  background: var(--color-status-idle);
+}
+
+.fullscreen-chat__connection--connecting .fullscreen-chat__connection-dot {
+  background: var(--color-status-running);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.fullscreen-chat__connection--disconnected .fullscreen-chat__connection-dot,
+.fullscreen-chat__connection--error .fullscreen-chat__connection-dot {
+  background: var(--color-status-failed);
+}
+
+.fullscreen-chat__connection-text {
+  color: var(--color-text-muted);
+}
+
+.fullscreen-chat__connection--error .fullscreen-chat__connection-text {
+  color: var(--color-status-failed);
 }
 
 .fullscreen-chat__summary {
@@ -148,6 +201,7 @@
 .fullscreen-chat__message-header {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   margin-bottom: var(--space-2);
 }
 
@@ -157,6 +211,23 @@
   letter-spacing: 0.16em;
   color: var(--color-text-muted);
   font-family: var(--font-display);
+}
+
+.fullscreen-chat__message-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.fullscreen-chat__message-status {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-family: var(--font-display);
+}
+
+.fullscreen-chat__message-status--interrupted {
+  color: var(--color-status-blocked);
 }
 
 .fullscreen-chat__message--assistant .fullscreen-chat__message-role {

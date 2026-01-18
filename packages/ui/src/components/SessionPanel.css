@@ -225,6 +225,10 @@
   color: var(--color-status-blocked);
 }
 
+.session-panel__status--stopped {
+  color: var(--color-text-muted);
+}
+
 .session-panel__status--completed {
   color: var(--color-accent);
 }
@@ -321,4 +325,14 @@
   background: var(--color-bg-hover);
   border-color: var(--color-text-muted);
   color: var(--color-text-primary);
+}
+
+.session-panel__item-cwd {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: var(--space-1);
 }

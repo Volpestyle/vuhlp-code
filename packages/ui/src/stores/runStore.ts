@@ -16,6 +16,7 @@ import type {
   ApprovalRequest,
   Envelope,
   ToolCall,
+  TurnStatus,
   UUID,
   ISO8601,
 } from '@vuhlp/contracts';
@@ -34,6 +35,22 @@ export interface ToolEvent {
   error?: { message: string };
 }
 
+export interface TurnStatusEvent {
+  id: UUID;
+  nodeId: UUID;
+  status: TurnStatus;
+  detail?: string;
+  timestamp: ISO8601;
+}
+
+export interface NodeLogEntry {
+  id: UUID;
+  nodeId: UUID;
+  source: 'stdout' | 'stderr';
+  line: string;
+  timestamp: ISO8601;
+}
+
 export interface ChatMessage {
   id: string;
   nodeId: UUID;
@@ -41,6 +58,11 @@ export interface ChatMessage {
   content: string;
   createdAt: ISO8601;
   streaming?: boolean;
+  status?: 'final' | 'interrupted';
+  thinking?: string;
+  thinkingStreaming?: boolean;
+  pending?: boolean;
+  sendError?: string;
 }
 
 /** Stall evidence from run.stalled event */
@@ -51,6 +73,8 @@ export interface StallEvidence {
   summaries: string[];
 }
 
+export type WsConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+
 interface UIState {
   viewMode: ViewMode;
   selectedNodeId: string | null;
@@ -58,6 +82,9 @@ interface UIState {
   inspectorOpen: boolean;
   sidebarOpen: boolean;
   theme: ThemeMode;
+  wsConnectionStatus: WsConnectionStatus;
+  wsLastError?: string;
+  lastHandoffs: Record<string, number>;
 }
 
 /** Stall state for UI notification */
@@ -74,6 +101,8 @@ interface RunStore {
   recentHandoffs: Envelope[];
   chatMessages: Record<UUID, ChatMessage[]>;
   toolEvents: ToolEvent[];
+  turnStatusEvents: TurnStatusEvent[];
+  nodeLogs: Record<UUID, NodeLogEntry[]>;
   stall: StallState;
 
   // UI state
@@ -107,19 +136,41 @@ interface RunStore {
 
   // Actions - Handoffs
   addHandoff: (envelope: Envelope) => void;
+  triggerHandoffAnimation: (edgeId: string) => void;
 
   // Actions - Chat
   addChatMessage: (message: ChatMessage) => void;
+  updateChatMessageStatus: (
+    nodeId: string,
+    messageId: string,
+    updates: Partial<Pick<ChatMessage, 'pending' | 'sendError'>>
+  ) => void;
   appendAssistantDelta: (nodeId: string, delta: string, timestamp: ISO8601) => void;
-  finalizeAssistantMessage: (nodeId: string, content: string, timestamp: ISO8601) => void;
+  finalizeAssistantMessage: (
+    nodeId: string,
+    content: string,
+    timestamp: ISO8601,
+    status?: ChatMessage['status'],
+    id?: string
+  ) => void;
+  appendAssistantThinkingDelta: (nodeId: string, delta: string, timestamp: ISO8601) => void;
+  finalizeAssistantThinking: (nodeId: string, content: string, timestamp: ISO8601) => void;
+  clearNodeMessages: (nodeId: string) => void;
 
   // Actions - Tool Events
   addToolEvent: (event: ToolEvent) => void;
   updateToolEvent: (toolId: string, update: Partial<ToolEvent>) => void;
 
+  // Actions - Turn Status
+  addTurnStatusEvent: (event: TurnStatusEvent) => void;
+
+  // Actions - Node Logs
+  addNodeLog: (entry: NodeLogEntry) => void;
+
   // Actions - Stall
   setStall: (evidence: StallEvidence) => void;
   clearStall: () => void;
+  resetEventState: () => void;
 
   // Actions - UI
   setViewMode: (mode: ViewMode) => void;
@@ -129,23 +180,17 @@ interface RunStore {
   toggleSidebar: () => void;
   setTheme: (theme: ThemeMode) => void;
   toggleTheme: () => void;
+  setWsConnectionStatus: (status: WsConnectionStatus, error?: string) => void;
 
   // Computed
   getNode: (nodeId: string) => NodeState | undefined;
   getNodeEdges: (nodeId: string) => EdgeState[];
   getNodeArtifacts: (nodeId: string) => Artifact[];
   getNodeToolEvents: (nodeId: string) => ToolEvent[];
+  getNodeTurnStatusEvents: (nodeId: string) => TurnStatusEvent[];
   getNodeMessages: (nodeId: string) => ChatMessage[];
+  getNodeLogs: (nodeId: string) => NodeLogEntry[];
 }
-
-const initialUIState: UIState = {
-  viewMode: 'graph',
-  selectedNodeId: null,
-  selectedEdgeId: null,
-  inspectorOpen: true,
-  sidebarOpen: true,
-  theme: getInitialTheme(),
-};
 
 const initialStallState: StallState = {
   isStalled: false,
@@ -154,6 +199,33 @@ const initialStallState: StallState = {
 };
 
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
+const EMPTY_LOGS: NodeLogEntry[] = [];
+const LOG_TAIL_LIMIT = 50;
+
+const SIDEBAR_STORAGE_KEY = 'vuhlp-sidebar-open';
+
+const getStoredSidebarOpen = (): boolean | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const stored = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (stored === 'true') return true;
+    if (stored === 'false') return false;
+  } catch {
+    return null;
+  }
+  return null;
+};
+
+const initialUIState: UIState = {
+  viewMode: 'graph',
+  selectedNodeId: null,
+  selectedEdgeId: null,
+  inspectorOpen: true,
+  sidebarOpen: getStoredSidebarOpen() ?? true,
+  theme: getInitialTheme(),
+  wsConnectionStatus: 'disconnected',
+  lastHandoffs: {},
+};
 
 export const useRunStore = create<RunStore>()(
   subscribeWithSelector((set, get) => ({
@@ -162,6 +234,8 @@ export const useRunStore = create<RunStore>()(
     recentHandoffs: [],
     chatMessages: {},
     toolEvents: [],
+    turnStatusEvents: [],
+    nodeLogs: {},
     stall: initialStallState,
     ui: initialUIState,
 
@@ -208,10 +282,10 @@ export const useRunStore = create<RunStore>()(
       set((state) => ({
         run: state.run
           ? {
-              ...state.run,
-              nodes: { ...state.run.nodes, [node.id]: node },
-              updatedAt: new Date().toISOString(),
-            }
+            ...state.run,
+            nodes: { ...state.run.nodes, [node.id]: node },
+            updatedAt: new Date().toISOString(),
+          }
           : null,
       })),
 
@@ -279,6 +353,7 @@ export const useRunStore = create<RunStore>()(
           status: 'idle',
           summary: 'Duplicated node',
           lastActivityAt: new Date().toISOString(),
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
           connection: { status: 'disconnected', streaming: false, lastHeartbeatAt: new Date().toISOString(), lastOutputAt: new Date().toISOString() },
           inboxCount: 0,
         };
@@ -321,10 +396,10 @@ export const useRunStore = create<RunStore>()(
         return {
           run: state.run
             ? {
-                ...state.run,
-                edges: { ...state.run.edges, [edge.id]: normalizedEdge },
-                updatedAt: new Date().toISOString(),
-              }
+              ...state.run,
+              edges: { ...state.run.edges, [edge.id]: normalizedEdge },
+              updatedAt: new Date().toISOString(),
+            }
             : null,
         };
       }),
@@ -366,10 +441,10 @@ export const useRunStore = create<RunStore>()(
       set((state) => ({
         run: state.run
           ? {
-              ...state.run,
-              artifacts: { ...state.run.artifacts, [artifact.id]: artifact },
-              updatedAt: new Date().toISOString(),
-            }
+            ...state.run,
+            artifacts: { ...state.run.artifacts, [artifact.id]: artifact },
+            updatedAt: new Date().toISOString(),
+          }
           : null,
       })),
 
@@ -390,21 +465,47 @@ export const useRunStore = create<RunStore>()(
         recentHandoffs: [envelope, ...state.recentHandoffs].slice(0, 50),
       })),
 
+    triggerHandoffAnimation: (edgeId) =>
+      set((state) => ({
+        ui: {
+          ...state.ui,
+          lastHandoffs: {
+            ...state.ui.lastHandoffs,
+            [edgeId]: Date.now(),
+          },
+        },
+      })),
+
     // Chat actions
     addChatMessage: (message) =>
       set((state) => {
         const nodeId = message.nodeId;
         const messages = state.chatMessages[nodeId] ?? [];
+
+        // Check for exact ID match first (update existing)
+        const existingIdIndex = messages.findIndex((m) => m.id === message.id);
+        if (existingIdIndex >= 0) {
+          const next = [...messages];
+          next[existingIdIndex] = { ...messages[existingIdIndex], ...message };
+          return {
+            chatMessages: {
+              ...state.chatMessages,
+              [nodeId]: next,
+            },
+          };
+        }
+
         const isLocal = message.id.startsWith('local-');
         if (!isLocal) {
+          // Try to match with a local optimistic message
           const matchIndex = messages.findIndex((existing) => {
             if (!existing.id.startsWith('local-')) return false;
             if (existing.role !== message.role) return false;
-            if (existing.content !== message.content) return false;
+            if (existing.content.trim() !== message.content.trim()) return false;
             const existingTime = Date.parse(existing.createdAt);
             const messageTime = Date.parse(message.createdAt);
             if (Number.isNaN(existingTime) || Number.isNaN(messageTime)) return false;
-            return Math.abs(existingTime - messageTime) < 5000;
+            return Math.abs(existingTime - messageTime) < 10000;
           });
           if (matchIndex >= 0) {
             const next = [...messages];
@@ -421,6 +522,22 @@ export const useRunStore = create<RunStore>()(
           chatMessages: {
             ...state.chatMessages,
             [nodeId]: [...messages, message],
+          },
+        };
+      }),
+
+    updateChatMessageStatus: (nodeId, messageId, updates) =>
+      set((state) => {
+        const messages = state.chatMessages[nodeId];
+        if (!messages) return state;
+        const index = messages.findIndex((m) => m.id === messageId);
+        if (index < 0) return state;
+        const next = [...messages];
+        next[index] = { ...next[index], ...updates };
+        return {
+          chatMessages: {
+            ...state.chatMessages,
+            [nodeId]: next,
           },
         };
       }),
@@ -459,17 +576,42 @@ export const useRunStore = create<RunStore>()(
         };
       }),
 
-    finalizeAssistantMessage: (nodeId, content, timestamp) =>
+    finalizeAssistantMessage: (nodeId, content, timestamp, status, id) =>
       set((state) => {
         const messages = state.chatMessages[nodeId] ?? [];
         const streamId = `stream-${nodeId}`;
-        const filtered = messages.filter((msg) => msg.id !== streamId);
+        const thinkingStreamId = `thinking-stream-${nodeId}`;
+
+        // Check if we already have this message (by ID)
+        // This handles race conditions where the backend event is processed multiple times
+        // or during history replay
+        const hasExistingMessage = messages.some((msg) => msg.id === id);
+
+        const filtered = messages.filter((msg) => msg.id !== streamId && msg.id !== thinkingStreamId);
+
+        if (hasExistingMessage) {
+          // If message exists, just remove stream and thinking
+          return {
+            chatMessages: {
+              ...state.chatMessages,
+              [nodeId]: filtered,
+            },
+          };
+        }
+
+        // Find the thinking content from the streaming message before we filter it out
+        const streamingMsg = messages.find((msg) => msg.id === streamId);
+        const thinkingStreamingMsg = messages.find((msg) => msg.id === thinkingStreamId);
+        const thinking = streamingMsg?.thinking ?? thinkingStreamingMsg?.thinking;
+
         const nextMessage: ChatMessage = {
-          id: crypto.randomUUID(),
+          id: id ?? `local-${crypto.randomUUID()}`,
           nodeId,
           role: 'assistant',
           content,
           createdAt: timestamp,
+          status,
+          thinking,
         };
         return {
           chatMessages: {
@@ -477,6 +619,129 @@ export const useRunStore = create<RunStore>()(
             [nodeId]: [...filtered, nextMessage],
           },
         };
+      }),
+
+    appendAssistantThinkingDelta: (nodeId, delta, timestamp) =>
+      set((state) => {
+        const messages = state.chatMessages[nodeId] ?? [];
+        const streamId = `stream-${nodeId}`;
+        const existingStreamIndex = messages.findIndex((msg) => msg.id === streamId);
+
+        // If there's an existing stream message, append thinking to it
+        if (existingStreamIndex >= 0) {
+          const existing = messages[existingStreamIndex];
+          const next = [...messages];
+          next[existingStreamIndex] = {
+            ...existing,
+            thinking: `${existing.thinking ?? ''}${delta}`,
+            thinkingStreaming: true,
+            createdAt: timestamp,
+          };
+          return {
+            chatMessages: { ...state.chatMessages, [nodeId]: next },
+          };
+        }
+
+        // Otherwise create a new streaming message with thinking
+        const thinkingStreamId = `thinking-stream-${nodeId}`;
+        const existingThinkingIndex = messages.findIndex((msg) => msg.id === thinkingStreamId);
+
+        if (existingThinkingIndex >= 0) {
+          const existing = messages[existingThinkingIndex];
+          const next = [...messages];
+          next[existingThinkingIndex] = {
+            ...existing,
+            thinking: `${existing.thinking ?? ''}${delta}`,
+            thinkingStreaming: true,
+            createdAt: timestamp,
+          };
+          return {
+            chatMessages: { ...state.chatMessages, [nodeId]: next },
+          };
+        }
+
+        const nextMessage: ChatMessage = {
+          id: thinkingStreamId,
+          nodeId,
+          role: 'assistant',
+          content: '',
+          createdAt: timestamp,
+          streaming: true,
+          thinking: delta,
+          thinkingStreaming: true,
+        };
+        return {
+          chatMessages: {
+            ...state.chatMessages,
+            [nodeId]: [...messages, nextMessage],
+          },
+        };
+      }),
+
+    finalizeAssistantThinking: (nodeId, content, timestamp) =>
+      set((state) => {
+        const messages = state.chatMessages[nodeId] ?? [];
+        const streamId = `stream-${nodeId}`;
+        const thinkingStreamId = `thinking-stream-${nodeId}`;
+
+        // Try to find the stream message first
+        const streamIndex = messages.findIndex((msg) => msg.id === streamId);
+        if (streamIndex >= 0) {
+          const existing = messages[streamIndex];
+          const next = [...messages];
+          next[streamIndex] = {
+            ...existing,
+            thinking: content,
+            thinkingStreaming: false,
+            createdAt: timestamp,
+          };
+          return {
+            chatMessages: { ...state.chatMessages, [nodeId]: next },
+          };
+        }
+
+        // Try to find the thinking stream message
+        const thinkingStreamIndex = messages.findIndex((msg) => msg.id === thinkingStreamId);
+        if (thinkingStreamIndex >= 0) {
+          const existing = messages[thinkingStreamIndex];
+          const next = [...messages];
+          next[thinkingStreamIndex] = {
+            ...existing,
+            thinking: content,
+            thinkingStreaming: false,
+            createdAt: timestamp,
+          };
+          return {
+            chatMessages: { ...state.chatMessages, [nodeId]: next },
+          };
+        }
+
+        // Create new message with just thinking
+        const nextMessage: ChatMessage = {
+          id: thinkingStreamId,
+          nodeId,
+          role: 'assistant',
+          content: '',
+          createdAt: timestamp,
+          streaming: true,
+          thinking: content,
+          thinkingStreaming: false,
+        };
+        return {
+          chatMessages: {
+            ...state.chatMessages,
+            [nodeId]: [...messages, nextMessage],
+          },
+        };
+      }),
+
+    clearNodeMessages: (nodeId) =>
+      set((state) => {
+        if (!state.chatMessages[nodeId]) {
+          return state;
+        }
+        const { [nodeId]: _removed, ...remaining } = state.chatMessages;
+        return { chatMessages: remaining };
       }),
 
     // Tool Events
@@ -492,6 +757,18 @@ export const useRunStore = create<RunStore>()(
         ),
       })),
 
+    addTurnStatusEvent: (event) =>
+      set((state) => ({
+        turnStatusEvents: [...state.turnStatusEvents, event].slice(-200),
+      })),
+
+    addNodeLog: (entry) =>
+      set((state) => {
+        const existing = state.nodeLogs[entry.nodeId] ?? EMPTY_LOGS;
+        const next = [...existing, entry].slice(-LOG_TAIL_LIMIT);
+        return { nodeLogs: { ...state.nodeLogs, [entry.nodeId]: next } };
+      }),
+
     // Stall actions
     setStall: (evidence) =>
       set(() => ({
@@ -500,6 +777,17 @@ export const useRunStore = create<RunStore>()(
 
     clearStall: () =>
       set(() => ({
+        stall: initialStallState,
+      })),
+
+    resetEventState: () =>
+      set(() => ({
+        pendingApprovals: [],
+        recentHandoffs: [],
+        chatMessages: {},
+        toolEvents: [],
+        turnStatusEvents: [],
+        nodeLogs: {},
         stall: initialStallState,
       })),
 
@@ -519,9 +807,19 @@ export const useRunStore = create<RunStore>()(
       })),
 
     toggleSidebar: () =>
-      set((state) => ({
-        ui: { ...state.ui, sidebarOpen: !state.ui.sidebarOpen },
-      })),
+      set((state) => {
+        const next = !state.ui.sidebarOpen;
+        if (typeof window !== 'undefined') {
+          try {
+            window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next));
+          } catch {
+            // Ignore storage errors (private mode or blocked storage).
+          }
+        }
+        return {
+          ui: { ...state.ui, sidebarOpen: next },
+        };
+      }),
 
     setTheme: (theme) =>
       set((state) => ({
@@ -531,6 +829,11 @@ export const useRunStore = create<RunStore>()(
     toggleTheme: () =>
       set((state) => ({
         ui: { ...state.ui, theme: state.ui.theme === 'dark' ? 'light' : 'dark' },
+      })),
+
+    setWsConnectionStatus: (status, error) =>
+      set((state) => ({
+        ui: { ...state.ui, wsConnectionStatus: status, wsLastError: error },
       })),
 
     // Computed
@@ -551,7 +854,12 @@ export const useRunStore = create<RunStore>()(
     getNodeToolEvents: (nodeId) =>
       get().toolEvents.filter((e) => e.nodeId === nodeId),
 
+    getNodeTurnStatusEvents: (nodeId) =>
+      get().turnStatusEvents.filter((e) => e.nodeId === nodeId),
+
     getNodeMessages: (nodeId) => get().chatMessages[nodeId] ?? EMPTY_CHAT_MESSAGES,
+
+    getNodeLogs: (nodeId) => get().nodeLogs[nodeId] ?? EMPTY_LOGS,
   }))
 );
 
@@ -571,3 +879,26 @@ export const selectSelectedEdge = (state: RunStore) =>
   state.ui.selectedEdgeId && state.run
     ? state.run.edges[state.ui.selectedEdgeId]
     : null;
+
+export type TimelineEvent =
+  | { type: 'message'; data: ChatMessage }
+  | { type: 'tool'; data: ToolEvent }
+  | { type: 'status'; data: TurnStatusEvent };
+
+export const selectNodeTimeline = (state: RunStore, nodeId: string): TimelineEvent[] => {
+  const messages = state.chatMessages[nodeId] ?? EMPTY_CHAT_MESSAGES;
+  const tools = state.toolEvents.filter((e) => e.nodeId === nodeId);
+  const statuses = state.turnStatusEvents.filter((e) => e.nodeId === nodeId);
+
+  const timeline: TimelineEvent[] = [
+    ...messages.map((m) => ({ type: 'message' as const, data: m })),
+    ...tools.map((t) => ({ type: 'tool' as const, data: t })),
+    ...statuses.map((s) => ({ type: 'status' as const, data: s })),
+  ];
+
+  return timeline.sort((a, b) => {
+    const timeA = new Date(a.type === 'message' ? a.data.createdAt : a.data.timestamp).getTime();
+    const timeB = new Date(b.type === 'message' ? b.data.createdAt : b.data.timestamp).getTime();
+    return timeA - timeB;
+  });
+};

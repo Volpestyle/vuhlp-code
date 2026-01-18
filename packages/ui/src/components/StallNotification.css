@@ -10,8 +10,14 @@
   border-top: 3px solid var(--color-status-blocked);
   border-radius: var(--radius-lg);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
-  z-index: 1000;
+  z-index: 9999;
   animation: slideUp var(--transition-base) ease forwards;
+  /* Ensure no clipping from ancestors */
+  isolation: isolate;
+}
+
+.stall-notification--dragged {
+  transition: none;
 }
 
 .stall-notification__header {
@@ -21,6 +27,15 @@
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--color-border-strong);
   background: var(--color-bg-surface);
+}
+
+.stall-notification__header--draggable {
+  cursor: grab;
+  user-select: none;
+}
+
+.stall-notification__header--draggable:active {
+  cursor: grabbing;
 }
 
 .stall-notification__icon {
@@ -39,13 +54,14 @@
 }
 
 .stall-notification__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: none;
   color: var(--color-text-muted);
-  font-size: var(--font-size-xl);
   cursor: pointer;
   padding: 0;
-  line-height: 1;
   transition: color var(--transition-fast);
 }
 
@@ -57,6 +73,7 @@
   padding: var(--space-4);
   max-height: 300px;
   overflow-y: auto;
+  overflow-x: visible;
 }
 
 .stall-notification__message {
@@ -185,6 +202,9 @@
 }
 
 .stall-notification__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: var(--space-2) var(--space-4);
   border-radius: var(--radius-sm);
   font-size: var(--font-size-sm);

@@ -1,0 +1,95 @@
+/* JSON View Styles - Custom theme matching app design */
+
+.json-view {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--color-bg-secondary);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.json-view__container {
+  margin: 0;
+  padding: 0;
+}
+
+.json-view__child {
+  margin-left: var(--space-4);
+}
+
+.json-view__label {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.json-view__null {
+  color: var(--color-status-failed);
+  font-style: italic;
+}
+
+.json-view__undefined {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.json-view__string {
+  color: #7ba888; /* Success green */
+}
+
+.json-view__boolean {
+  color: #c4a67a; /* Warning orange */
+}
+
+.json-view__number {
+  color: #8fb8a8; /* Accent sage */
+}
+
+.json-view__other {
+  color: var(--color-text-secondary);
+}
+
+.json-view__punctuation {
+  color: var(--color-text-muted);
+}
+
+.json-view__pointer {
+  cursor: pointer;
+  user-select: none;
+}
+
+.json-view__pointer:hover .json-view__label {
+  color: var(--color-accent);
+}
+
+.json-view__expand-icon,
+.json-view__collapse-icon {
+  display: inline-block;
+  width: 10px;
+  margin-right: var(--space-1);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.json-view__expand-icon:hover,
+.json-view__collapse-icon:hover {
+  color: var(--color-accent);
+}
+
+.json-view__collapsed-content {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* Override default library styles */
+.json-view ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.json-view li {
+  list-style: none;
+}

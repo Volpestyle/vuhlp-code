@@ -3,6 +3,8 @@
  * Displays when a run is stalled with evidence and suggested actions
  */
 
+import { createPortal } from 'react-dom';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useRunStore } from '../stores/runStore';
 import { Xmark, Play } from 'iconoir-react';
 import './StallNotification.css';
@@ -11,6 +13,47 @@ export function StallNotification() {
   const stall = useRunStore((s) => s.stall);
   const clearStall = useRunStore((s) => s.clearStall);
   const updateRunStatus = useRunStore((s) => s.updateRunStatus);
+
+  // Drag state
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<{ startX: number; startY: number; initialX: number; initialY: number } | null>(null);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Only drag from header, not buttons
+    if ((e.target as HTMLElement).closest('button')) return;
+
+    const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: position?.x ?? rect.left,
+      initialY: position?.y ?? rect.top,
+    };
+    e.preventDefault();
+  }, [position]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragRef.current) return;
+      const dx = e.clientX - dragRef.current.startX;
+      const dy = e.clientY - dragRef.current.startY;
+      setPosition({
+        x: dragRef.current.initialX + dx,
+        y: dragRef.current.initialY + dy,
+      });
+    };
+
+    const handleMouseUp = () => {
+      dragRef.current = null;
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   if (!stall.isStalled || !stall.evidence) {
     return null;
@@ -27,9 +70,13 @@ export function StallNotification() {
     console.log('[stall] user dismissed notification');
   };
 
-  return (
-    <div className="stall-notification">
-      <div className="stall-notification__header">
+  const style = position
+    ? { left: position.x, top: position.y, right: 'auto', bottom: 'auto' }
+    : undefined;
+
+  return createPortal(
+    <div className={`stall-notification ${position ? 'stall-notification--dragged' : ''}`} style={style}>
+      <div className="stall-notification__header stall-notification__header--draggable" onMouseDown={handleMouseDown}>
         <span className="stall-notification__icon">&#9888;</span>
         <span className="stall-notification__title">Run Stalled</span>
         <button
@@ -98,13 +145,6 @@ export function StallNotification() {
 
       <div className="stall-notification__actions">
         <button
-          className="stall-notification__btn stall-notification__btn--secondary"
-          onClick={handleDismiss}
-          title="Dismiss"
-        >
-          <Xmark width={14} height={14} />
-        </button>
-        <button
           className="stall-notification__btn stall-notification__btn--primary"
           onClick={handleResume}
           title="Resume Run"
@@ -112,6 +152,7 @@ export function StallNotification() {
           <Play width={14} height={14} />
         </button>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

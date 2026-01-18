@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
-import type { FormEvent, MouseEvent } from 'react';
+import type { FormEvent } from 'react';
 import type { ProviderName, NodeCapabilities, NodePermissions } from '@vuhlp/contracts';
 import { useRunStore } from '../stores/runStore';
 import { createNode } from '../lib/api';
-import { Xmark, Plus } from 'iconoir-react';
+import { Plus } from 'iconoir-react';
 import './NewNodeModal.css';
 
 const PROVIDER_OPTIONS: ProviderName[] = ['claude', 'codex', 'gemini', 'custom'];
 const PERMISSIONS_MODE_OPTIONS: Array<NodePermissions['cliPermissionsMode']> = ['skip', 'gated'];
+const ORCHESTRATOR_ROLE = 'orchestrator';
 
 const DEFAULT_CAPABILITIES: NodeCapabilities = {
   spawnNodes: false,
@@ -20,6 +21,14 @@ const DEFAULT_CAPABILITIES: NodeCapabilities = {
 const DEFAULT_PERMISSIONS: NodePermissions = {
   cliPermissionsMode: 'skip',
   spawnRequiresApproval: true,
+};
+
+const getSpawnDefaults = (roleTemplate: string) => {
+  const isOrchestrator = roleTemplate.trim().toLowerCase() === ORCHESTRATOR_ROLE;
+  return {
+    spawnNodes: isOrchestrator,
+    spawnRequiresApproval: !isOrchestrator,
+  };
 };
 
 interface NewNodeModalProps {
@@ -37,6 +46,8 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
   const [provider, setProvider] = useState<ProviderName>('claude');
   const [capabilities, setCapabilities] = useState<NodeCapabilities>(DEFAULT_CAPABILITIES);
   const [permissions, setPermissions] = useState<NodePermissions>(DEFAULT_PERMISSIONS);
+  const [spawnNodesTouched, setSpawnNodesTouched] = useState(false);
+  const [spawnApprovalTouched, setSpawnApprovalTouched] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,8 +58,21 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
     setProvider('claude');
     setCapabilities(DEFAULT_CAPABILITIES);
     setPermissions(DEFAULT_PERMISSIONS);
+    setSpawnNodesTouched(false);
+    setSpawnApprovalTouched(false);
     setError(null);
   }, [open, nodeCount]);
+
+  useEffect(() => {
+    if (!open) return;
+    const defaults = getSpawnDefaults(roleTemplate);
+    if (!spawnNodesTouched) {
+      setCapabilities((prev) => ({ ...prev, spawnNodes: defaults.spawnNodes }));
+    }
+    if (!spawnApprovalTouched) {
+      setPermissions((prev) => ({ ...prev, spawnRequiresApproval: defaults.spawnRequiresApproval }));
+    }
+  }, [open, roleTemplate, spawnNodesTouched, spawnApprovalTouched]);
 
   if (!open) return null;
 
@@ -82,55 +106,47 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
     }
   };
 
-  const handleBackdropClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget) {
-      onClose();
-    }
-  };
-
   return (
-    <div className="new-node-modal__backdrop" onClick={handleBackdropClick} role="presentation">
+    <div className="new-node-modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="new-node-modal" role="dialog" aria-modal="true" aria-labelledby="new-node-title">
         <header className="new-node-modal__header">
           <h2 className="new-node-modal__title" id="new-node-title">
             New Node
           </h2>
-          <button
-            className="new-node-modal__close"
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <Xmark width={20} height={20} />
+          <button className="new-node-modal__close" onClick={onClose} type="button">
+            &times;
           </button>
         </header>
 
-        <form className="new-node-modal__form" onSubmit={handleSubmit}>
-          <label className="new-node-modal__field">
-            <span className="new-node-modal__label">Label</span>
+        <form onSubmit={handleSubmit} className="new-node-modal__content">
+          {error && <div className="new-node-modal__error">{error}</div>}
+          {!run && <div className="new-node-modal__error">Run not ready. Try again in a moment.</div>}
+
+          <div className="form-group">
+            <label className="form-label">Label</label>
             <input
-              className="new-node-modal__input"
+              className="form-input"
               value={label}
               onChange={(event) => setLabel(event.target.value)}
               autoFocus
               placeholder="Node label"
             />
-          </label>
+          </div>
 
-          <label className="new-node-modal__field">
-            <span className="new-node-modal__label">Role Template</span>
+          <div className="form-group">
+            <label className="form-label">Role Template</label>
             <input
-              className="new-node-modal__input"
+              className="form-input"
               value={roleTemplate}
               onChange={(event) => setRoleTemplate(event.target.value)}
               placeholder="implementer"
             />
-          </label>
+          </div>
 
-          <label className="new-node-modal__field">
-            <span className="new-node-modal__label">Provider</span>
+          <div className="form-group">
+            <label className="form-label">Provider</label>
             <select
-              className="new-node-modal__select"
+              className="form-select"
               value={provider}
               onChange={(event) => setProvider(event.target.value as ProviderName)}
             >
@@ -140,7 +156,7 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
                 </option>
               ))}
             </select>
-          </label>
+          </div>
 
           <div className="new-node-modal__section">
             <span className="new-node-modal__section-title">Permissions</span>
@@ -149,19 +165,22 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
                 type="checkbox"
                 checked={permissions.spawnRequiresApproval}
                 onChange={() =>
-                  setPermissions((prev) => ({
-                    ...prev,
-                    spawnRequiresApproval: !prev.spawnRequiresApproval,
-                  }))
+                  setPermissions((prev) => {
+                    setSpawnApprovalTouched(true);
+                    return {
+                      ...prev,
+                      spawnRequiresApproval: !prev.spawnRequiresApproval,
+                    };
+                  })
                 }
                 disabled={isSubmitting}
               />
               <span>Spawn requires approval</span>
             </label>
-            <label className="new-node-modal__field">
-              <span className="new-node-modal__label">CLI Permissions</span>
+            <div className="form-group">
+              <label className="form-label">CLI Permissions</label>
               <select
-                className="new-node-modal__select"
+                className="form-select"
                 value={permissions.cliPermissionsMode}
                 onChange={(event) =>
                   setPermissions((prev) => ({
@@ -177,7 +196,7 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
                   </option>
                 ))}
               </select>
-            </label>
+            </div>
           </div>
 
           <div className="new-node-modal__section">
@@ -188,10 +207,15 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
                   type="checkbox"
                   checked={value}
                   onChange={() =>
-                    setCapabilities((prev) => ({
-                      ...prev,
-                      [key]: !prev[key as keyof NodeCapabilities],
-                    }))
+                    setCapabilities((prev) => {
+                      if (key === 'spawnNodes') {
+                        setSpawnNodesTouched(true);
+                      }
+                      return {
+                        ...prev,
+                        [key]: !prev[key as keyof NodeCapabilities],
+                      };
+                    })
                   }
                   disabled={isSubmitting}
                 />
@@ -200,27 +224,21 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
             ))}
           </div>
 
-          {error && <div className="new-node-modal__error">{error}</div>}
-          {!run && (
-            <div className="new-node-modal__error">Run not ready. Try again in a moment.</div>
-          )}
-
           <div className="new-node-modal__actions">
             <button
-              className="new-node-modal__button new-node-modal__button--ghost"
               type="button"
+              className="btn btn--secondary"
               onClick={onClose}
-              title="Cancel"
+              disabled={isSubmitting}
             >
-              <Xmark width={16} height={16} />
+              Cancel
             </button>
             <button
-              className="new-node-modal__button new-node-modal__button--primary"
               type="submit"
+              className="btn btn--primary"
               disabled={!canSubmit}
-              title="Create"
             >
-              {isSubmitting ? 'Creating...' : <Plus width={16} height={16} />}
+              {isSubmitting ? 'Creating...' : <><Plus width={16} height={16} /> Create Node</>}
             </button>
           </div>
         </form>

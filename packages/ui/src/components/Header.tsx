@@ -10,15 +10,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { NodePermissions } from '@vuhlp/contracts';
 import { useRunStore } from '../stores/runStore';
 import { updateRun, updateNode } from '../lib/api';
-import { ArrowLeft, SunLight, HalfMoon, Plus, Settings, Play, Pause } from 'iconoir-react';
+import { ArrowLeft, SunLight, HalfMoon, Settings, Play, Pause } from 'iconoir-react';
 import './Header.css';
 
 interface HeaderProps {
   minimal?: boolean;
-  onOpenNewNode?: () => void;
 }
 
-export function Header({ minimal = false, onOpenNewNode }: HeaderProps) {
+export function Header({ minimal = false }: HeaderProps) {
   const run = useRunStore((s) => s.run);
   const viewMode = useRunStore((s) => s.ui.viewMode);
   const theme = useRunStore((s) => s.ui.theme);
@@ -31,6 +30,7 @@ export function Header({ minimal = false, onOpenNewNode }: HeaderProps) {
   const settingsRef = useRef<HTMLDivElement | null>(null);
 
   const isRunning = run?.status === 'running';
+  const isStopped = run?.status === 'stopped';
   const isAuto = run?.mode === 'AUTO';
   const isImplementation = run?.globalMode === 'IMPLEMENTATION';
   const cliModeValue = useMemo<'skip' | 'gated' | 'mixed'>(() => {
@@ -44,7 +44,7 @@ export function Header({ minimal = false, onOpenNewNode }: HeaderProps) {
     return 'mixed';
   }, [run]);
 
-  const updateRunState = async (patch: { status?: 'running' | 'paused'; mode?: 'AUTO' | 'INTERACTIVE'; globalMode?: 'PLANNING' | 'IMPLEMENTATION' }) => {
+  const updateRunState = async (patch: { status?: 'running' | 'paused' | 'stopped'; mode?: 'AUTO' | 'INTERACTIVE'; globalMode?: 'PLANNING' | 'IMPLEMENTATION' }) => {
     if (!run) return;
     try {
       const updated = await updateRun(run.id, patch);
@@ -56,6 +56,10 @@ export function Header({ minimal = false, onOpenNewNode }: HeaderProps) {
 
   const handleToggleRun = () => {
     void updateRunState({ status: isRunning ? 'paused' : 'running' });
+  };
+
+  const handleStopRun = () => {
+    void updateRunState({ status: 'stopped' });
   };
 
   const handleToggleOrchestrationMode = () => {
@@ -159,11 +163,21 @@ export function Header({ minimal = false, onOpenNewNode }: HeaderProps) {
 
             {/* Master Start/Stop */}
             <button
-              className={`header__action ${isRunning ? 'header__action--stop' : 'header__action--start'}`}
+              className={`header__action ${isRunning ? 'header__action--pause' : 'header__action--start'}`}
               onClick={handleToggleRun}
-              title={isRunning ? 'Stop run' : 'Start run'}
+              title={isRunning ? 'Pause run' : 'Start run'}
             >
               {isRunning ? <Pause width={16} height={16} /> : <Play width={16} height={16} />}
+            </button>
+            <button
+              className="header__action header__action--stop"
+              onClick={handleStopRun}
+              disabled={isStopped}
+              title="Stop run (terminate sessions)"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <rect x="3" y="3" width="10" height="10" rx="2" />
+              </svg>
             </button>
           </div>
         )}
@@ -177,16 +191,7 @@ export function Header({ minimal = false, onOpenNewNode }: HeaderProps) {
         >
           {theme === 'dark' ? <HalfMoon width={16} height={16} /> : <SunLight width={16} height={16} />}
         </button>
-        {onOpenNewNode && (
-          <button
-            className="header__action header__action--neutral"
-            onClick={onOpenNewNode}
-            disabled={!run}
-            title="Create new node (shift+n)"
-          >
-            <Plus width={16} height={16} />
-          </button>
-        )}
+
         <div className="header__menu" ref={settingsRef}>
           <button
             className="header__action header__action--neutral header__action--compact"
@@ -223,6 +228,14 @@ export function Header({ minimal = false, onOpenNewNode }: HeaderProps) {
               <p className="header__menu-note">
                 Applies to all nodes. You can still override per node.
               </p>
+              {run.cwd && (
+                <div className="header__menu-row header__menu-row--meta">
+                  <span className="header__menu-label">Working Directory</span>
+                  <span className="header__menu-value" title={run.cwd}>
+                    {run.cwd}
+                  </span>
+                </div>
+              )}
               {cliModeError && <p className="header__menu-error">{cliModeError}</p>}
             </div>
           )}

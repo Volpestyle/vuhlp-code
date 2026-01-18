@@ -5,6 +5,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useLayoutPersistence } from './hooks/useLayoutPersistence';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useRunBootstrap } from './hooks/useRunBootstrap';
+import { useRunEventHistory } from './hooks/useRunEventHistory';
 import { useGraphSync } from './hooks/useGraphSync';
 import { useTheme } from './hooks/useTheme';
 import { Header } from './components/Header';
@@ -61,7 +62,8 @@ export function App() {
 
   // Create a run if none exists and connect to event stream
   useRunBootstrap();
-  useWebSocket(runId);
+  const { loading: historyLoading } = useRunEventHistory(runId);
+  useWebSocket(historyLoading ? null : runId);
 
   // Sync runtime state into the graph view
   useGraphSync();
@@ -133,7 +135,7 @@ export function App() {
         ['--sessions-width' as keyof CSSProperties]: `${sessionsWidth}px`,
       }}
     >
-      <Header minimal={viewMode === 'fullscreen'} onOpenNewNode={handleOpenNewNode} />
+      <Header minimal={viewMode === 'fullscreen'} />
       <main className="app__main" ref={appMainRef}>
         {viewMode !== 'fullscreen' && (
           <aside className={`app__sessions ${sidebarOpen ? '' : 'app__sessions--collapsed'}`}>
@@ -142,7 +144,7 @@ export function App() {
         )}
         <div className="app__canvas">
           {/* WebGL GraphCanvas - owned by Agent 4 */}
-          <GraphCanvas />
+          <GraphCanvas onOpenNewNode={handleOpenNewNode} />
         </div>
         {inspectorOpen && (selectedNode || selectedEdge) && viewMode === 'graph' && (
           <aside className="app__inspector">

@@ -1,4 +1,5 @@
-.new-node-modal-overlay {
+
+.modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.7);
@@ -9,7 +10,7 @@
   backdrop-filter: blur(4px);
 }
 
-.new-node-modal {
+.modal {
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
@@ -20,15 +21,15 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: new-node-modal-enter 0.2s ease-out;
+  animation: modal-enter 0.2s ease-out;
 }
 
-@keyframes new-node-modal-enter {
+@keyframes modal-enter {
   from { opacity: 0; transform: scale(0.95); }
   to { opacity: 1; transform: scale(1); }
 }
 
-.new-node-modal__header {
+.modal__header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -37,7 +38,7 @@
   background: var(--color-bg-elevated);
 }
 
-.new-node-modal__title {
+.modal__title {
   margin: 0;
   font-family: var(--font-display);
   font-size: var(--font-size-md);
@@ -46,7 +47,7 @@
   color: var(--color-text-primary);
 }
 
-.new-node-modal__close {
+.modal__close {
   background: none;
   border: none;
   color: var(--color-text-muted);
@@ -59,11 +60,11 @@
   justify-content: center;
 }
 
-.new-node-modal__close:hover {
+.modal__close:hover {
   color: var(--color-text-primary);
 }
 
-.new-node-modal__content {
+.modal__content {
   padding: var(--space-4);
   overflow-y: auto;
   display: flex;
@@ -71,7 +72,7 @@
   gap: var(--space-4);
 }
 
-.new-node-modal__error {
+.modal__error {
   padding: var(--space-3);
   background: rgba(255, 100, 100, 0.1);
   border: 1px solid var(--color-status-failed);
@@ -80,14 +81,13 @@
   font-size: var(--font-size-sm);
 }
 
-/* Form Elements */
-.new-node-modal .form-group {
+.form-group {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
 
-.new-node-modal .form-label {
+.form-label {
   font-family: var(--font-display);
   font-size: var(--font-size-xs);
   text-transform: uppercase;
@@ -97,8 +97,12 @@
   justify-content: space-between;
 }
 
-.new-node-modal .form-input,
-.new-node-modal .form-select {
+.form-label-opt {
+  color: var(--color-text-muted);
+  font-weight: normal;
+}
+
+.form-input {
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-strong);
   color: var(--color-text-primary);
@@ -109,34 +113,78 @@
   width: 100%;
 }
 
-.new-node-modal .form-input:focus,
-.new-node-modal .form-select:focus {
+.form-input:focus {
   outline: none;
   border-color: var(--color-accent);
 }
 
-/* Section Groups */
-.new-node-modal__section {
+.form-hint {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+/* Mode Toggle Cards */
+.mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.mode-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--space-3);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  transition: all 0.2s;
+  gap: var(--space-2);
+}
+
+.mode-btn:hover {
+  background: var(--color-bg-elevated);
+  border-color: var(--color-text-muted);
+}
+
+.mode-btn--active {
+  background: rgba(var(--color-accent-rgb), 0.1);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.mode-btn__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.mode-btn__title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-sm);
+  font-weight: bold;
+  display: block;
+}
+
+.mode-btn__desc {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  line-height: 1.2;
+  display: block;
+}
+
+/* Radio Group */
+.radio-group {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-subtle);
 }
 
-.new-node-modal__section-title {
-  font-family: var(--font-display);
-  font-size: var(--font-size-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--color-text-secondary);
-  margin-bottom: var(--space-1);
-}
-
-/* Checkbox Toggles */
-.new-node-modal__toggle {
+.radio-label {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -146,28 +194,62 @@
   transition: background 0.1s;
 }
 
-.new-node-modal__toggle:hover {
-  background: var(--color-bg-elevated);
+.radio-label:hover {
+  background: var(--color-bg-subtle);
 }
 
-.new-node-modal__toggle span {
+.radio-text {
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
 }
 
-.new-node-modal__toggle input {
-  accent-color: var(--color-accent);
+.radio-text strong {
+  color: var(--color-text-primary);
+}
+
+/* Form Row & Picker Button */
+.form-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.form-btn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.form-btn-icon:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.form-btn-icon--active {
+  background: var(--color-bg-hover);
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.form-picker {
+  margin-top: var(--space-2);
 }
 
 /* Actions */
-.new-node-modal__actions {
+.modal__actions {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
   margin-top: var(--space-2);
 }
 
-.new-node-modal .btn {
+.btn {
   padding: var(--space-2) var(--space-4);
   border-radius: var(--radius-sm);
   font-family: var(--font-display);
@@ -180,28 +262,28 @@
   gap: var(--space-2);
 }
 
-.new-node-modal .btn--secondary {
+.btn--secondary {
   background: transparent;
   border: 1px solid var(--color-border-strong);
   color: var(--color-text-secondary);
 }
 
-.new-node-modal .btn--secondary:hover {
+.btn--secondary:hover {
   border-color: var(--color-text-muted);
   color: var(--color-text-primary);
 }
 
-.new-node-modal .btn--primary {
+.btn--primary {
   background: var(--color-accent);
   border: 1px solid var(--color-accent);
   color: var(--color-bg-primary);
 }
 
-.new-node-modal .btn--primary:hover {
+.btn--primary:hover {
   opacity: 0.9;
 }
 
-.new-node-modal .btn:disabled {
+.btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

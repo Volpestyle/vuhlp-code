@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { Graphics, Container, Text } from '@pixi/react';
 import { VisualNode, VisualEdge } from '../../types/graph';
 import * as PIXI from 'pixi.js';
+import { useRunStore } from '../../stores/runStore';
 
 interface GraphEdgeProps {
   edge: VisualEdge;
@@ -48,6 +49,25 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
     },
     [edge.id, onContextMenu, onSelect]
   );
+  
+  const lastHandoff = useRunStore((s) => s.ui.lastHandoffs?.[edge.id]);
+  const [animationProgress, setAnimationProgress] = useState<number | null>(null);
+
+  PIXI.Ticker.shared.add((_ticker) => {
+    if (!lastHandoff) {
+      if (animationProgress !== null) setAnimationProgress(null);
+      return;
+    }
+    const now = Date.now();
+    const elapsed = now - lastHandoff;
+    const duration = 2000; // 2 seconds
+    
+    if (elapsed < duration) {
+      setAnimationProgress(elapsed / duration);
+    } else if (animationProgress !== null) {
+      setAnimationProgress(null);
+    }
+  });
 
   const draw = useCallback((g: PIXI.Graphics) => {
     if (!sourceNode || !targetNode) return;
@@ -86,7 +106,6 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
     };
 
     // Calculate midpoint for label (Bezier at t=0.5)
-    // B(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
     const t = 0.5;
     const midX = Math.pow(1 - t, 3) * start.x + 
                  3 * Math.pow(1 - t, 2) * t * cp1.x + 
@@ -97,13 +116,6 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
                  3 * (1 - t) * Math.pow(t, 2) * cp2.y + 
                  Math.pow(t, 3) * end.y;
     
-    // Update state ONLY if significantly different to avoid infinite render loops
-    // But since this is inside draw callback which is called by Pixi, 
-    // we should be careful about setting React state here.
-    // Ideally, we calculate this in a separate effect or memo.
-    // However, PIXI.Graphics draw isn't a React render phase.
-    // Let's defer the state update to be safe or just use a ref if we weren't using React state for the Text component position.
-    // For now, let's use a small hack: we check if the position changed by > 1 pixel.
     if (Math.abs(midX - labelPos.x) > 1 || Math.abs(midY - labelPos.y) > 1) {
        setLabelPos({ x: midX, y: midY });
     }
@@ -145,8 +157,6 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
 
     // Start Arrow Head (if bidirectional)
     if (edge.bidirectional) {
-      // Vector from Start to CP1 roughly gives outgoing angle.
-      // We want the arrow pointing INTO start, so we reverse it.
       const dx = start.x - cp1.x; // Vector pointing towards start
       const dy = start.y - cp1.y;
       const angle = Math.atan2(dy, dx);
@@ -167,6 +177,30 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
       g.endFill();
     }
 
+    // Handoff Animation
+    if (animationProgress !== null) {
+      const t = animationProgress;
+      const packetX = Math.pow(1 - t, 3) * start.x + 
+                   3 * Math.pow(1 - t, 2) * t * cp1.x + 
+                   3 * (1 - t) * Math.pow(t, 2) * cp2.x + 
+                   Math.pow(t, 3) * end.x;
+      const packetY = Math.pow(1 - t, 3) * start.y + 
+                   3 * Math.pow(1 - t, 2) * t * cp1.y + 
+                   3 * (1 - t) * Math.pow(t, 2) * cp2.y + 
+                   Math.pow(t, 3) * end.y;
+
+      // Glow (Outer)
+      g.lineStyle(0);
+      g.beginFill(0x4287f5, 0.4); 
+      g.drawCircle(packetX, packetY, 8);
+      g.endFill();
+
+      // Core (Inner)
+      g.beginFill(0xffffff, 1);
+      g.drawCircle(packetX, packetY, 4);
+      g.endFill();
+    }
+
     const hitPadding = 12;
     const minX = Math.min(start.x, end.x, cp1.x, cp2.x);
     const maxX = Math.max(start.x, end.x, cp1.x, cp2.x);
@@ -178,7 +212,7 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
       maxX - minX + hitPadding * 2,
       maxY - minY + hitPadding * 2
     );
-  }, [sourceNode, targetNode, edge.bidirectional, edge.selected, labelPos.x, labelPos.y]); // Include labelPos dependencies to avoid stale closures if needed, but mainly source/target/edge
+  }, [sourceNode, targetNode, edge.bidirectional, edge.selected, labelPos.x, labelPos.y, animationProgress]);
 
   return (
     <Container>
