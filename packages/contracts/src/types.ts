@@ -3,7 +3,7 @@ export type ISO8601 = string;
 
 export type ContractVersion = "1";
 
-export type RunStatus = "queued" | "running" | "paused" | "completed" | "failed";
+export type RunStatus = "queued" | "running" | "paused" | "stopped" | "completed" | "failed";
 export type OrchestrationMode = "AUTO" | "INTERACTIVE";
 export type GlobalMode = "PLANNING" | "IMPLEMENTATION";
 
@@ -15,6 +15,12 @@ export type EdgeType = "handoff" | "report";
 
 export type ArtifactKind = "diff" | "prompt" | "log" | "transcript" | "contextpack" | "report";
 
+export interface UsageTotals {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface RunState {
   id: UUID;
   contractVersion: ContractVersion;
@@ -23,9 +29,11 @@ export interface RunState {
   globalMode: GlobalMode;
   createdAt: ISO8601;
   updatedAt: ISO8601;
+  usage?: UsageTotals;
   nodes: Record<UUID, NodeState>;
   edges: Record<UUID, EdgeState>;
   artifacts: Record<UUID, Artifact>;
+  cwd?: string;
 }
 
 export interface NodeCapabilities {
@@ -72,6 +80,7 @@ export interface NodeState {
   status: NodeStatus;
   summary: string;
   lastActivityAt: ISO8601;
+  usage?: UsageTotals;
   capabilities: NodeCapabilities;
   permissions: NodePermissions;
   session: NodeSession;

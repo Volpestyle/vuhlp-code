@@ -13,6 +13,16 @@ export const eventEnvelopeSchema = {
   additionalProperties: true
 } as const;
 
+export const usageTotalsSchema = {
+  type: "object",
+  required: ["promptTokens", "completionTokens", "totalTokens"],
+  properties: {
+    promptTokens: { type: "number" },
+    completionTokens: { type: "number" },
+    totalTokens: { type: "number" }
+  }
+} as const;
+
 export const nodeStateSchema = {
   $schema: "http://json-schema.org/draft-07/schema#",
   title: "NodeState",
@@ -40,6 +50,7 @@ export const nodeStateSchema = {
     status: { type: "string" },
     summary: { type: "string" },
     lastActivityAt: { type: "string", format: "date-time" },
+    usage: usageTotalsSchema,
     capabilities: {
       type: "object",
       required: ["spawnNodes", "writeCode", "writeDocs", "runCommands", "delegateOnly"],
@@ -139,11 +150,12 @@ export const runStateSchema = {
   properties: {
     id: { type: "string" },
     contractVersion: { type: "string", enum: ["1"] },
-    status: { type: "string", enum: ["queued", "running", "paused", "completed", "failed"] },
+    status: { type: "string", enum: ["queued", "running", "paused", "stopped", "completed", "failed"] },
     mode: { type: "string", enum: ["AUTO", "INTERACTIVE"] },
     globalMode: { type: "string", enum: ["PLANNING", "IMPLEMENTATION"] },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
+    usage: usageTotalsSchema,
     nodes: { type: "object", additionalProperties: nodeStateSchema },
     edges: { type: "object", additionalProperties: edgeStateSchema },
     artifacts: { type: "object", additionalProperties: artifactSchema }

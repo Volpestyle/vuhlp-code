@@ -6,9 +6,11 @@ import type {
   ISO8601,
   NodeState,
   NodeStatus,
+  ProviderName,
   OrchestrationMode,
   GlobalMode,
   RunState,
+  UsageTotals,
   UUID,
   ToolCall,
   UserMessageRecord
@@ -19,20 +21,35 @@ export type EventType =
   | "run.mode"
   | "run.stalled"
   | "node.patch"
+  | "node.heartbeat"
+  | "node.log"
   | "node.deleted"
   | "node.progress"
+  | "turn.status"
   | "edge.created"
   | "edge.deleted"
   | "handoff.sent"
   | "message.user"
   | "message.assistant.delta"
   | "message.assistant.final"
+  | "message.assistant.thinking.delta"
+  | "message.assistant.thinking.final"
   | "tool.proposed"
   | "tool.started"
   | "tool.completed"
   | "approval.requested"
   | "approval.resolved"
-  | "artifact.created";
+  | "artifact.created"
+  | "telemetry.usage";
+
+export type TurnStatus =
+  | "turn.started"
+  | "waiting_for_model"
+  | "tool.pending"
+  | "awaiting_approval"
+  | "turn.completed"
+  | "turn.interrupted"
+  | "turn.failed";
 
 export interface BaseEvent {
   id: UUID;
@@ -69,6 +86,18 @@ export interface NodePatchEvent extends BaseEvent {
   patch: Partial<NodeState>;
 }
 
+export interface NodeHeartbeatEvent extends BaseEvent {
+  type: "node.heartbeat";
+  nodeId: UUID;
+}
+
+export interface NodeLogEvent extends BaseEvent {
+  type: "node.log";
+  nodeId: UUID;
+  source: "stdout" | "stderr";
+  line: string;
+}
+
 export interface NodeDeletedEvent extends BaseEvent {
   type: "node.deleted";
   nodeId: UUID;
@@ -79,6 +108,13 @@ export interface NodeProgressEvent extends BaseEvent {
   nodeId: UUID;
   status: NodeStatus;
   summary?: string;
+}
+
+export interface TurnStatusEvent extends BaseEvent {
+  type: "turn.status";
+  nodeId: UUID;
+  status: TurnStatus;
+  detail?: string;
 }
 
 export interface EdgeCreatedEvent extends BaseEvent {
@@ -111,6 +147,19 @@ export interface MessageAssistantFinalEvent extends BaseEvent {
   type: "message.assistant.final";
   nodeId: UUID;
   content: string;
+  status?: "final" | "interrupted";
+}
+
+export interface MessageAssistantThinkingDeltaEvent extends BaseEvent {
+  type: "message.assistant.thinking.delta";
+  nodeId: UUID;
+  delta: string;
+}
+
+export interface MessageAssistantThinkingFinalEvent extends BaseEvent {
+  type: "message.assistant.thinking.final";
+  nodeId: UUID;
+  content: string;
 }
 
 export interface ToolProposedEvent extends BaseEvent {
@@ -129,7 +178,7 @@ export interface ToolCompletedEvent extends BaseEvent {
   type: "tool.completed";
   nodeId: UUID;
   toolId: UUID;
-  result: { ok: boolean };
+  result: { ok: boolean; output?: string | object };
   error?: { message: string };
 }
 
@@ -152,22 +201,35 @@ export interface ArtifactCreatedEvent extends BaseEvent {
   artifact: Artifact;
 }
 
+export interface TelemetryUsageEvent extends BaseEvent {
+  type: "telemetry.usage";
+  provider: ProviderName;
+  model: string;
+  usage: UsageTotals;
+}
+
 export type EventEnvelope =
   | RunPatchEvent
   | RunModeEvent
   | RunStalledEvent
   | NodePatchEvent
+  | NodeHeartbeatEvent
+  | NodeLogEvent
   | NodeDeletedEvent
   | NodeProgressEvent
+  | TurnStatusEvent
   | EdgeCreatedEvent
   | EdgeDeletedEvent
   | HandoffSentEvent
   | MessageUserEvent
   | MessageAssistantDeltaEvent
   | MessageAssistantFinalEvent
+  | MessageAssistantThinkingDeltaEvent
+  | MessageAssistantThinkingFinalEvent
   | ToolProposedEvent
   | ToolStartedEvent
   | ToolCompletedEvent
   | ApprovalRequestedEvent
   | ApprovalResolvedEvent
-  | ArtifactCreatedEvent;
+  | ArtifactCreatedEvent
+  | TelemetryUsageEvent;

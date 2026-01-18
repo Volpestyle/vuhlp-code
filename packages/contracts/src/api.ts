@@ -14,9 +14,26 @@ import type {
 } from "./types.js";
 import type { EventEnvelope } from "./events.js";
 
+export interface ListDirectoryRequest {
+  path?: string;
+}
+
+export interface FileEntry {
+  name: string;
+  isDirectory: boolean;
+  path: string;
+}
+
+export interface ListDirectoryResponse {
+  entries: FileEntry[];
+  parent?: string;
+  current: string;
+}
+
 export interface CreateRunRequest {
   mode?: OrchestrationMode;
   globalMode?: GlobalMode;
+  cwd?: string;
 }
 
 export interface CreateRunResponse {
@@ -115,4 +132,10 @@ export interface ResetNodeResponse {
 export interface GetArtifactResponse {
   artifact: Artifact;
   content: string;
+}
+
+export interface GetRoleTemplateResponse {
+  name: string;
+  content: string;
+  found: boolean;
 }
