@@ -1,0 +1,34 @@
+# Expo
+.expo/
+dist/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+
+# Native
+ios/
+android/
+*.hprof
+
+# Node
+node_modules/
+
+# Env
+.env
+.env.local
+
+# Metro
+.metro-health-check*
+
+# Debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# TypeScript
+*.tsbuildinfo
+expo-env.d.ts
