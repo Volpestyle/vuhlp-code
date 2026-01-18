@@ -35,3 +35,7 @@ export function getString(value: JsonValue): string | null {
 export function getBoolean(value: JsonValue): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
+
+export function getNumber(value: JsonValue): number | null {
+  return typeof value === "number" ? value : null;
+}

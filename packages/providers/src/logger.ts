@@ -1,4 +1,4 @@
-export type LogMetaValue = string | number | boolean | null;
+export type LogMetaValue = string | number | boolean | null | undefined | object;
 export type LogMeta = Record<string, LogMetaValue>;
 
 export interface Logger {

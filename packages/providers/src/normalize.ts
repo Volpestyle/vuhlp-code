@@ -4,6 +4,9 @@ import type {
   EventEnvelope,
   MessageAssistantDeltaEvent,
   MessageAssistantFinalEvent,
+  MessageAssistantThinkingDeltaEvent,
+  MessageAssistantThinkingFinalEvent,
+  TelemetryUsageEvent,
   ToolCompletedEvent,
   ToolProposedEvent,
   ToolStartedEvent,
@@ -33,6 +36,28 @@ export function normalizeCliEvent(context: EventContext, event: ParsedCliEvent):
     }
     case "message.assistant.final": {
       const envelope: MessageAssistantFinalEvent = {
+        id: event.id ?? context.makeId(),
+        runId: context.runId,
+        ts: context.now(),
+        type: event.type,
+        nodeId: context.nodeId,
+        content: event.content
+      };
+      return envelope;
+    }
+    case "message.assistant.thinking.delta": {
+      const envelope: MessageAssistantThinkingDeltaEvent = {
+        id: context.makeId(),
+        runId: context.runId,
+        ts: context.now(),
+        type: event.type,
+        nodeId: context.nodeId,
+        delta: event.delta
+      };
+      return envelope;
+    }
+    case "message.assistant.thinking.final": {
+      const envelope: MessageAssistantThinkingFinalEvent = {
         id: context.makeId(),
         runId: context.runId,
         ts: context.now(),
@@ -98,6 +123,19 @@ export function normalizeCliEvent(context: EventContext, event: ParsedCliEvent):
         type: event.type,
         approvalId: event.approvalId,
         resolution: event.resolution
+      };
+      return envelope;
+    }
+    case "telemetry.usage": {
+      const envelope: TelemetryUsageEvent = {
+        id: context.makeId(),
+        runId: context.runId,
+        ts: context.now(),
+        type: event.type,
+        nodeId: context.nodeId,
+        provider: event.provider,
+        model: event.model,
+        usage: event.usage
       };
       return envelope;
     }
