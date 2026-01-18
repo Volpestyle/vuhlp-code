@@ -50,6 +50,12 @@ export type TurnResult =
       prompt?: PromptArtifacts;
     }
   | {
+      kind: "interrupted";
+      summary: string;
+      message?: string;
+      prompt?: PromptArtifacts;
+    }
+  | {
       kind: "blocked";
       summary: string;
       approval: ApprovalRequest;
@@ -68,6 +74,7 @@ export interface NodeRunner {
   resolveApproval?(approvalId: UUID, resolution: ApprovalResolution): Promise<void>;
   resetNode?(nodeId: UUID): Promise<void>;
   closeNode?(nodeId: UUID): Promise<void>;
+  interruptNode?(nodeId: UUID): Promise<void>;
 }
 
 export class NoopRunner implements NodeRunner {

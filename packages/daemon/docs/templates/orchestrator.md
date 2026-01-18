@@ -42,17 +42,29 @@ When delegating, provide:
 Prefer small, focused tasks over large vague ones.
 
 ## Spawn command (approval-gated)
-When spawning is allowed, emit a JSON block. If approval is required, wait for approval before expecting the new node to appear.
+When spawning is allowed, call the `spawn_node` tool. If approval is required, wait for approval before expecting the new node to appear.
+
+Example tool args:
 
 ```json
 {
-  "command": "spawn_node",
-  "args": {
-    "role": "implementer",
-    "label": "Scoped Task",
-    "instructions": "Implement X in file Y with constraints Z.",
-    "input": { "key": "value" }
-  }
+  "label": "Scoped Task",
+  "roleTemplate": "implementer",
+  "instructions": "Implement X in file Y with constraints Z.",
+  "input": { "key": "value" }
+}
+```
+
+## Connect nodes
+Use the `create_edge` tool to connect nodes after spawning.
+
+```json
+{
+  "from": "source-node-id",
+  "to": "target-node-id",
+  "type": "handoff",
+  "bidirectional": true,
+  "label": "task"
 }
 ```
 

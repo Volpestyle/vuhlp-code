@@ -98,11 +98,11 @@ export class Scheduler {
     const now = nowIso();
     const runningConnection: NodeConnection | undefined = nodeRecord.state.connection
       ? {
-          ...nodeRecord.state.connection,
-          status: "connected",
-          streaming: true,
-          lastHeartbeatAt: now
-        }
+        ...nodeRecord.state.connection,
+        status: "connected",
+        streaming: true,
+        lastHeartbeatAt: now
+      }
       : undefined;
     this.patchNode(record, nodeRecord, {
       status: "running",
@@ -149,19 +149,30 @@ export class Scheduler {
       return;
     }
 
+    if (result.kind === "interrupted") {
+      await this.handleInterrupted(record, nodeRecord, result);
+      return;
+    }
+
     if (record.state.status !== "running") {
       const pausedAt = nowIso();
+      const summary =
+        record.state.status === "paused"
+          ? "paused"
+          : record.state.status === "stopped"
+            ? "stopped"
+            : "interrupted";
       const idleConnection: NodeConnection | undefined = nodeRecord.state.connection
         ? {
-            ...nodeRecord.state.connection,
-            streaming: false,
-            lastHeartbeatAt: pausedAt,
-            lastOutputAt: pausedAt
-          }
+          ...nodeRecord.state.connection,
+          streaming: false,
+          lastHeartbeatAt: pausedAt,
+          lastOutputAt: pausedAt
+        }
         : undefined;
       this.patchNode(record, nodeRecord, {
         status: "idle",
-        summary: record.state.status === "paused" ? "paused" : "interrupted",
+        summary,
         lastActivityAt: pausedAt,
         connection: idleConnection
       });
@@ -173,11 +184,11 @@ export class Scheduler {
       const interruptedAt = nowIso();
       const idleConnection: NodeConnection | undefined = nodeRecord.state.connection
         ? {
-            ...nodeRecord.state.connection,
-            streaming: false,
-            lastHeartbeatAt: interruptedAt,
-            lastOutputAt: interruptedAt
-          }
+          ...nodeRecord.state.connection,
+          streaming: false,
+          lastHeartbeatAt: interruptedAt,
+          lastOutputAt: interruptedAt
+        }
         : undefined;
       this.patchNode(record, nodeRecord, {
         status: "idle",
@@ -211,11 +222,11 @@ export class Scheduler {
     nodeRecord.runtime.pendingTurn = true;
     const blockedConnection: NodeConnection | undefined = nodeRecord.state.connection
       ? {
-          ...nodeRecord.state.connection,
-          status: "idle",
-          streaming: false,
-          lastOutputAt: now
-        }
+        ...nodeRecord.state.connection,
+        status: "idle",
+        streaming: false,
+        lastOutputAt: now
+      }
       : undefined;
     this.patchNode(record, nodeRecord, {
       status: "blocked",
@@ -251,11 +262,11 @@ export class Scheduler {
     nodeRecord.runtime.pendingTurn = false;
     const failedConnection: NodeConnection | undefined = nodeRecord.state.connection
       ? {
-          ...nodeRecord.state.connection,
-          status: "idle",
-          streaming: false,
-          lastOutputAt: now
-        }
+        ...nodeRecord.state.connection,
+        status: "idle",
+        streaming: false,
+        lastOutputAt: now
+      }
       : undefined;
     this.patchNode(record, nodeRecord, {
       status: "failed",
@@ -306,7 +317,7 @@ export class Scheduler {
     artifacts.push(diffArtifact);
 
     const outputHash = result.outputHash ?? hashString(result.message);
-    const diffHash = result.diffHash ?? hashString(result.diff?.content ?? "no changes");
+    const diffHash = result.diffHash ?? (result.diff?.content ? hashString(result.diff.content) : undefined);
 
     this.emitEvent(runId, {
       id: newId(),
@@ -347,11 +358,11 @@ export class Scheduler {
       });
       const stalledConnection: NodeConnection | undefined = nodeRecord.state.connection
         ? {
-            ...nodeRecord.state.connection,
-            status: "idle",
-            streaming: false,
-            lastOutputAt: now
-          }
+          ...nodeRecord.state.connection,
+          status: "idle",
+          streaming: false,
+          lastOutputAt: now
+        }
         : undefined;
       this.patchNode(record, nodeRecord, {
         status: "blocked",
@@ -364,11 +375,12 @@ export class Scheduler {
 
     const idleConnection: NodeConnection | undefined = nodeRecord.state.connection
       ? {
-          ...nodeRecord.state.connection,
-          status: "idle",
-          streaming: false,
-          lastOutputAt: now
-        }
+        ...nodeRecord.state.connection,
+        status: "idle",
+        streaming: false,
+        lastHeartbeatAt: now,
+        lastOutputAt: now
+      }
       : undefined;
     this.patchNode(record, nodeRecord, {
       status: "idle",
@@ -405,6 +417,56 @@ export class Scheduler {
       }
     }
 
+    this.emitEvent(runId, {
+      id: newId(),
+      runId,
+      ts: now,
+      type: "node.progress",
+      nodeId,
+      status: "idle",
+      summary: result.summary
+    });
+  }
+
+  private async handleInterrupted(
+    record: RunRecord,
+    nodeRecord: NodeRecord,
+    result: Extract<TurnResult, { kind: "interrupted" }>
+  ): Promise<void> {
+    const runId = record.state.id;
+    const nodeId = nodeRecord.state.id;
+    const now = nowIso();
+    nodeRecord.runtime.pendingTurn = false;
+
+    await this.recordPromptArtifacts(record, runId, nodeId, result.prompt);
+
+    if (result.message && result.message.trim().length > 0) {
+      this.emitEvent(runId, {
+        id: newId(),
+        runId,
+        ts: now,
+        type: "message.assistant.final",
+        nodeId,
+        content: result.message,
+        status: "interrupted"
+      });
+    }
+
+    const idleConnection: NodeConnection | undefined = nodeRecord.state.connection
+      ? {
+        ...nodeRecord.state.connection,
+        status: "idle",
+        streaming: false,
+        lastHeartbeatAt: now,
+        lastOutputAt: now
+      }
+      : undefined;
+    this.patchNode(record, nodeRecord, {
+      status: "idle",
+      summary: result.summary,
+      lastActivityAt: now,
+      connection: idleConnection
+    });
     this.emitEvent(runId, {
       id: newId(),
       runId,

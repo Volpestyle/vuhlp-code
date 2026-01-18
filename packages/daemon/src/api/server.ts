@@ -15,6 +15,9 @@ import type {
 export function createServer(runtime: Runtime): http.Server {
   const app = express();
   app.use(express.json({ limit: "4mb" }));
+
+
+
   app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
@@ -26,11 +29,22 @@ export function createServer(runtime: Runtime): http.Server {
     next();
   });
 
+  app.get("/api/fs/list", async (req, res) => {
+    try {
+      const dirPath = typeof req.query.path === "string" ? req.query.path : undefined;
+      const result = await runtime.listDirectory(dirPath);
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
   app.post("/api/runs", (req, res) => {
     const body = req.body as CreateRunRequest;
     const run = runtime.createRun({
       mode: body?.mode,
-      globalMode: body?.globalMode
+      globalMode: body?.globalMode,
+      cwd: body?.cwd
     });
     res.json({ run });
   });
@@ -64,6 +78,15 @@ export function createServer(runtime: Runtime): http.Server {
       res.json({ events });
     } catch (error) {
       res.status(404).json({ error: String(error) });
+    }
+  });
+
+  app.get("/api/templates/:name", async (req, res) => {
+    try {
+      const template = await runtime.getRoleTemplate(req.params.name);
+      res.json(template);
+    } catch (error) {
+      res.status(400).json({ error: String(error) });
     }
   });
 

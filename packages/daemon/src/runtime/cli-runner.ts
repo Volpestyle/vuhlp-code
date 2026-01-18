@@ -5,45 +5,71 @@ import type {
   NodeState,
   PromptArtifacts,
   ProviderName,
+  UserMessageRecord,
   UUID
 } from "@vuhlp/contracts";
 import {
-  CliProviderAdapter,
   ConsoleLogger,
+  createProviderAdapter,
   resolvePermissionsMode,
+  type ApiProviderConfig,
   type CliProviderConfig,
+  type CreateEdgeRequest,
+  type CreateEdgeResult,
   type Logger,
-  type ProviderProtocol
+  type ProviderAdapter,
+  type ProviderConfig,
+  type ProviderProtocol,
+  type SpawnNodeRequest,
+  type SpawnNodeResult
 } from "@vuhlp/providers";
 import { AsyncQueue } from "./async-queue.js";
 import { PromptBuilder } from "./prompt-builder.js";
 import type { NodeRunner, TurnInput, TurnResult } from "./runner.js";
-import { newId, nowIso } from "./utils.js";
+import { hashString, newId, nowIso } from "./utils.js";
 
 interface ProviderSpec {
-  command: string;
-  args: string[];
-  protocol: ProviderProtocol;
+  transport: "cli" | "api";
+  command?: string;
+  args?: string[];
+  protocol?: ProviderProtocol;
+  statefulStreaming?: boolean;
+  resumeArgs?: string[];
+  replayTurns?: number;
+  apiKey?: string;
+  apiBaseUrl?: string;
+  model?: string;
+  maxTokens?: number;
 }
 
 interface PendingTurn {
   promptArtifacts: PromptArtifacts;
   partialOutput: string;
   promptLogged: boolean;
+  inputMessages: UserMessageRecord[];
 }
 
 interface ProviderSession {
-  adapter: CliProviderAdapter;
+  adapter: ProviderAdapter;
   queue: AsyncQueue<TurnSignal>;
-  config: CliProviderConfig;
+  config: ProviderConfig;
   promptSent: boolean;
+  lastPromptHeaderHash?: string;
   pendingTurn?: PendingTurn;
+  activeTurn?: PendingTurn;
   sessionId?: string;
+  interrupted?: boolean;
+  completedTurns: number;
+  baseArgs?: string[];
+  resumeArgs?: string[];
+  replayTurns: number;
+  transcript: UserMessageRecord[];
 }
 
 type TurnSignal =
   | { type: "message.assistant.delta"; delta: string }
   | { type: "message.assistant.final"; content: string }
+  | { type: "interrupted" }
   | { type: "approval.requested"; approval: ApprovalRequest }
   | { type: "error"; error: Error };
 
@@ -51,6 +77,9 @@ export interface CliRunnerOptions {
   repoRoot: string;
   emitEvent: (runId: UUID, event: EventEnvelope) => void;
   logger?: Logger;
+  spawnNode?: (runId: UUID, fromNodeId: UUID, request: SpawnNodeRequest) => Promise<SpawnNodeResult>;
+  createEdge?: (runId: UUID, fromNodeId: UUID, request: CreateEdgeRequest) => Promise<CreateEdgeResult>;
+  systemTemplatesDir?: string;
 }
 
 export class CliRunner implements NodeRunner {
@@ -60,12 +89,16 @@ export class CliRunner implements NodeRunner {
   private readonly emitEvent: (runId: UUID, event: EventEnvelope) => void;
   private readonly logger: Logger;
   private readonly repoRoot: string;
+  private readonly spawnNode?: (runId: UUID, fromNodeId: UUID, request: SpawnNodeRequest) => Promise<SpawnNodeResult>;
+  private readonly createEdge?: (runId: UUID, fromNodeId: UUID, request: CreateEdgeRequest) => Promise<CreateEdgeResult>;
 
   constructor(options: CliRunnerOptions) {
     this.repoRoot = options.repoRoot;
     this.emitEvent = options.emitEvent;
     this.logger = options.logger ?? new ConsoleLogger();
-    this.promptBuilder = new PromptBuilder(this.repoRoot);
+    this.promptBuilder = new PromptBuilder(this.repoRoot, options.systemTemplatesDir);
+    this.spawnNode = options.spawnNode;
+    this.createEdge = options.createEdge;
   }
 
   supports(_provider: ProviderName): boolean {
@@ -86,17 +119,24 @@ export class CliRunner implements NodeRunner {
       return this.resumePendingTurn(session, input);
     }
 
-    const prompt = await this.promptBuilder.build(input);
-    const promptKind = this.resolvePromptKind(session, input.config.session.resume);
+    const promptInput = this.injectReplayMessages(input, session);
+    const prompt = await this.promptBuilder.build(promptInput);
+    const promptHeaderHash = this.buildPromptHeaderHash(prompt.artifacts);
+    const promptKind = this.resolvePromptKind(session, promptHeaderHash);
     const promptPayload = promptKind === "full" ? prompt.artifacts.full : prompt.delta;
 
     try {
+      session.interrupted = false;
+      this.applyResumeArgs(session);
       await session.adapter.send({
         prompt: promptPayload,
         promptKind,
         turnId: newId()
       });
       this.updateSessionId(input.node, session);
+      if (promptKind === "full") {
+        session.lastPromptHeaderHash = promptHeaderHash;
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
@@ -111,10 +151,13 @@ export class CliRunner implements NodeRunner {
     const turnState: PendingTurn = {
       promptArtifacts: prompt.artifacts,
       partialOutput: "",
-      promptLogged: false
+      promptLogged: false,
+      inputMessages: input.messages
     };
 
+    session.activeTurn = turnState;
     const outcome = await this.waitForOutcome(session, turnState);
+    session.activeTurn = undefined;
     if (outcome.kind === "blocked") {
       session.pendingTurn = turnState;
       this.pendingApprovals.set(outcome.approval.approvalId, input.node.id);
@@ -127,6 +170,17 @@ export class CliRunner implements NodeRunner {
       };
     }
 
+    if (outcome.kind === "interrupted") {
+      this.recordTranscript(session, input.messages, outcome.message);
+      session.completedTurns += 1;
+      return {
+        kind: "interrupted",
+        summary: outcome.summary,
+        message: outcome.message,
+        prompt: prompt.artifacts
+      };
+    }
+
     if (outcome.kind === "failed") {
       return {
         kind: "failed",
@@ -136,6 +190,8 @@ export class CliRunner implements NodeRunner {
       };
     }
 
+    this.recordTranscript(session, input.messages, outcome.message);
+    session.completedTurns += 1;
     return {
       kind: "completed",
       summary: outcome.summary,
@@ -173,6 +229,9 @@ export class CliRunner implements NodeRunner {
     await session.adapter.resetSession();
     session.promptSent = false;
     session.pendingTurn = undefined;
+    session.lastPromptHeaderHash = undefined;
+    session.completedTurns = 0;
+    session.transcript = [];
   }
 
   async closeNode(nodeId: UUID): Promise<void> {
@@ -199,11 +258,39 @@ export class CliRunner implements NodeRunner {
     }
   }
 
-  private resolvePromptKind(session: ProviderSession, resume: boolean): "full" | "delta" {
-    if (!resume) {
+  async interruptNode(nodeId: UUID): Promise<void> {
+    const session = this.sessions.get(nodeId);
+    if (!session || !session.activeTurn) {
+      return;
+    }
+    session.interrupted = true;
+    try {
+      await session.adapter.interrupt();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn("failed to interrupt provider session", { nodeId, message });
+    }
+    session.queue.push({ type: "interrupted" });
+  }
+
+  private resolvePromptKind(session: ProviderSession, promptHeaderHash: string): "full" | "delta" {
+    if (!session.config.resume) {
       return "full";
     }
-    return session.promptSent ? "delta" : "full";
+    if (!session.promptSent) {
+      return "full";
+    }
+    if (session.lastPromptHeaderHash !== promptHeaderHash) {
+      return "full";
+    }
+    return "delta";
+  }
+
+  private buildPromptHeaderHash(artifacts: PromptArtifacts): string {
+    const header = [artifacts.blocks.system, artifacts.blocks.role]
+      .filter((block) => block.trim().length > 0)
+      .join("\n\n");
+    return hashString(header);
   }
 
   private async resumePendingTurn(session: ProviderSession, input: TurnInput): Promise<TurnResult> {
@@ -216,7 +303,10 @@ export class CliRunner implements NodeRunner {
       };
     }
 
+    session.interrupted = false;
+    session.activeTurn = pending;
     const outcome = await this.waitForOutcome(session, pending);
+    session.activeTurn = undefined;
     if (outcome.kind === "blocked") {
       this.pendingApprovals.set(outcome.approval.approvalId, input.node.id);
       const prompt = pending.promptLogged ? undefined : pending.promptArtifacts;
@@ -230,6 +320,18 @@ export class CliRunner implements NodeRunner {
     }
 
     session.pendingTurn = undefined;
+    if (outcome.kind === "interrupted") {
+      const prompt = pending.promptLogged ? undefined : pending.promptArtifacts;
+      pending.promptLogged = true;
+      this.recordTranscript(session, pending.inputMessages, outcome.message);
+      session.completedTurns += 1;
+      return {
+        kind: "interrupted",
+        summary: outcome.summary,
+        message: outcome.message,
+        prompt
+      };
+    }
     if (outcome.kind === "failed") {
       const prompt = pending.promptLogged ? undefined : pending.promptArtifacts;
       return {
@@ -241,6 +343,8 @@ export class CliRunner implements NodeRunner {
     }
 
     const prompt = pending.promptLogged ? undefined : pending.promptArtifacts;
+    this.recordTranscript(session, pending.inputMessages, outcome.message);
+    session.completedTurns += 1;
     return {
       kind: "completed",
       summary: outcome.summary,
@@ -254,6 +358,7 @@ export class CliRunner implements NodeRunner {
     pending: PendingTurn
   ): Promise<
     | { kind: "completed"; message: string; summary: string }
+    | { kind: "interrupted"; message: string; summary: string }
     | { kind: "blocked"; approval: ApprovalRequest; summary: string }
     | { kind: "failed"; error: string; summary: string }
   > {
@@ -268,6 +373,9 @@ export class CliRunner implements NodeRunner {
         const message = signal.content.trim().length > 0 ? signal.content : pending.partialOutput;
         const summary = this.summarize(message);
         return { kind: "completed", message, summary };
+      }
+      if (signal.type === "interrupted") {
+        return { kind: "interrupted", message: pending.partialOutput, summary: "interrupted" };
       }
       if (signal.type === "approval.requested" && allowApprovals) {
         const toolName = signal.approval.tool.name;
@@ -300,6 +408,89 @@ export class CliRunner implements NodeRunner {
     return `${firstLine.slice(0, maxLength - 3)}...`;
   }
 
+  private applyResumeArgs(session: ProviderSession): void {
+    if (session.config.transport === "api") {
+      return;
+    }
+    const baseArgs = session.baseArgs ?? [];
+    const resumeArgs = session.resumeArgs ?? [];
+    const shouldResume = session.completedTurns > 0 && resumeArgs.length > 0;
+    session.config.args = shouldResume ? [...baseArgs, ...resumeArgs] : [...baseArgs];
+  }
+
+  private injectReplayMessages(input: TurnInput, session: ProviderSession): TurnInput {
+    if (!this.shouldReplay(session)) {
+      return input;
+    }
+    const history = this.getReplayMessages(session);
+    if (history.length === 0) {
+      return input;
+    }
+    return {
+      ...input,
+      messages: [...history, ...input.messages]
+    };
+  }
+
+  private shouldReplay(session: ProviderSession): boolean {
+    if (session.replayTurns <= 0) {
+      return false;
+    }
+    return (session.resumeArgs?.length ?? 0) === 0;
+  }
+
+  private getReplayMessages(session: ProviderSession): UserMessageRecord[] {
+    const maxMessages = session.replayTurns * 2;
+    if (maxMessages <= 0 || session.transcript.length === 0) {
+      return [];
+    }
+    return session.transcript.slice(-maxMessages);
+  }
+
+  private recordTranscript(
+    session: ProviderSession,
+    incoming: UserMessageRecord[],
+    assistantMessage?: string
+  ): void {
+    if (session.replayTurns <= 0) {
+      return;
+    }
+    session.transcript.push(...incoming);
+    const content = assistantMessage?.trim();
+    if (content) {
+      session.transcript.push({
+        id: newId(),
+        runId: session.config.runId,
+        nodeId: session.config.nodeId,
+        role: "assistant",
+        content,
+        createdAt: nowIso()
+      });
+    }
+    const maxMessages = session.replayTurns * 2;
+    if (maxMessages > 0 && session.transcript.length > maxMessages) {
+      session.transcript = session.transcript.slice(-maxMessages);
+    }
+  }
+
+  private applyCliPermissionFlags(config: CliProviderConfig): CliProviderConfig {
+    if (config.permissionsMode !== "skip") {
+      return config;
+    }
+    const args = [...(config.args ?? [])];
+    if (config.provider === "claude") {
+      if (!args.includes("--dangerously-skip-permissions")) {
+        args.push("--dangerously-skip-permissions");
+      }
+    }
+    if (config.provider === "gemini") {
+      if (!args.includes("--yolo")) {
+        args.push("--yolo");
+      }
+    }
+    return { ...config, args };
+  }
+
   private async ensureSession(input: TurnInput): Promise<ProviderSession | null> {
     const existing = this.sessions.get(input.node.id);
     if (existing) {
@@ -310,26 +501,69 @@ export class CliRunner implements NodeRunner {
       return null;
     }
 
-    const config: CliProviderConfig = {
+    const statelessProtocol =
+      spec.protocol === "raw" || (spec.protocol === "stream-json" && !spec.statefulStreaming);
+    const resume = statelessProtocol ? false : input.config.session.resume;
+    if (!resume && input.config.session.resume) {
+      this.logger.warn("stateless protocol disables session resume; forcing full prompts", {
+        nodeId: input.node.id,
+        provider: input.config.provider,
+        protocol: spec.protocol ?? "jsonl"
+      });
+    }
+    const baseConfig = {
       runId: input.run.id,
       nodeId: input.node.id,
       provider: input.config.provider,
-      command: spec.command,
-      args: spec.args,
-      cwd: this.repoRoot,
+      cwd: input.run.cwd ?? this.repoRoot,
       permissionsMode: resolvePermissionsMode(input.config.permissions.cliPermissionsMode),
-      resume: input.config.session.resume,
+      spawnRequiresApproval: input.node.permissions.spawnRequiresApproval,
+      spawnNode: this.spawnNode
+        ? (request: SpawnNodeRequest) => this.spawnNode?.(input.run.id, input.node.id, request)
+        : undefined,
+      createEdge: this.createEdge
+        ? (request: CreateEdgeRequest) => this.createEdge?.(input.run.id, input.node.id, request)
+        : undefined,
+      resume,
       resetCommands: input.config.session.resetCommands,
-      protocol: spec.protocol
+      capabilities: input.node.capabilities,
+      globalMode: input.run.globalMode
     };
 
-    const adapter = new CliProviderAdapter(config, this.logger);
+    const config =
+      spec.transport === "api"
+        ? ({
+          ...(baseConfig as ApiProviderConfig),
+          transport: "api",
+          apiKey: spec.apiKey as string,
+          apiBaseUrl: spec.apiBaseUrl,
+          model: spec.model as string,
+          maxTokens: spec.maxTokens
+        } satisfies ApiProviderConfig)
+        : ({
+          ...(baseConfig as CliProviderConfig),
+          transport: "cli",
+          command: spec.command ?? input.config.provider,
+          args: spec.args ?? [],
+          protocol: spec.protocol ?? "jsonl"
+        } satisfies CliProviderConfig);
+
+    const resolvedConfig =
+      config.transport === "cli" ? this.applyCliPermissionFlags(config) : config;
+    const adapter = createProviderAdapter(resolvedConfig, this.logger);
     const queue = new AsyncQueue<TurnSignal>();
+    const isCli = resolvedConfig.transport !== "api";
+    const baseArgs = isCli ? [...(resolvedConfig.args ?? [])] : undefined;
     const session: ProviderSession = {
       adapter,
       queue,
-      config,
-      promptSent: false
+      config: resolvedConfig,
+      promptSent: false,
+      completedTurns: 0,
+      baseArgs,
+      resumeArgs: isCli ? [...(spec.resumeArgs ?? [])] : undefined,
+      replayTurns: spec.replayTurns ?? 0,
+      transcript: []
     };
 
     adapter.onEvent((event: EventEnvelope) => this.handleAdapterEvent(session, event));
@@ -373,12 +607,26 @@ export class CliRunner implements NodeRunner {
 
   private handleAdapterEvent(session: ProviderSession, event: EventEnvelope): void {
     if (event.type === "message.assistant.delta") {
+      if (session.interrupted) {
+        return;
+      }
       this.emitEvent(event.runId, event);
       session.queue.push({ type: "message.assistant.delta", delta: event.delta });
       return;
     }
     if (event.type === "message.assistant.final") {
+      if (session.interrupted) {
+        return;
+      }
       session.queue.push({ type: "message.assistant.final", content: event.content });
+      return;
+    }
+    // Forward thinking events to UI
+    if (event.type === "message.assistant.thinking.delta" || event.type === "message.assistant.thinking.final") {
+      if (session.interrupted) {
+        return;
+      }
+      this.emitEvent(event.runId, event);
       return;
     }
     if (event.type === "tool.proposed" || event.type === "tool.started" || event.type === "tool.completed") {
@@ -386,6 +634,10 @@ export class CliRunner implements NodeRunner {
       return;
     }
     if (event.type === "node.patch") {
+      this.emitEvent(event.runId, event);
+      return;
+    }
+    if (event.type === "telemetry.usage") {
       this.emitEvent(event.runId, event);
       return;
     }
@@ -415,6 +667,40 @@ export class CliRunner implements NodeRunner {
 
   private resolveProviderSpec(provider: ProviderName): ProviderSpec | null {
     const prefix = provider.toUpperCase();
+    const transportEnv = this.readEnv(`VUHLP_${prefix}_TRANSPORT`);
+    const transport = transportEnv?.toLowerCase() === "api" ? "api" : "cli";
+    const statefulStreaming = this.readEnvFlag(`VUHLP_${prefix}_STATEFUL_STREAMING`);
+    const resumeArgsRaw = this.parseArgs(this.readEnv(`VUHLP_${prefix}_RESUME_ARGS`));
+    const resumeArgs = resumeArgsRaw.length > 0 ? resumeArgsRaw : this.defaultResumeArgs(provider);
+    const replayTurnsRaw = this.readEnv(`VUHLP_${prefix}_REPLAY_TURNS`);
+    let replayTurns = 0;
+    if (replayTurnsRaw) {
+      const parsed = Number(replayTurnsRaw);
+      replayTurns = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+    }
+
+    if (transport === "api") {
+      const apiKey = this.readEnv(`VUHLP_${prefix}_API_KEY`);
+      const model = this.readEnv(`VUHLP_${prefix}_MODEL`);
+      if (apiKey && model) {
+        const apiBaseUrl = this.readEnv(`VUHLP_${prefix}_API_URL`);
+        const maxTokensRaw = this.readEnv(`VUHLP_${prefix}_MAX_TOKENS`);
+        const maxTokens = maxTokensRaw ? Number(maxTokensRaw) : undefined;
+      return this.applyStreamingDefaults(provider, {
+        transport: "api",
+        apiKey,
+        apiBaseUrl,
+        model,
+        maxTokens: Number.isFinite(maxTokens) ? maxTokens : undefined
+      });
+    }
+      this.logger.warn("api transport requested but missing credentials, falling back to CLI", {
+        provider,
+        hasApiKey: Boolean(apiKey),
+        hasModel: Boolean(model)
+      });
+    }
+
     const explicitCommand = this.readEnv(`VUHLP_${prefix}_COMMAND`);
     const command = explicitCommand ?? provider;
     const args = this.parseArgs(this.readEnv(`VUHLP_${prefix}_ARGS`));
@@ -422,7 +708,15 @@ export class CliRunner implements NodeRunner {
     if (provider === "custom" && !explicitCommand) {
       return null;
     }
-    return { command, args, protocol };
+    return this.applyStreamingDefaults(provider, {
+      transport: "cli",
+      command,
+      args,
+      protocol,
+      statefulStreaming,
+      resumeArgs,
+      replayTurns
+    });
   }
 
   private readEnv(name: string): string | undefined {
@@ -434,6 +728,14 @@ export class CliRunner implements NodeRunner {
     return trimmed.length > 0 ? trimmed : undefined;
   }
 
+  private readEnvFlag(name: string, defaultValue = false): boolean {
+    const value = this.readEnv(name);
+    if (!value) {
+      return defaultValue;
+    }
+    return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+  }
+
   private parseArgs(raw?: string): string[] {
     if (!raw) {
       return [];
@@ -441,7 +743,133 @@ export class CliRunner implements NodeRunner {
     return raw.split(/\s+/).filter((value) => value.length > 0);
   }
 
-  private parseProtocol(raw?: string): ProviderProtocol {
-    return raw === "raw" ? "raw" : "jsonl";
+  private parseProtocol(raw?: string): ProviderProtocol | undefined {
+    if (!raw) {
+      return undefined;
+    }
+    if (raw === "raw") {
+      return "raw";
+    }
+    if (raw === "stream-json") {
+      return "stream-json";
+    }
+    if (raw === "jsonl") {
+      return "jsonl";
+    }
+    return "jsonl";
+  }
+
+  private defaultResumeArgs(provider: ProviderName): string[] {
+    if (provider === "claude") {
+      return ["--continue"];
+    }
+    return [];
+  }
+
+  private applyStreamingDefaults(provider: ProviderName, spec: ProviderSpec): ProviderSpec {
+    if (spec.transport !== "cli") {
+      return spec;
+    }
+
+    const command = (spec.command ?? provider).toLowerCase();
+    const args = [...(spec.args ?? [])];
+
+    if (provider === "claude" && command.includes("claude")) {
+      const hasPrint = args.includes("--print");
+      const hasOutputFormat =
+        args.some((arg) => arg === "--output-format" || arg.startsWith("--output-format="));
+      const outputFormatValue = this.getCliOptionValue(args, "--output-format");
+      const hasPartialMessages = args.includes("--include-partial-messages");
+      const shouldWarnProtocol = spec.protocol && spec.protocol !== "stream-json";
+
+      if (!hasPrint) {
+        args.push("--print");
+      }
+      if (!hasOutputFormat) {
+        args.push("--output-format", "stream-json");
+      } else if (outputFormatValue && outputFormatValue !== "stream-json") {
+        this.logger.warn("Claude CLI output format is not stream-json; streaming may be disabled", {
+          provider,
+          outputFormat: outputFormatValue
+        });
+      }
+      if (!hasPartialMessages) {
+        args.push("--include-partial-messages");
+      }
+      if (shouldWarnProtocol) {
+        this.logger.warn("Claude CLI protocol overridden to stream-json for streaming enforcement", {
+          provider,
+          protocol: spec.protocol
+        });
+      }
+
+      return {
+        ...spec,
+        command: spec.command ?? provider,
+        args,
+        protocol: "stream-json"
+      };
+    }
+
+    if (provider === "codex" && command.includes("codex") && args.length === 0) {
+      args.push("exec", "--json", "-");
+      const shouldWarnProtocol = spec.protocol && spec.protocol !== "stream-json";
+      if (shouldWarnProtocol) {
+        this.logger.warn("Codex CLI protocol overridden to stream-json for streaming enforcement", {
+          provider,
+          protocol: spec.protocol
+        });
+      }
+      return {
+        ...spec,
+        command: spec.command ?? provider,
+        args,
+        protocol: "stream-json"
+      };
+    }
+
+    if (provider === "gemini" && command.includes("gemini")) {
+      const hasOutputFormat =
+        args.some((arg) => arg === "--output-format" || arg.startsWith("--output-format="));
+      const outputFormatValue = this.getCliOptionValue(args, "--output-format");
+      const shouldWarnProtocol = spec.protocol && spec.protocol !== "stream-json";
+
+      if (!hasOutputFormat) {
+        args.push("--output-format", "stream-json");
+      } else if (outputFormatValue && outputFormatValue !== "stream-json") {
+        this.logger.warn("Gemini CLI output format is not stream-json; streaming may be disabled", {
+          provider,
+          outputFormat: outputFormatValue
+        });
+      }
+      if (shouldWarnProtocol) {
+        this.logger.warn("Gemini CLI protocol overridden to stream-json for streaming enforcement", {
+          provider,
+          protocol: spec.protocol
+        });
+      }
+
+      return {
+        ...spec,
+        command: spec.command ?? provider,
+        args,
+        protocol: "stream-json"
+      };
+    }
+
+    return spec;
+  }
+
+  private getCliOptionValue(args: string[], option: string): string | null {
+    for (let i = 0; i < args.length; i += 1) {
+      const value = args[i];
+      if (value === option) {
+        return args[i + 1] ?? null;
+      }
+      if (value.startsWith(`${option}=`)) {
+        return value.slice(option.length + 1);
+      }
+    }
+    return null;
   }
 }

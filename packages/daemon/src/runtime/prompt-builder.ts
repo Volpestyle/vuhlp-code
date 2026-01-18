@@ -40,10 +40,12 @@ export interface PromptBuildResult {
 
 export class PromptBuilder {
   private readonly repoRoot: string;
+  private readonly systemTemplatesDir?: string;
   private readonly templateCache = new Map<string, string>();
 
-  constructor(repoRoot: string) {
+  constructor(repoRoot: string, systemTemplatesDir?: string) {
     this.repoRoot = repoRoot;
+    this.systemTemplatesDir = systemTemplatesDir;
   }
 
   async build(input: TurnInput): Promise<PromptBuildResult> {
@@ -81,14 +83,31 @@ export class PromptBuilder {
     if (cached) {
       return cached;
     }
-    const templatePath = path.resolve(this.repoRoot, "docs", "templates", `${templateName}.md`);
+
+    // transform input.config.roleTemplate from "role" to "role.md"
+    const fileName = `${templateName}.md`;
+
+    // Try repo root first
+    const repoPath = path.resolve(this.repoRoot, "docs", "templates", fileName);
     try {
-      const content = await fs.readFile(templatePath, "utf8");
+      const content = await fs.readFile(repoPath, "utf8");
       this.templateCache.set(templateName, content);
       return content;
     } catch (error) {
+      // If not found and we have a system dir, try that
+      if (this.systemTemplatesDir) {
+        const systemPath = path.resolve(this.systemTemplatesDir, fileName);
+        try {
+          const content = await fs.readFile(systemPath, "utf8");
+          this.templateCache.set(templateName, content);
+          return content;
+        } catch (sysError) {
+          // ignore, fall through to error handling
+        }
+      }
+
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`role template not found: ${templatePath}`, { message, template: templateName });
+      console.warn(`role template not found: ${repoPath}`, { message, template: templateName });
       const fallback = `Role template not found: ${templateName}`;
       this.templateCache.set(templateName, fallback);
       return fallback;

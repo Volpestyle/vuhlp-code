@@ -10,11 +10,13 @@ import type {
   Envelope,
   EventEnvelope,
   GlobalMode,
+  GetRoleTemplateResponse,
   NodeConfig,
   NodeConfigInput,
   NodeState,
   OrchestrationMode,
   RunState,
+  UsageTotals,
   UserMessageRecord,
   UUID
 } from "@vuhlp/contracts";
@@ -25,12 +27,20 @@ import { Scheduler } from "./scheduler.js";
 import { NoopRunner, type NodeRunner } from "./runner.js";
 import { CliRunner } from "./cli-runner.js";
 import { newId, nowIso } from "./utils.js";
+import type { CreateEdgeRequest, CreateEdgeResult, SpawnNodeRequest, SpawnNodeResult } from "@vuhlp/providers";
+
+const addUsage = (current: UsageTotals | undefined, delta: UsageTotals): UsageTotals => ({
+  promptTokens: (current?.promptTokens ?? 0) + delta.promptTokens,
+  completionTokens: (current?.completionTokens ?? 0) + delta.completionTokens,
+  totalTokens: (current?.totalTokens ?? 0) + delta.totalTokens
+});
 
 export interface RuntimeOptions {
   dataDir: string;
   runner?: NodeRunner;
   stallThreshold?: number;
   repoRoot?: string;
+  systemTemplatesDir?: string;
 }
 
 export class Runtime {
@@ -39,17 +49,24 @@ export class Runtime {
   private readonly scheduler: Scheduler;
   private readonly runner: NodeRunner;
   private readonly dataDir: string;
+  private readonly repoRoot: string;
+  private readonly systemTemplatesDir?: string;
   private readonly artifactStores = new Map<UUID, ArtifactStore>();
 
   constructor(options: RuntimeOptions) {
     this.dataDir = options.dataDir;
+    this.repoRoot = options.repoRoot ?? process.cwd();
+    this.systemTemplatesDir = options.systemTemplatesDir;
     this.store = new RunStore(this.dataDir);
     this.eventBus = new EventBus();
     this.runner =
       options.runner ??
       new CliRunner({
-        repoRoot: options.repoRoot ?? process.cwd(),
-        emitEvent: this.emitEvent.bind(this)
+        repoRoot: this.repoRoot,
+        emitEvent: this.emitEvent.bind(this),
+        spawnNode: this.spawnNodeFromTool.bind(this),
+        createEdge: this.createEdgeFromTool.bind(this),
+        systemTemplatesDir: this.systemTemplatesDir
       });
     this.scheduler = new Scheduler({
       store: this.store,
@@ -79,6 +96,35 @@ export class Runtime {
   getRun(runId: UUID): RunState {
     const record = this.requireRun(runId);
     return record.state;
+  }
+
+  async getRoleTemplate(templateName: string): Promise<GetRoleTemplateResponse> {
+    const name = templateName.trim();
+    if (!name) {
+      throw new Error("template name is required");
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+      throw new Error("invalid template name");
+    }
+    const templatePath = path.resolve(this.repoRoot, "docs", "templates", `${name}.md`);
+    try {
+      const content = await fs.readFile(templatePath, "utf8");
+      return { name, content, found: true };
+    } catch (error) {
+      // fallback to system templates
+      if (this.systemTemplatesDir) {
+        const systemPath = path.resolve(this.systemTemplatesDir, `${name}.md`);
+        try {
+          const content = await fs.readFile(systemPath, "utf8");
+          return { name, content, found: true };
+        } catch (sysError) {
+          // ignore
+        }
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn("role template not found", { name, message, templatePath });
+      return { name, content: `Role template not found: ${name}`, found: false };
+    }
   }
 
   async getEvents(runId: UUID): Promise<EventEnvelope[]> {
@@ -131,7 +177,15 @@ export class Runtime {
     }
 
     if (updates.status === "paused" && previousStatus !== "paused") {
-      this.interruptRun(record, now, "paused");
+      this.interruptRun(record, now);
+    }
+
+    if (updates.status === "stopped" && previousStatus !== "stopped") {
+      this.stopRun(record, now);
+    }
+
+    if (updates.status === "running" && previousStatus === "paused") {
+      this.resumeInterruptedNodes(record);
     }
 
     return record.state;
@@ -177,6 +231,16 @@ export class Runtime {
     const now = nowIso();
 
     nodeRecord.runtime.pendingTurn = false;
+    nodeRecord.runtime.inbox = [];
+    nodeRecord.runtime.queuedMessages = [];
+    nodeRecord.runtime.summaryHistory = [];
+    nodeRecord.runtime.outputRepeatCount = 0;
+    nodeRecord.runtime.diffRepeatCount = 0;
+    nodeRecord.runtime.verificationRepeatCount = 0;
+    nodeRecord.runtime.lastOutputHash = undefined;
+    nodeRecord.runtime.lastDiffHash = undefined;
+    nodeRecord.runtime.lastVerificationFailure = undefined;
+    nodeRecord.state.inboxCount = 0;
     if (this.runner.resetNode) {
       try {
         await this.runner.resetNode(nodeId);
@@ -191,12 +255,12 @@ export class Runtime {
 
     const idleConnection = nodeRecord.state.connection
       ? {
-          ...nodeRecord.state.connection,
-          status: "idle",
-          streaming: false,
-          lastHeartbeatAt: now,
-          lastOutputAt: now
-        }
+        ...nodeRecord.state.connection,
+        status: "idle",
+        streaming: false,
+        lastHeartbeatAt: now,
+        lastOutputAt: now
+      }
       : undefined;
 
     nodeRecord.state = {
@@ -306,10 +370,36 @@ export class Runtime {
     return { artifact, content };
   }
 
+  async listDirectory(dirPath?: string): Promise<ListDirectoryResponse> {
+    const target = dirPath ? path.resolve(dirPath) : process.cwd();
+    const entries = await fs.readdir(target, { withFileTypes: true });
+
+    const files: FileEntry[] = entries
+      .map((entry) => ({
+        name: entry.name,
+        isDirectory: entry.isDirectory(),
+        path: path.join(target, entry.name)
+      }))
+      .filter((entry) => !entry.name.startsWith(".")) // simple hidden filter
+      .sort((a, b) => {
+        if (a.isDirectory === b.isDirectory) {
+          return a.name.localeCompare(b.name);
+        }
+        return a.isDirectory ? -1 : 1;
+      });
+
+    return {
+      entries: files,
+      parent: path.dirname(target) !== target ? path.dirname(target) : undefined,
+      current: target
+    };
+  }
+
   createRun({
     mode = "AUTO",
-    globalMode = "IMPLEMENTATION"
-  }: { mode?: OrchestrationMode; globalMode?: GlobalMode }): RunState {
+    globalMode = "IMPLEMENTATION",
+    cwd
+  }: { mode?: OrchestrationMode; globalMode?: GlobalMode; cwd?: string }): RunState {
     const now = nowIso();
     const runState: RunState = {
       id: newId(),
@@ -317,8 +407,10 @@ export class Runtime {
       status: "running",
       mode,
       globalMode,
+      cwd: cwd ?? this.repoRoot,
       createdAt: now,
       updatedAt: now,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       nodes: {},
       edges: {},
       artifacts: {}
@@ -357,6 +449,7 @@ export class Runtime {
       status: "idle",
       summary: "idle",
       lastActivityAt: now,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       capabilities: normalized.capabilities,
       permissions: normalized.permissions,
       session: {
@@ -382,6 +475,59 @@ export class Runtime {
       patch: nodeState
     });
     return nodeState;
+  }
+
+  private async spawnNodeFromTool(
+    runId: UUID,
+    fromNodeId: UUID,
+    request: SpawnNodeRequest
+  ): Promise<SpawnNodeResult> {
+    const { instructions, input, ...config } = request;
+    const node = this.createNode(runId, config);
+    const message = typeof instructions === "string" ? instructions.trim() : "";
+    if (message || input) {
+      const now = nowIso();
+      const payload = input ? { message: message || "Spawned task", structured: input } : { message: message || "Spawned task" };
+      const envelope: Envelope = {
+        kind: "handoff",
+        id: newId(),
+        fromNodeId,
+        toNodeId: node.id,
+        createdAt: now,
+        payload
+      };
+      this.deliverEnvelope(runId, envelope);
+    }
+    return {
+      nodeId: node.id,
+      label: node.label,
+      roleTemplate: node.roleTemplate,
+      provider: node.provider
+    };
+  }
+
+  private async createEdgeFromTool(
+    runId: UUID,
+    _fromNodeId: UUID,
+    request: CreateEdgeRequest
+  ): Promise<CreateEdgeResult> {
+    const type = request.type ?? "handoff";
+    const label = request.label ?? (type === "report" ? "report" : "task");
+    const edge = this.createEdge(runId, {
+      from: request.from,
+      to: request.to,
+      bidirectional: request.bidirectional ?? true,
+      type,
+      label
+    });
+    return {
+      edgeId: edge.id,
+      from: edge.from,
+      to: edge.to,
+      bidirectional: edge.bidirectional,
+      type: edge.type,
+      label: edge.label
+    };
   }
 
   updateNode(runId: UUID, nodeId: UUID, patch: Partial<NodeState>, config?: Partial<NodeConfig>): NodeState {
@@ -619,8 +765,54 @@ export class Runtime {
 
   emitEvent(runId: UUID, event: EventEnvelope): void {
     const record = this.requireRun(runId);
+    let usagePatch: { nodeId?: UUID; nodeUsage?: UsageTotals; runUsage?: UsageTotals; ts: string } | null = null;
+
+    if (event.type === "telemetry.usage") {
+      const timestamp = event.ts ?? nowIso();
+      const runUsage = addUsage(record.state.usage, event.usage);
+      record.state.usage = runUsage;
+      record.state.updatedAt = timestamp;
+
+      let nodeUsage: UsageTotals | undefined;
+      if (event.nodeId) {
+        const nodeRecord = record.nodes.get(event.nodeId);
+        if (nodeRecord) {
+          nodeUsage = addUsage(nodeRecord.state.usage, event.usage);
+          nodeRecord.state = { ...nodeRecord.state, usage: nodeUsage };
+          record.state.nodes[event.nodeId] = nodeRecord.state;
+        }
+      }
+
+      usagePatch = {
+        nodeId: event.nodeId,
+        nodeUsage,
+        runUsage,
+        ts: timestamp
+      };
+    }
     void record.eventLog.append(event);
     this.eventBus.emit(event);
+
+    if (usagePatch?.nodeId && usagePatch.nodeUsage) {
+      this.emitEvent(runId, {
+        id: newId(),
+        runId,
+        ts: usagePatch.ts,
+        type: "node.patch",
+        nodeId: usagePatch.nodeId,
+        patch: { usage: usagePatch.nodeUsage }
+      });
+    }
+
+    if (usagePatch?.runUsage) {
+      this.emitEvent(runId, {
+        id: newId(),
+        runId,
+        ts: usagePatch.ts,
+        type: "run.patch",
+        patch: { usage: usagePatch.runUsage, updatedAt: usagePatch.ts }
+      });
+    }
   }
 
   private touchRun(record: RunRecord, timestamp: string): void {
@@ -628,6 +820,7 @@ export class Runtime {
   }
 
   private normalizeNodeConfig(config: NodeConfigInput): NodeConfig {
+    const isOrchestrator = config.roleTemplate.trim().toLowerCase() === "orchestrator";
     return {
       id: config.id,
       label: config.label,
@@ -635,7 +828,7 @@ export class Runtime {
       roleTemplate: config.roleTemplate,
       customSystemPrompt: config.customSystemPrompt ?? null,
       capabilities: {
-        spawnNodes: config.capabilities?.spawnNodes ?? false,
+        spawnNodes: config.capabilities?.spawnNodes ?? isOrchestrator,
         writeCode: config.capabilities?.writeCode ?? true,
         writeDocs: config.capabilities?.writeDocs ?? true,
         runCommands: config.capabilities?.runCommands ?? true,
@@ -643,7 +836,7 @@ export class Runtime {
       },
       permissions: {
         cliPermissionsMode: config.permissions?.cliPermissionsMode ?? "skip",
-        spawnRequiresApproval: config.permissions?.spawnRequiresApproval ?? true
+        spawnRequiresApproval: config.permissions?.spawnRequiresApproval ?? !isOrchestrator
       },
       session: {
         resume: config.session?.resume ?? true,
@@ -712,19 +905,22 @@ export class Runtime {
     });
   }
 
-  private interruptRun(record: RunRecord, now: string, summary: string): void {
+  private interruptRun(record: RunRecord, now: string): void {
     for (const nodeRecord of record.nodes.values()) {
       const nodeId = nodeRecord.state.id;
+      const wasRunning = nodeRecord.state.status === "running";
       nodeRecord.runtime.pendingTurn = false;
+      nodeRecord.runtime.wasInterrupted = wasRunning;
       const connection = nodeRecord.state.connection
         ? {
-            ...nodeRecord.state.connection,
-            status: "disconnected",
-            streaming: false,
-            lastHeartbeatAt: now,
-            lastOutputAt: now
-          }
+          ...nodeRecord.state.connection,
+          status: "idle",
+          streaming: false,
+          lastHeartbeatAt: now,
+          lastOutputAt: now
+        }
         : undefined;
+      const summary = wasRunning ? "interrupted" : "paused";
       nodeRecord.state = {
         ...nodeRecord.state,
         status: "idle",
@@ -742,6 +938,64 @@ export class Runtime {
         patch: {
           status: "idle",
           summary,
+          lastActivityAt: now,
+          connection
+        }
+      });
+      if (wasRunning && this.runner.interruptNode) {
+        this.runner.interruptNode(nodeId).catch((error) => {
+          console.error("failed to interrupt node session", {
+            nodeId,
+            runId: record.state.id,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        });
+      }
+    }
+  }
+
+  private resumeInterruptedNodes(record: RunRecord): void {
+    for (const nodeRecord of record.nodes.values()) {
+      const nodeId = nodeRecord.state.id;
+      if (!nodeRecord.runtime.wasInterrupted) {
+        continue;
+      }
+      nodeRecord.runtime.wasInterrupted = false;
+      this.postMessage(record.state.id, nodeId, "Continue.", true);
+    }
+  }
+
+  private stopRun(record: RunRecord, now: string): void {
+    for (const nodeRecord of record.nodes.values()) {
+      const nodeId = nodeRecord.state.id;
+      nodeRecord.runtime.pendingTurn = false;
+      nodeRecord.runtime.wasInterrupted = false;
+      const connection = nodeRecord.state.connection
+        ? {
+          ...nodeRecord.state.connection,
+          status: "disconnected",
+          streaming: false,
+          lastHeartbeatAt: now,
+          lastOutputAt: now
+        }
+        : undefined;
+      nodeRecord.state = {
+        ...nodeRecord.state,
+        status: "idle",
+        summary: "stopped",
+        lastActivityAt: now,
+        connection
+      };
+      record.state.nodes[nodeId] = nodeRecord.state;
+      this.emitEvent(record.state.id, {
+        id: newId(),
+        runId: record.state.id,
+        ts: now,
+        type: "node.patch",
+        nodeId,
+        patch: {
+          status: "idle",
+          summary: "stopped",
           lastActivityAt: now,
           connection
         }

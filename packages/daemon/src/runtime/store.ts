@@ -16,6 +16,7 @@ export interface NodeRuntime {
   queuedMessages: UserMessageRecord[];
   pendingTurn: boolean;
   cancelRequested: boolean;
+  wasInterrupted: boolean;
   lastOutputHash?: string;
   lastDiffHash?: string;
   lastVerificationFailure?: string;
@@ -88,6 +89,7 @@ export class RunStore {
         queuedMessages: [],
         pendingTurn: false,
         cancelRequested: false,
+        wasInterrupted: false,
         summaryHistory: [],
         outputRepeatCount: 0,
         diffRepeatCount: 0,
