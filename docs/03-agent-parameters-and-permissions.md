@@ -50,6 +50,10 @@ Each node has a resolved configuration snapshot at creation time. Changes are al
 - **resume**: Whether the provider should resume prior sessions (default: true).
 - **resetCommands**: Commands that the runtime can send to clear context (e.g., `/new`, `/clear`).
 
+Note: stream-json CLI providers are stateless by default; set `VUHLP_<PROVIDER>_STATEFUL_STREAMING=1` to keep the process alive between turns.
+For per-turn resume/continue, set `VUHLP_<PROVIDER>_RESUME_ARGS` (and optional `VUHLP_<PROVIDER>_REPLAY_TURNS` for transcript replay fallback). If unset, vuhlp defaults to `--continue` for Claude.
+When `cliPermissionsMode=skip`, vuhlp adds provider skip flags (`--dangerously-skip-permissions` for Claude, `--yolo` for Gemini) if they are not already present.
+
 ### 3) Capabilities (opt-in)
 Capabilities determine what the agent is allowed to do. They are enforced by the runtime and the UI.
 
@@ -117,6 +121,7 @@ The UI must expose a clear “reset context” action for each node.
 
 - If the provider supports session reset via command, send the command.
 - If not, start a new session and drop the old one.
+- Reset clears queued messages and skips resume/continue for the next turn to ensure a fresh session.
 - Reset actions must be logged as events.
 
 ## Diff visibility (non-negotiable)

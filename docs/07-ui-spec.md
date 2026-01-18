@@ -53,6 +53,7 @@ The inspector must show, per node:
 - Tool usage events.
 - Connection properties (edges + labels).
 - Controls: interrupt, queue message, reset context.
+- Typing `/new` or `/clear` in chat triggers reset context (clears chat + starts a fresh session).
 
 ## Node card requirements
 Each node card must show:
