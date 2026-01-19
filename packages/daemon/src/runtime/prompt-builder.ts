@@ -38,6 +38,10 @@ export interface PromptBuildResult {
   delta: string;
 }
 
+export interface PromptBuildOptions {
+  toolProtocol?: string;
+}
+
 export class PromptBuilder {
   private readonly repoRoot: string;
   private readonly systemTemplatesDir?: string;
@@ -48,8 +52,8 @@ export class PromptBuilder {
     this.systemTemplatesDir = systemTemplatesDir;
   }
 
-  async build(input: TurnInput): Promise<PromptBuildResult> {
-    const system = SYSTEM_CONTEXT;
+  async build(input: TurnInput, options: PromptBuildOptions = {}): Promise<PromptBuildResult> {
+    const system = [SYSTEM_CONTEXT, options.toolProtocol].filter(Boolean).join("\n\n");
     const role = await this.loadRoleTemplate(input);
     const mode = MODE_PREAMBLE[input.run.globalMode];
     const task = this.buildTaskPayload(input);

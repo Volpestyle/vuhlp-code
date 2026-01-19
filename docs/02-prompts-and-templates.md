@@ -118,6 +118,18 @@ Spawning nodes and using high-risk tools should be opt-in per node. A node can o
 - The node settings allow it.
 - The user approves (required for all non-orchestrator nodes; optional for orchestrator by policy).
 
+## CLI tool protocol (fallback)
+When a CLI transport lacks native tool calling, agents request tools by emitting a single-line JSON object in their response. The runtime parses the line, executes the tool, and emits tool events for visibility.
+
+```
+{"tool_call":{"id":"uuid","name":"spawn_node","args":{"label":"Docs Agent","roleTemplate":"planner"}}}
+```
+
+Rules:
+- One tool call per line.
+- Do not wrap tool_call JSON in markdown or code fences.
+- Only emit tool_call JSON when invoking a tool (never in examples).
+
 ## Prompt logging requirements
 Every prompt sent to a provider must be logged as an artifact:
 - Full prompt string

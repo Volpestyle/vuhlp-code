@@ -5,12 +5,14 @@ import type {
   NodeState,
   PromptArtifacts,
   ProviderName,
+  ToolCall,
   UserMessageRecord,
   UUID
 } from "@vuhlp/contracts";
 import {
   ConsoleLogger,
   createProviderAdapter,
+  executeToolCall,
   resolvePermissionsMode,
   type ApiProviderConfig,
   type CliProviderConfig,
@@ -21,7 +23,8 @@ import {
   type ProviderConfig,
   type ProviderProtocol,
   type SpawnNodeRequest,
-  type SpawnNodeResult
+  type SpawnNodeResult,
+  type ToolExecutionResult
 } from "@vuhlp/providers";
 import { AsyncQueue } from "./async-queue.js";
 import { PromptBuilder } from "./prompt-builder.js";
@@ -47,6 +50,10 @@ interface PendingTurn {
   partialOutput: string;
   promptLogged: boolean;
   inputMessages: UserMessageRecord[];
+  toolQueue?: ToolCall[];
+  toolMessage?: string;
+  toolErrors?: string[];
+  toolProposed?: boolean;
 }
 
 interface ProviderSession {
@@ -73,6 +80,15 @@ type TurnSignal =
   | { type: "approval.requested"; approval: ApprovalRequest }
   | { type: "error"; error: Error };
 
+const CLI_TOOL_PROTOCOL = [
+  "Tool calls (CLI protocol):",
+  "If function calling is unavailable, request tools by emitting a single-line JSON object:",
+  "{\"tool_call\":{\"id\":\"<uuid>\",\"name\":\"<tool>\",\"args\":{...}}}",
+  "Do not wrap the JSON in markdown. One tool call per line.",
+  "Only emit tool_call JSON when invoking a tool; do not include it in examples.",
+  "Available tools: command, read_file, write_file, list_files, delete_file, spawn_node, create_edge."
+].join("\n");
+
 export interface CliRunnerOptions {
   repoRoot: string;
   emitEvent: (runId: UUID, event: EventEnvelope) => void;
@@ -85,6 +101,7 @@ export interface CliRunnerOptions {
 export class CliRunner implements NodeRunner {
   private readonly sessions = new Map<UUID, ProviderSession>();
   private readonly pendingApprovals = new Map<UUID, UUID>();
+  private readonly pendingToolResolutions = new Map<UUID, ApprovalResolution>();
   private readonly promptBuilder: PromptBuilder;
   private readonly emitEvent: (runId: UUID, event: EventEnvelope) => void;
   private readonly logger: Logger;
@@ -120,7 +137,8 @@ export class CliRunner implements NodeRunner {
     }
 
     const promptInput = this.injectReplayMessages(input, session);
-    const prompt = await this.promptBuilder.build(promptInput);
+    const toolProtocol = session.config.transport === "cli" ? CLI_TOOL_PROTOCOL : undefined;
+    const prompt = await this.promptBuilder.build(promptInput, { toolProtocol });
     const promptHeaderHash = this.buildPromptHeaderHash(prompt.artifacts);
     const promptKind = this.resolvePromptKind(session, promptHeaderHash);
     const promptPayload = promptKind === "full" ? prompt.artifacts.full : prompt.delta;
@@ -201,6 +219,9 @@ export class CliRunner implements NodeRunner {
   }
 
   async resolveApproval(approvalId: UUID, resolution: ApprovalResolution): Promise<void> {
+    if (this.resolveToolApproval(approvalId, resolution)) {
+      return;
+    }
     const nodeId = this.pendingApprovals.get(approvalId);
     if (!nodeId) {
       this.logger.warn("approval resolution without active session", { approvalId });
@@ -305,7 +326,10 @@ export class CliRunner implements NodeRunner {
 
     session.interrupted = false;
     session.activeTurn = pending;
-    const outcome = await this.waitForOutcome(session, pending);
+    const outcome =
+      pending.toolQueue && pending.toolQueue.length > 0
+        ? await this.processToolQueue(session, pending)
+        : await this.waitForOutcome(session, pending);
     session.activeTurn = undefined;
     if (outcome.kind === "blocked") {
       this.pendingApprovals.set(outcome.approval.approvalId, input.node.id);
@@ -371,8 +395,15 @@ export class CliRunner implements NodeRunner {
       }
       if (signal.type === "message.assistant.final") {
         const message = signal.content.trim().length > 0 ? signal.content : pending.partialOutput;
-        const summary = this.summarize(message);
-        return { kind: "completed", message, summary };
+        const extracted = this.extractToolCalls(message);
+        if (extracted.toolCalls.length > 0) {
+          pending.toolQueue = extracted.toolCalls;
+          pending.toolMessage = extracted.message;
+          pending.toolErrors = [];
+          return this.processToolQueue(session, pending);
+        }
+        const summary = this.summarize(extracted.message);
+        return { kind: "completed", message: extracted.message, summary };
       }
       if (signal.type === "interrupted") {
         return { kind: "interrupted", message: pending.partialOutput, summary: "interrupted" };
@@ -471,6 +502,285 @@ export class CliRunner implements NodeRunner {
     if (maxMessages > 0 && session.transcript.length > maxMessages) {
       session.transcript = session.transcript.slice(-maxMessages);
     }
+  }
+
+  private resolveToolApproval(approvalId: UUID, resolution: ApprovalResolution): boolean {
+    const session = this.findSessionWithToolApproval(approvalId);
+    if (!session) {
+      return false;
+    }
+    if (this.pendingToolResolutions.has(approvalId)) {
+      return true;
+    }
+    this.pendingToolResolutions.set(approvalId, resolution);
+    this.pendingApprovals.delete(approvalId);
+    this.logger.info("tool approval resolved", {
+      approvalId,
+      nodeId: session.config.nodeId,
+      status: resolution.status
+    });
+    return true;
+  }
+
+  private findSessionWithToolApproval(approvalId: UUID): ProviderSession | null {
+    for (const session of this.sessions.values()) {
+      const pending = session.pendingTurn;
+      if (pending?.toolQueue?.some((tool) => tool.id === approvalId)) {
+        return session;
+      }
+      const active = session.activeTurn;
+      if (active?.toolQueue?.some((tool) => tool.id === approvalId)) {
+        return session;
+      }
+    }
+    return null;
+  }
+
+  private extractToolCalls(message: string): { message: string; toolCalls: ToolCall[] } {
+    const lines = message.split("\n");
+    const toolCalls: ToolCall[] = [];
+    const keptLines: string[] = [];
+
+    for (const line of lines) {
+      const toolCall = this.parseToolCallLine(line);
+      if (toolCall) {
+        toolCalls.push(toolCall);
+        continue;
+      }
+      keptLines.push(line);
+    }
+
+    if (toolCalls.length === 0) {
+      return { message, toolCalls };
+    }
+
+    return { message: keptLines.join("\n").trim(), toolCalls };
+  }
+
+  private parseToolCallLine(line: string): ToolCall | null {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+      return null;
+    }
+    if (!trimmed.includes("\"tool_call\"") && !trimmed.includes("\"toolCall\"")) {
+      return null;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch (error) {
+      this.logger.warn("failed to parse tool call JSON", { message: String(error) });
+      return null;
+    }
+    if (!this.isRecord(parsed)) {
+      return null;
+    }
+    const container = this.isRecord(parsed.tool_call)
+      ? parsed.tool_call
+      : this.isRecord(parsed.toolCall)
+        ? parsed.toolCall
+        : null;
+    if (!container) {
+      return null;
+    }
+    const name = typeof container.name === "string" ? container.name.trim() : "";
+    const args = this.isRecord(container.args) ? container.args : null;
+    const idValue = typeof container.id === "string" ? container.id.trim() : "";
+    const id = idValue.length > 0 ? idValue : newId();
+    if (!name || !args) {
+      return null;
+    }
+    return { id, name, args };
+  }
+
+  private async processToolQueue(
+    session: ProviderSession,
+    pending: PendingTurn
+  ): Promise<
+    | { kind: "completed"; message: string; summary: string }
+    | { kind: "blocked"; approval: ApprovalRequest; summary: string }
+    | { kind: "failed"; error: string; summary: string }
+  > {
+    const toolQueue = pending.toolQueue ?? [];
+    const baseMessage = pending.toolMessage ?? pending.partialOutput;
+    const toolErrors = pending.toolErrors ?? [];
+    pending.toolErrors = toolErrors;
+
+    if (!pending.toolProposed) {
+      for (const tool of toolQueue) {
+        this.emitToolProposed(session, tool);
+      }
+      pending.toolProposed = true;
+    }
+
+    if (toolQueue.length === 0) {
+      const message = this.appendToolErrors(baseMessage, toolErrors);
+      return { kind: "completed", message, summary: this.summarize(message) };
+    }
+
+    const toolOptions = this.buildToolExecutionOptions(session);
+
+    while (toolQueue.length > 0) {
+      let tool = toolQueue[0];
+      if (this.requiresToolApproval(session, tool)) {
+        const resolution = this.pendingToolResolutions.get(tool.id);
+        if (!resolution) {
+          this.logger.info("tool approval required", {
+            nodeId: session.config.nodeId,
+            tool: tool.name,
+            toolId: tool.id
+          });
+          return {
+            kind: "blocked",
+            approval: this.buildApprovalRequest(session, tool),
+            summary: `approval required: ${tool.name}`
+          };
+        }
+        this.pendingToolResolutions.delete(tool.id);
+        if (resolution.status === "denied") {
+          const errorMessage = "Tool denied by user";
+          this.emitToolCompleted(session, tool.id, { ok: false }, errorMessage);
+          toolErrors.push(`${tool.name}: ${errorMessage}`);
+          break;
+        }
+        if (resolution.status === "modified" && resolution.modifiedArgs) {
+          tool = { ...tool, args: resolution.modifiedArgs };
+          toolQueue[0] = tool;
+        }
+      }
+
+      this.emitToolStarted(session, tool);
+      this.logger.info("tool execution started", { nodeId: session.config.nodeId, tool: tool.name, toolId: tool.id });
+      let result: ToolExecutionResult;
+      try {
+        result = await executeToolCall(tool, toolOptions);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error("tool execution failed", { nodeId: session.config.nodeId, tool: tool.name, toolId: tool.id, message });
+        return { kind: "failed", summary: "Tool execution failed", error: message };
+      }
+      this.emitToolCompleted(session, tool.id, result, result.error);
+      this.logger.info("tool execution completed", {
+        nodeId: session.config.nodeId,
+        tool: tool.name,
+        toolId: tool.id,
+        ok: result.ok
+      });
+      if (!result.ok) {
+        const errorMessage = result.error ?? "tool failed";
+        toolErrors.push(`${tool.name}: ${errorMessage}`);
+      }
+      toolQueue.shift();
+    }
+
+    pending.toolQueue = undefined;
+    pending.toolMessage = undefined;
+    pending.toolErrors = undefined;
+    pending.toolProposed = undefined;
+
+    const message = this.appendToolErrors(baseMessage, toolErrors);
+    return { kind: "completed", message, summary: this.summarize(message) };
+  }
+
+  private buildToolExecutionOptions(session: ProviderSession) {
+    return {
+      cwd: session.config.cwd ?? this.repoRoot,
+      capabilities: session.config.capabilities,
+      globalMode: session.config.globalMode,
+      defaultProvider: session.config.provider,
+      spawnNode: session.config.spawnNode,
+      createEdge: session.config.createEdge,
+      logger: this.logger
+    };
+  }
+
+  private requiresToolApproval(session: ProviderSession, tool: ToolCall): boolean {
+    if (session.config.permissionsMode === "gated") {
+      return true;
+    }
+    return tool.name === "spawn_node" && session.config.spawnRequiresApproval === true;
+  }
+
+  private buildApprovalRequest(session: ProviderSession, tool: ToolCall): ApprovalRequest {
+    return {
+      approvalId: tool.id,
+      nodeId: session.config.nodeId,
+      tool,
+      context: this.buildApprovalContext(tool)
+    };
+  }
+
+  private buildApprovalContext(tool: ToolCall): string | undefined {
+    const args = tool.args ?? {};
+    if (tool.name === "spawn_node") {
+      const label = typeof args.label === "string" ? args.label : "unnamed";
+      const role =
+        typeof args.roleTemplate === "string"
+          ? args.roleTemplate
+          : typeof args.role === "string"
+            ? args.role
+            : "unknown";
+      return `Spawn node: ${label} (${role})`;
+    }
+    if (tool.name === "create_edge") {
+      const from = typeof args.from === "string" ? args.from : "unknown";
+      const to = typeof args.to === "string" ? args.to : "unknown";
+      const type = typeof args.type === "string" ? args.type : "handoff";
+      return `Create edge: ${from} -> ${to} (${type})`;
+    }
+    return undefined;
+  }
+
+  private emitToolProposed(session: ProviderSession, tool: ToolCall): void {
+    this.emitEvent(session.config.runId, {
+      id: newId(),
+      runId: session.config.runId,
+      ts: nowIso(),
+      type: "tool.proposed",
+      nodeId: session.config.nodeId,
+      tool
+    });
+  }
+
+  private emitToolStarted(session: ProviderSession, tool: ToolCall): void {
+    this.emitEvent(session.config.runId, {
+      id: newId(),
+      runId: session.config.runId,
+      ts: nowIso(),
+      type: "tool.started",
+      nodeId: session.config.nodeId,
+      tool
+    });
+  }
+
+  private emitToolCompleted(
+    session: ProviderSession,
+    toolId: UUID,
+    result: { ok: boolean; output?: string | object },
+    errorMessage?: string
+  ): void {
+    this.emitEvent(session.config.runId, {
+      id: newId(),
+      runId: session.config.runId,
+      ts: nowIso(),
+      type: "tool.completed",
+      nodeId: session.config.nodeId,
+      toolId,
+      result,
+      error: errorMessage ? { message: errorMessage } : undefined
+    });
+  }
+
+  private appendToolErrors(message: string, toolErrors: string[]): string {
+    if (toolErrors.length === 0) {
+      return message;
+    }
+    const prefix = message.trim().length > 0 ? `${message}\n\n` : "";
+    return `${prefix}Tool errors:\n${toolErrors.map((error) => `- ${error}`).join("\n")}`;
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
   private applyCliPermissionFlags(config: CliProviderConfig): CliProviderConfig {
