@@ -1,2 +1,3 @@
 packages:
   - "packages/*"
+  - "../vuhlp-ui/packages/*"

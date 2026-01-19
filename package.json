@@ -7,8 +7,15 @@
   ],
   "scripts": {
     "dev": "pnpm --filter @vuhlp/daemon dev",
-    "dev:ui": "pnpm --filter @vuhlp/ui dev",
+    "dev:ui": "pnpm --parallel --filter @vuhlp/spinners --filter @vuhlp/ui dev",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint"
+  },
+  "pnpm": {
+    "overrides": {
+      "@types/three": "0.182.0",
+      "react": "19.1.0",
+      "react-dom": "19.1.0"
+    }
   }
 }
