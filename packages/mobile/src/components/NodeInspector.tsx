@@ -25,7 +25,7 @@ import {
 } from '@/stores/graph-store';
 import { api } from '@/lib/api';
 import { useChatAutoScroll } from '@/lib/useChatAutoScroll';
-import { ThinkingSpinner } from '@/components/ThinkingSpinner';
+import { ThinkingSpinner } from '@vuhlp/spinners/native';
 import { MarkdownMessage } from '@/components/MarkdownMessage';
 import { colors, getStatusColor, fontFamily } from '@/lib/theme';
 import { createLocalId } from '@/lib/ids';
