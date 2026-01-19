@@ -208,11 +208,11 @@ export function FullscreenChat({
 
               if (node.status === 'running' && !isStreamingMessage) {
                 return (
-                  <div className="timeline-message timeline-message--assistant timeline-message--streaming">
+                  <div className="timeline-message timeline-message--assistant timeline-message--thinking">
                     <div className="timeline-message__header">
                       <span className="timeline-message__role">assistant</span>
                       <div className="timeline-message__meta">
-                        <span className="timeline-message__streaming">
+                        <span className="timeline-message__streaming timeline-message__streaming--thinking">
                           <ThinkingSpinner size="sm" />
                           thinking
                         </span>

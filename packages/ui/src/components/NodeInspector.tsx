@@ -673,7 +673,7 @@ export function NodeInspector({ node }: NodeInspectorProps) {
           {messageError && <div className="inspector__error">{messageError}</div>}
           <div className="inspector__message-actions">
             <button
-              className="inspector__btn inspector__btn--secondary"
+              className="btn btn--secondary"
               onClick={() => handleSendMessage(false)}
               disabled={!messageInput.trim()}
               title="Queue message for next turn"
@@ -681,7 +681,7 @@ export function NodeInspector({ node }: NodeInspectorProps) {
               Queue
             </button>
             <button
-              className="inspector__btn inspector__btn--primary"
+              className="btn btn--primary"
               onClick={() => handleSendMessage(true)}
               disabled={!messageInput.trim()}
               title="Interrupt and send immediately"
@@ -734,7 +734,7 @@ function ChatTab({
         <TimelineItem key={`${item.type}-${item.data.id}`} item={item} />
       ))}
       {nodeStatus === 'running' && !isStreaming && (
-        <div className="timeline-message timeline-message--assistant timeline-message--streaming">
+        <div className="timeline-message timeline-message--assistant timeline-message--thinking">
           <div className="timeline-message__header">
             <span className="timeline-message__role">assistant</span>
             <div className="timeline-message__meta">

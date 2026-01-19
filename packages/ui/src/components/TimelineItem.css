@@ -91,25 +91,26 @@
   color: #c4a67a; /* Warning/blocked color */
 }
 
-/* Thinking state */
-.timeline-message--thinking {
-  border-left: 2px solid var(--color-accent);
+/* Streaming state (content output) */
+.timeline-message--streaming {
+  border-left: 2px solid #c0b8e6;
   padding-left: calc(var(--space-3) - 2px);
 }
 
-.timeline-message__streaming--thinking {
-  color: #c0b8e6;
-  font-weight: 500;
+/* Thinking state */
+.timeline-message--thinking {
+  border-left: 2px solid #4de6a8;
+  padding-left: calc(var(--space-3) - 2px);
 }
 
 .timeline-message__thinking--active {
-  border-color: #c0b8e6;
-  background: rgba(192, 184, 230, 0.05);
+  border-color: #4de6a8;
+  background: rgba(77, 230, 168, 0.05);
 }
 
 .timeline-message__thinking--active .timeline-message__thinking-toggle {
   background: transparent;
-  color: #c0b8e6;
+  color: #4de6a8;
 }
 
 /* Pending state */
@@ -189,7 +190,12 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: var(--color-accent);
+  color: #c0b8e6; /* Lavender for streaming */
+}
+
+.timeline-message__streaming--thinking {
+  color: #4de6a8; /* Green for thinking */
+  font-weight: 500;
 }
 
 .timeline-message__streaming-dot {
