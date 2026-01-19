@@ -48,7 +48,7 @@ export type CliPermissionsMode = "skip" | "gated";
 
 export interface NodePermissions {
   cliPermissionsMode: CliPermissionsMode;
-  spawnRequiresApproval: boolean;
+  agentManagementRequiresApproval: boolean;
 }
 
 export interface NodeSession {
@@ -74,6 +74,7 @@ export interface NodeState {
   id: UUID;
   runId: UUID;
   label: string;
+  alias?: string;
   roleTemplate: string;
   customSystemPrompt?: string | null;
   provider: ProviderName;
@@ -91,6 +92,7 @@ export interface NodeState {
 export interface NodeConfig {
   id?: UUID;
   label: string;
+  alias?: string;
   provider: ProviderName;
   roleTemplate: string;
   customSystemPrompt?: string | null;
@@ -102,6 +104,7 @@ export interface NodeConfig {
 export interface NodeConfigInput {
   id?: UUID;
   label: string;
+  alias?: string;
   provider: ProviderName;
   roleTemplate: string;
   customSystemPrompt?: string | null;
@@ -145,11 +148,19 @@ export interface HandoffStatus {
   reason?: string;
 }
 
+export type HandoffResponseExpectation = "none" | "optional" | "required";
+
+export interface HandoffResponse {
+  expectation: HandoffResponseExpectation;
+  replyTo?: UUID;
+}
+
 export interface HandoffPayload {
   message: string;
   structured?: Record<string, unknown>;
   artifacts?: ArtifactRef[];
   status?: HandoffStatus;
+  response?: HandoffResponse;
 }
 
 export type EnvelopeKind = "handoff" | "signal";

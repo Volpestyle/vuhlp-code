@@ -148,6 +148,7 @@ export interface MessageAssistantFinalEvent extends BaseEvent {
   nodeId: UUID;
   content: string;
   status?: "final" | "interrupted";
+  toolCalls?: ToolCall[];
 }
 
 export interface MessageAssistantThinkingDeltaEvent extends BaseEvent {

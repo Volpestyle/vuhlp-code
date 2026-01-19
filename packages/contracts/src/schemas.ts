@@ -44,6 +44,7 @@ export const nodeStateSchema = {
     id: { type: "string" },
     runId: { type: "string" },
     label: { type: "string" },
+    alias: { type: "string" },
     roleTemplate: { type: "string" },
     customSystemPrompt: { type: ["string", "null"] },
     provider: { type: "string" },
@@ -64,10 +65,10 @@ export const nodeStateSchema = {
     },
     permissions: {
       type: "object",
-      required: ["cliPermissionsMode", "spawnRequiresApproval"],
+      required: ["cliPermissionsMode", "agentManagementRequiresApproval"],
       properties: {
         cliPermissionsMode: { type: "string", enum: ["skip", "gated"] },
-        spawnRequiresApproval: { type: "boolean" }
+        agentManagementRequiresApproval: { type: "boolean" }
       }
     },
     session: {
@@ -196,6 +197,14 @@ export const envelopeSchema = {
             ok: { type: "boolean" },
             reason: { type: "string" }
           }
+        },
+        response: {
+          type: "object",
+          properties: {
+            expectation: { type: "string", enum: ["none", "optional", "required"] },
+            replyTo: { type: "string" }
+          },
+          required: ["expectation"]
         }
       }
     },
