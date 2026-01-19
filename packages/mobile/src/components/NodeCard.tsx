@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, memo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -7,28 +7,40 @@ import Animated, {
   runOnJS,
 } from 'react-native-reanimated';
 import type { VisualNode, Point } from '@/stores/graph-store';
+import { colors, getStatusColor, getProviderColors, fontFamily } from '@/lib/theme';
+
+const PROVIDER_LABELS: Record<string, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  gemini: 'Gemini',
+  custom: 'Custom',
+};
 
 interface NodeCardProps {
   node: VisualNode;
   viewportZoom: number;
-  onPress: () => void;
-  onDrag: (x: number, y: number) => void;
+  onPress: (nodeId: string) => void;
+  onDrag: (nodeId: string, x: number, y: number) => void;
   onPortDragStart: (nodeId: string, portIndex: number, point: Point) => void;
   onPortDragMove: (point: Point) => void;
   onPortDragEnd: (targetNodeId: string | null, targetPortIndex: number | null) => void;
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  idle: '#6b7280',
-  running: '#22c55e',
-  blocked: '#eab308',
-  failed: '#ef4444',
-};
-
 const PORT_SIZE = 16;
 const PORT_HIT_SLOP = 12;
 
-export function NodeCard({
+function formatTime(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+
+  if (diffSec < 60) return `${diffSec}s ago`;
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+}
+
+export const NodeCard = memo(function NodeCard({
   node,
   viewportZoom,
   onPress,
@@ -37,8 +49,10 @@ export function NodeCard({
   onPortDragMove,
   onPortDragEnd,
 }: NodeCardProps) {
-  const { position, dimensions, status, label, summary, selected } = node;
+  const { position, dimensions, status, label, summary, selected, provider, roleTemplate, lastActivityAt } = node;
   const effectiveZoom = Math.max(0.1, viewportZoom);
+
+  const providerColors = useMemo(() => getProviderColors(provider), [provider]);
 
   const translateX = useSharedValue(position.x);
   const translateY = useSharedValue(position.y);
@@ -47,12 +61,12 @@ export function NodeCard({
   const isDragging = useSharedValue(false);
 
   // Calculate port positions relative to node
-  const ports = [
+  const ports = useMemo(() => [
     { x: dimensions.width / 2 - PORT_SIZE / 2, y: -PORT_SIZE / 2, index: 0 }, // top
     { x: dimensions.width - PORT_SIZE / 2, y: dimensions.height / 2 - PORT_SIZE / 2, index: 1 }, // right
     { x: dimensions.width / 2 - PORT_SIZE / 2, y: dimensions.height - PORT_SIZE / 2, index: 2 }, // bottom
     { x: -PORT_SIZE / 2, y: dimensions.height / 2 - PORT_SIZE / 2, index: 3 }, // left
-  ];
+  ], [dimensions.width, dimensions.height]);
 
   // Sync position changes from store
   useEffect(() => {
@@ -63,10 +77,14 @@ export function NodeCard({
 
   const handleDragEnd = useCallback(
     (x: number, y: number) => {
-      onDrag(x, y);
+      onDrag(node.id, x, y);
     },
-    [onDrag]
+    [onDrag, node.id]
   );
+
+  const handlePress = useCallback(() => {
+    onPress(node.id);
+  }, [onPress, node.id]);
 
   const dragGesture = Gesture.Pan()
     .maxPointers(1)
@@ -75,8 +93,7 @@ export function NodeCard({
       const touch = event?.changedTouches?.[0];
       if (!touch) return;
       const hitRadius = PORT_SIZE / 2 + PORT_HIT_SLOP;
-      for (let i = 0; i < ports.length; i += 1) {
-        const port = ports[i];
+      for (const port of ports) {
         const centerX = port.x + PORT_SIZE / 2;
         const centerY = port.y + PORT_SIZE / 2;
         if (Math.abs(touch.x - centerX) <= hitRadius && Math.abs(touch.y - centerY) <= hitRadius) {
@@ -95,7 +112,7 @@ export function NodeCard({
       const nextY = savedY.value + e.translationY / effectiveZoom;
       translateX.value = nextX;
       translateY.value = nextY;
-      runOnJS(onDrag)(nextX, nextY);
+      runOnJS(onDrag)(node.id, nextX, nextY);
     })
     .onEnd(() => {
       runOnJS(handleDragEnd)(translateX.value, translateY.value);
@@ -105,7 +122,7 @@ export function NodeCard({
     });
 
   const tapGesture = Gesture.Tap().onEnd(() => {
-    runOnJS(onPress)();
+    runOnJS(handlePress)();
   });
 
   const composedGesture = Gesture.Race(dragGesture, tapGesture);
@@ -117,7 +134,7 @@ export function NodeCard({
     ],
   }));
 
-  const statusColor = STATUS_COLORS[status] ?? STATUS_COLORS.idle;
+  const statusColor = getStatusColor(status);
 
   return (
     <GestureDetector gesture={composedGesture}>
@@ -127,34 +144,68 @@ export function NodeCard({
           {
             width: dimensions.width,
             height: dimensions.height,
-            borderColor: selected ? '#3b82f6' : '#2a2a2a',
+            borderColor: selected ? colors.accent : colors.borderStrong,
           },
           animatedStyle,
         ]}
       >
+        {/* Left border accent */}
+        <View style={[styles.leftBorder, { backgroundColor: statusColor }]} />
+
+        {/* Header: Provider badge + role */}
         <View style={styles.header}>
-          <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-          <Text style={styles.label} numberOfLines={1}>
-            {label}
+          <View
+            style={[
+              styles.providerBadge,
+              {
+                backgroundColor: providerColors.bg,
+                borderColor: providerColors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.providerText, { color: providerColors.text }]}>
+              {PROVIDER_LABELS[provider] ?? 'Custom'}
+            </Text>
+          </View>
+          <Text style={styles.roleTemplate} numberOfLines={1}>
+            {roleTemplate}
           </Text>
         </View>
 
-        <Text style={styles.roleTemplate} numberOfLines={1}>
-          {node.roleTemplate}
+        {/* Title */}
+        <Text style={styles.title} numberOfLines={1}>
+          {label}
         </Text>
 
-        <Text style={styles.summary} numberOfLines={3}>
-          {summary || 'No activity'}
+        {/* Summary */}
+        <Text style={styles.summary} numberOfLines={2}>
+          {summary || 'Waiting...'}
         </Text>
 
+        {/* Footer: Status badge + timestamp */}
         <View style={styles.footer}>
-          <Text style={styles.status}>{status}</Text>
-          {node.inboxCount !== undefined && node.inboxCount > 0 && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{node.inboxCount}</Text>
-            </View>
-          )}
+          <View style={styles.statusBadge}>
+            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+            <Text style={[styles.statusText, status !== 'idle' && { color: statusColor }]}>
+              {status}
+            </Text>
+          </View>
+          <Text style={styles.timestamp}>{formatTime(lastActivityAt)}</Text>
         </View>
+
+        {/* Streaming indicator */}
+        {node.connection?.streaming && (
+          <View style={styles.streamingIndicator}>
+            <View style={styles.streamingDot} />
+          </View>
+        )}
+
+        {/* Inbox badge */}
+        {node.inboxCount !== undefined && node.inboxCount > 0 && (
+          <View style={styles.inboxBadge}>
+            <Text style={styles.inboxText}>{node.inboxCount}</Text>
+          </View>
+        )}
 
         {/* Connection ports */}
         {ports.map((port) => (
@@ -174,7 +225,7 @@ export function NodeCard({
       </Animated.View>
     </GestureDetector>
   );
-}
+});
 
 interface PortProps {
   nodeId: string;
@@ -259,61 +310,124 @@ function Port({
 const styles = StyleSheet.create({
   card: {
     position: 'absolute',
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-    borderWidth: 2,
+    backgroundColor: colors.bgElevated,
+    borderRadius: 6,
+    borderWidth: 1,
     padding: 12,
+    paddingLeft: 15, // Extra padding for left border
+    overflow: 'hidden',
+  },
+  leftBorder: {
+    position: 'absolute',
+    left: 0,
+    top: 8,
+    bottom: 8,
+    width: 3,
+    borderRadius: 1,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 4,
+    marginBottom: 8,
   },
-  statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+  providerBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 2,
+    borderWidth: 1,
   },
-  label: {
-    flex: 1,
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+  providerText: {
+    fontSize: 10,
+    fontFamily: fontFamily.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 1.6,
   },
   roleTemplate: {
-    color: '#666',
-    fontSize: 11,
-    fontStyle: 'italic',
+    flex: 1,
+    color: colors.textMuted,
+    fontSize: 10,
+    fontFamily: fontFamily.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 1.8,
+  },
+  title: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontFamily: fontFamily.semibold,
     marginBottom: 8,
   },
   summary: {
     flex: 1,
-    color: '#888',
-    fontSize: 12,
-    lineHeight: 16,
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: fontFamily.regular,
+    marginBottom: 12,
   },
   footer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 8,
   },
-  status: {
-    color: '#555',
-    fontSize: 10,
-    textTransform: 'uppercase',
-  },
-  badge: {
-    backgroundColor: '#3b82f6',
-    borderRadius: 10,
-    paddingHorizontal: 6,
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.bgSurface,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 2,
+    paddingHorizontal: 8,
     paddingVertical: 2,
   },
-  badgeText: {
-    color: '#fff',
+  statusDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+  },
+  statusText: {
+    color: colors.textMuted,
     fontSize: 10,
-    fontWeight: '600',
+    fontFamily: fontFamily.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 1.6,
+  },
+  timestamp: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontFamily: fontFamily.mono,
+    letterSpacing: 0.8,
+  },
+  streamingIndicator: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+  },
+  streamingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.statusRunning,
+  },
+  inboxBadge: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    backgroundColor: colors.accent,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  inboxText: {
+    color: colors.bgPrimary,
+    fontSize: 10,
+    fontFamily: fontFamily.semibold,
   },
   port: {
     position: 'absolute',
@@ -326,8 +440,8 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#333',
+    backgroundColor: colors.bgElevated,
     borderWidth: 2,
-    borderColor: '#555',
+    borderColor: colors.borderStrong,
   },
 });

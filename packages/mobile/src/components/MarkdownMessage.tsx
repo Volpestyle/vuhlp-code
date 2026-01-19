@@ -1,6 +1,7 @@
 import React, { memo, useMemo } from 'react';
 import { StyleSheet, View } from 'react-native';
-import Markdown, { type MarkdownProps } from 'react-native-markdown-display';
+import Markdown from 'react-native-markdown-display';
+import { colors } from '@/lib/theme';
 
 interface MarkdownMessageProps {
   children: string;
@@ -9,31 +10,31 @@ interface MarkdownMessageProps {
 export const MarkdownMessage = memo(function MarkdownMessage({
   children,
 }: MarkdownMessageProps) {
-  // Styles for the markdown renderer
+  // Styles for the markdown renderer - matching web UI warm cream tones
   const styles = useMemo(
     () =>
       StyleSheet.create({
         body: {
-          color: '#e5e5e5', // nearly white for readability on dark
+          color: colors.textPrimary,
           fontSize: 15,
           lineHeight: 22,
         },
         heading1: {
-          color: '#ffffff',
+          color: colors.textPrimary,
           fontSize: 22,
           fontWeight: '700',
           marginTop: 10,
           marginBottom: 10,
         },
         heading2: {
-          color: '#ffffff',
+          color: colors.textPrimary,
           fontSize: 20,
           fontWeight: '700',
           marginTop: 10,
           marginBottom: 10,
         },
         heading3: {
-          color: '#ffffff',
+          color: colors.textPrimary,
           fontSize: 18,
           fontWeight: '700',
           marginTop: 10,
@@ -49,7 +50,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({
           width: '100%',
         },
         link: {
-          color: '#60a5fa', // blue-400
+          color: colors.linkBlue,
           textDecorationLine: 'underline',
         },
         list_item: {
@@ -65,53 +66,53 @@ export const MarkdownMessage = memo(function MarkdownMessage({
           marginBottom: 10,
         },
         code_inline: {
-          backgroundColor: '#333',
-          color: '#efefef',
-          fontFamily: 'Menlo', // or monospace
+          backgroundColor: colors.bgElevated,
+          color: colors.textPrimary,
+          fontFamily: 'Menlo',
           borderRadius: 4,
           paddingHorizontal: 4,
           paddingVertical: 2,
         },
         fence: {
-          backgroundColor: '#2a2a2a',
-          color: '#efefef',
+          backgroundColor: colors.bgSecondary,
+          color: colors.textPrimary,
           fontFamily: 'Menlo',
           borderRadius: 8,
           padding: 10,
           marginTop: 10,
           marginBottom: 10,
           borderWidth: 1,
-          borderColor: '#444',
+          borderColor: colors.borderStrong,
         },
         blockquote: {
-          backgroundColor: '#2a2a2a',
+          backgroundColor: colors.bgSecondary,
           paddingHorizontal: 12,
           paddingVertical: 8,
           borderLeftWidth: 4,
-          borderLeftColor: '#444',
+          borderLeftColor: colors.accentDim,
           marginBottom: 10,
         },
         table: {
           borderWidth: 1,
-          borderColor: '#444',
+          borderColor: colors.borderStrong,
           borderRadius: 4,
         },
         tr: {
           borderBottomWidth: 1,
-          borderColor: '#444',
+          borderColor: colors.borderStrong,
           flexDirection: 'row',
         },
         th: {
           padding: 8,
           borderRightWidth: 1,
-          borderColor: '#444',
+          borderColor: colors.borderStrong,
           alignItems: 'center',
-          backgroundColor: '#333',
+          backgroundColor: colors.bgElevated,
         },
         td: {
           padding: 8,
           borderRightWidth: 1,
-          borderColor: '#444',
+          borderColor: colors.borderStrong,
         },
       }),
     []

@@ -5,11 +5,11 @@ import {
   StyleSheet,
   ScrollView,
   Pressable,
-  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useGraphStore, type PendingApproval } from '@/stores/graph-store';
 import { api } from '@/lib/api';
+import { colors, fontFamily } from '@/lib/theme';
 
 export function ApprovalQueue() {
   const insets = useSafeAreaInsets();
@@ -136,20 +136,20 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   badge: {
-    backgroundColor: '#ef4444',
+    backgroundColor: colors.statusBlocked,
     borderRadius: 10,
     paddingHorizontal: 8,
     paddingVertical: 2,
   },
   badgeText: {
-    color: '#fff',
+    color: colors.bgPrimary,
     fontSize: 12,
-    fontWeight: '700',
+    fontFamily: fontFamily.bold,
   },
   title: {
-    color: '#fff',
+    color: colors.textPrimary,
     fontSize: 14,
-    fontWeight: '600',
+    fontFamily: fontFamily.semibold,
   },
   list: {
     flexGrow: 0,
@@ -159,10 +159,10 @@ const styles = StyleSheet.create({
     paddingRight: 12,
   },
   card: {
-    backgroundColor: '#1a1a1a',
+    backgroundColor: colors.bgSurface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#ef4444',
+    borderColor: colors.statusBlocked,
     padding: 12,
     width: 260,
   },
@@ -173,23 +173,22 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   toolName: {
-    color: '#fff',
+    color: colors.textPrimary,
     fontSize: 14,
-    fontWeight: '600',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontFamily: fontFamily.mono,
   },
   nodeLabel: {
-    color: '#666',
+    color: colors.textMuted,
     fontSize: 12,
   },
   argsPreview: {
-    color: '#888',
+    color: colors.textSecondary,
     fontSize: 12,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontFamily: fontFamily.mono,
     marginBottom: 8,
   },
   context: {
-    color: '#888',
+    color: colors.textSecondary,
     fontSize: 12,
     marginBottom: 12,
   },
@@ -199,26 +198,38 @@ const styles = StyleSheet.create({
   },
   denyButton: {
     flex: 1,
-    backgroundColor: '#2a2a2a',
-    paddingVertical: 8,
-    borderRadius: 8,
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 6,
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
   },
   denyText: {
-    color: '#888',
+    color: colors.textSecondary,
     fontSize: 14,
-    fontWeight: '500',
+    fontFamily: fontFamily.semibold,
+    letterSpacing: 0.3,
   },
   approveButton: {
     flex: 1,
-    backgroundColor: '#22c55e',
-    paddingVertical: 8,
-    borderRadius: 8,
+    backgroundColor: colors.accent,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 6,
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
   },
   approveText: {
-    color: '#fff',
+    color: colors.bgPrimary,
     fontSize: 14,
-    fontWeight: '600',
+    fontFamily: fontFamily.semibold,
+    letterSpacing: 0.3,
   },
 });

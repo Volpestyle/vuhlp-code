@@ -1,17 +1,24 @@
 import type {
   CreateEdgeResponse,
   CreateNodeResponse,
+  CreateRunRequest,
+  CreateRunResponse,
   DeleteEdgeResponse,
   DeleteNodeResponse,
   EdgeState,
   GetRunResponse,
   ListRunsResponse,
+  NodeCapabilities,
+  NodePermissions,
+  NodeSessionConfig,
   PostChatResponse,
+  ProviderName,
   ResetNodeResponse,
   ResolveApprovalResponse,
   RunState,
   UpdateNodeResponse,
   UpdateRunResponse,
+  GetRunEventsResponse,
 } from '@vuhlp/contracts';
 
 // Configure this via environment or settings screen
@@ -36,7 +43,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  // Runs
+  // Sessions (Runs)
   listRuns: async () => {
     const { runs } = await request<ListRunsResponse>('/api/runs');
     return runs;
@@ -44,6 +51,20 @@ export const api = {
 
   getRun: async (runId: string) => {
     const { run } = await request<GetRunResponse>(`/api/runs/${runId}`);
+    return run;
+  },
+
+  getRunEvents: async (runId: string) => {
+    const { events } = await request<GetRunEventsResponse>(`/api/runs/${runId}/events`);
+    return events;
+  },
+
+  createRun: async (input?: CreateRunRequest) => {
+    const body: CreateRunRequest = input ?? {};
+    const { run } = await request<CreateRunResponse>('/api/runs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
     return run;
   },
 
@@ -56,7 +77,17 @@ export const api = {
   },
 
   // Nodes
-  createNode: async (runId: string, node: { label: string; provider: string; roleTemplate: string }) => {
+  createNode: async (
+    runId: string,
+    node: {
+      label: string;
+      provider: ProviderName;
+      roleTemplate: string;
+      capabilities?: Partial<NodeCapabilities>;
+      permissions?: Partial<NodePermissions>;
+      session?: Partial<NodeSessionConfig>;
+    }
+  ) => {
     const { node: createdNode } = await request<CreateNodeResponse>(`/api/runs/${runId}/nodes`, {
       method: 'POST',
       body: JSON.stringify({ node }),

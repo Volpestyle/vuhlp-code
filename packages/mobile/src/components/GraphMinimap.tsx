@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
 import { View, StyleSheet, useWindowDimensions } from 'react-native';
-import { Canvas, Rect, RoundedRect, vec } from '@shopify/react-native-skia';
+import { Canvas, Rect, RoundedRect } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
 import { useGraphStore } from '@/stores/graph-store';
+import { colors } from '@/lib/theme';
 
 interface GraphMinimapProps {
   width?: number;
@@ -148,7 +149,7 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
                 width={w}
                 height={h}
                 r={1}
-                color={isActive ? '#3b82f6' : '#666'}
+                color={isActive ? colors.accent : colors.textMuted}
               />
             );
           })}
@@ -159,14 +160,14 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
             y={Math.max(0, viewMiniTop)}
             width={Math.min(width, Math.max(1, viewMiniWidth))}
             height={Math.min(height, Math.max(1, viewMiniHeight))}
-            color="rgba(59, 130, 246, 0.2)"
+            color={colors.accentGlow}
           />
           <Rect
             x={Math.max(0, viewMiniLeft)}
             y={Math.max(0, viewMiniTop)}
             width={Math.min(width, Math.max(1, viewMiniWidth))}
             height={Math.min(height, Math.max(1, viewMiniHeight))}
-            color="#3b82f6"
+            color={colors.accent}
             style="stroke"
             strokeWidth={1}
           />
@@ -181,10 +182,10 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     left: 0,
-    backgroundColor: 'rgba(26, 26, 26, 0.95)',
+    backgroundColor: 'rgba(24, 24, 28, 0.95)', // colors.bgSurface with opacity
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#333',
+    borderColor: colors.borderStrong,
     overflow: 'hidden',
   },
   canvas: {

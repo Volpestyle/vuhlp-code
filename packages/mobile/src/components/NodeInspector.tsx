@@ -27,6 +27,8 @@ import { api } from '@/lib/api';
 import { useChatAutoScroll } from '@/lib/useChatAutoScroll';
 import { ThinkingSpinner } from '@/components/ThinkingSpinner';
 import { MarkdownMessage } from '@/components/MarkdownMessage';
+import { colors, getStatusColor, fontFamily } from '@/lib/theme';
+import { createLocalId } from '@/lib/ids';
 
 const MIN_HEIGHT = 120;
 const SNAP_THRESHOLD = 50;
@@ -45,6 +47,7 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
   // Collapsed: offset = maxHeight - MIN_HEIGHT
   const minTranslateY = 0;
   const maxTranslateY = maxHeight - MIN_HEIGHT;
+  const closedTranslateY = maxHeight + MIN_HEIGHT;
 
   const run = useGraphStore((s) => s.run);
   const nodes = useGraphStore((s) => s.nodes);
@@ -88,14 +91,52 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
   // Animation values
   const translateY = useSharedValue(maxTranslateY); // Start collapsed
   const context = useSharedValue({ y: 0 });
+  const isClosingRef = useRef(false);
+  const previousSelectedNodeId = useRef<string | null>(null);
+  const previousInspectorOpen = useRef(inspectorOpen);
 
-  // Reset to collapsed state when node changes or opens, but animate if needed
+  const finalizeClose = useCallback((closingId: string) => {
+    const state = useGraphStore.getState();
+    isClosingRef.current = false;
+    if (state.selectedNodeId === closingId) {
+      state.selectNode(null);
+    }
+  }, []);
+
+  // Reset to collapsed state when node changes or opens.
   useEffect(() => {
-    if (inspectorOpen) {
-      // Start at collapsed state when opening
+    const wasOpen = previousInspectorOpen.current;
+    const nodeChanged = previousSelectedNodeId.current !== selectedNodeId;
+    previousInspectorOpen.current = inspectorOpen;
+    previousSelectedNodeId.current = selectedNodeId;
+
+    if (!selectedNodeId) {
+      return;
+    }
+
+    if (inspectorOpen && (nodeChanged || !wasOpen)) {
+      isClosingRef.current = false;
       translateY.value = maxTranslateY;
     }
-  }, [inspectorOpen, maxTranslateY]);
+  }, [inspectorOpen, selectedNodeId, maxTranslateY]);
+
+  useEffect(() => {
+    if (!selectedNodeId || inspectorOpen || isClosingRef.current) {
+      return;
+    }
+
+    isClosingRef.current = true;
+    const closingId = selectedNodeId;
+    translateY.value = withSpring(
+      closedTranslateY,
+      { damping: 50, stiffness: 200 },
+      (finished) => {
+        if (finished) {
+          runOnJS(finalizeClose)(closingId);
+        }
+      }
+    );
+  }, [closedTranslateY, finalizeClose, inspectorOpen, selectedNodeId]);
 
   useEffect(() => {
     setMessageText('');
@@ -103,8 +144,11 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
   }, [selectedNodeId]);
 
   const handleClose = useCallback(() => {
+    if (!inspectorOpen) {
+      return;
+    }
     setInspectorOpen(false);
-  }, [setInspectorOpen]);
+  }, [inspectorOpen, setInspectorOpen]);
 
   // Gestures
   const dragGesture = Gesture.Pan()
@@ -209,7 +253,7 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
 
   const handleSendMessage = useCallback(
     (interrupt: boolean) => {
-      const content = messageText.trim();
+      const content = (messageText || '').trim();
       if (!content || !selectedNodeId) return;
 
       const resetCommands = selectedNode?.session?.resetCommands ?? ['/new', '/clear'];
@@ -226,7 +270,7 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
         return;
       }
 
-      const messageId = `local-${crypto.randomUUID()}`;
+      const messageId = createLocalId();
       const message: ChatMessage = {
         id: messageId,
         nodeId: selectedNodeId,
@@ -266,14 +310,20 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
     );
   }, [timeline]);
 
-  if (!inspectorOpen || !selectedNode) {
+  if (!selectedNode) {
     return null;
   }
 
   return (
-    <Animated.View style={[styles.keyboardAvoid, { bottom: bottomOverlayHeight }]}>
+    <Animated.View
+      pointerEvents="box-none"
+      style={[styles.keyboardAvoid, { bottom: bottomOverlayHeight }]}
+    >
       <GestureDetector gesture={dragGesture}>
-        <Animated.View style={[styles.container, animatedStyle]}>
+        <Animated.View
+          pointerEvents={inspectorOpen ? 'auto' : 'none'}
+          style={[styles.container, animatedStyle]}
+        >
           {/* Handle */}
           <View style={styles.handleContainer}>
             <View style={styles.handle} />
@@ -285,7 +335,7 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
               <View
                 style={[
                   styles.statusDot,
-                  { backgroundColor: STATUS_COLORS[selectedNode.status] ?? '#6b7280' },
+                  { backgroundColor: getStatusColor(selectedNode.status) },
                 ]}
               />
               <Text style={styles.title} numberOfLines={1}>
@@ -345,12 +395,12 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
                         <View style={styles.thinkingHeader}>
                           <Text style={styles.thinkingRole}>assistant</Text>
                           <View style={styles.metaItem}>
-                            <ThinkingSpinner size="sm" color="#4de6a8" />
+                            <ThinkingSpinner size="sm" variant="assemble" color="#4de6a8" />
                             <Text style={styles.metaTextThinking}>thinking</Text>
                           </View>
                         </View>
                         <View style={styles.thinkingBody}>
-                          <ThinkingSpinner size="lg" color="#4de6a8" />
+                          <ThinkingSpinner size="lg" variant="assemble" color="#4de6a8" />
                         </View>
                       </View>
                     )}
@@ -375,27 +425,54 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
                 />
                 {messageError && <Text style={styles.errorText}>{messageError}</Text>}
                 <View style={styles.inputActions}>
-                  <Pressable
-                    style={[
-                      styles.actionButton,
-                      !messageText.trim() && styles.actionButtonDisabled,
-                    ]}
-                    onPress={() => handleSendMessage(false)}
-                    disabled={!messageText.trim()}
-                  >
-                    <Text style={styles.actionText}>Queue</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[
-                      styles.actionButton,
-                      styles.actionButtonPrimary,
-                      !messageText.trim() && styles.actionButtonDisabled,
-                    ]}
-                    onPress={() => handleSendMessage(true)}
-                    disabled={!messageText.trim()}
-                  >
-                    <Text style={styles.actionTextPrimary}>Interrupt</Text>
-                  </Pressable>
+                  {selectedNode.status === 'running' ? (
+                    <>
+                      <Pressable
+                        style={[
+                          styles.actionButton,
+                          !(messageText || '').trim() && styles.actionButtonDisabled,
+                        ]}
+                        onPress={() => handleSendMessage(false)}
+                        disabled={!(messageText || '').trim()}
+                      >
+                        <Text style={styles.actionText}>Queue</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[
+                          styles.actionButton,
+                          styles.actionButtonPrimary,
+                          !(messageText || '').trim() && styles.actionButtonDisabled,
+                        ]}
+                        onPress={() => handleSendMessage(true)}
+                        disabled={!(messageText || '').trim()}
+                      >
+                        <Text style={styles.actionTextPrimary}>Interrupt</Text>
+                      </Pressable>
+                    </>
+                  ) : (
+                    <>
+                      <Pressable
+                        style={[
+                          styles.actionButton,
+                          styles.actionButtonDisabled,
+                        ]}
+                        disabled
+                      >
+                        <Text style={styles.actionText}>Queue</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[
+                          styles.actionButton,
+                          styles.actionButtonPrimary,
+                          !(messageText || '').trim() && styles.actionButtonDisabled,
+                        ]}
+                        onPress={() => handleSendMessage(false)}
+                        disabled={!(messageText || '').trim()}
+                      >
+                        <Text style={styles.actionTextPrimary}>Send</Text>
+                      </Pressable>
+                    </>
+                  )}
                 </View>
               </View>
             </View>
@@ -534,20 +611,20 @@ function MessageItem({
         <View style={styles.messageMeta}>
           {isPending && (
             <View style={styles.metaItem}>
-              <ThinkingSpinner size="sm" color="#94a3b8" />
+              <ThinkingSpinner size="sm" variant="assemble" color="#94a3b8" />
               <Text style={styles.metaText}>sending</Text>
             </View>
           )}
           {hasError && <Text style={styles.errorBadge}>Failed</Text>}
           {message.streaming && !message.thinkingStreaming && (
             <View style={styles.metaItem}>
-              <ThinkingSpinner size="sm" color="#60a5fa" />
+              <ThinkingSpinner size="sm" variant="assemble" color="#60a5fa" />
               <Text style={styles.metaTextStreaming}>streaming</Text>
             </View>
           )}
           {message.thinkingStreaming && (
             <View style={styles.metaItem}>
-              <ThinkingSpinner size="sm" color="#4de6a8" />
+              <ThinkingSpinner size="sm" variant="assemble" color="#4de6a8" />
               <Text style={styles.metaTextThinking}>thinking</Text>
             </View>
           )}
@@ -685,13 +762,6 @@ function Badge({ label }: { label: string }) {
   );
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  idle: '#6b7280',
-  running: '#22c55e',
-  blocked: '#eab308',
-  failed: '#ef4444',
-};
-
 const styles = StyleSheet.create({
   keyboardAvoid: {
     position: 'absolute',
@@ -700,11 +770,11 @@ const styles = StyleSheet.create({
     right: 0,
   },
   container: {
-    backgroundColor: '#1a1a1a',
+    backgroundColor: colors.bgSurface,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     borderTopWidth: 1,
-    borderColor: '#2a2a2a',
+    borderColor: colors.border,
     overflow: 'hidden',
   },
   handleContainer: {
@@ -714,7 +784,7 @@ const styles = StyleSheet.create({
   handle: {
     width: 36,
     height: 4,
-    backgroundColor: '#444',
+    backgroundColor: colors.borderStrong,
     borderRadius: 2,
   },
   header: {
@@ -736,23 +806,23 @@ const styles = StyleSheet.create({
     borderRadius: 5,
   },
   title: {
-    color: '#fff',
+    color: colors.textPrimary,
     fontSize: 16,
-    fontWeight: '600',
+    fontFamily: fontFamily.semibold,
     flex: 1,
   },
   closeButton: {
     padding: 4,
   },
   closeText: {
-    color: '#888',
+    color: colors.textSecondary,
     fontSize: 24,
     lineHeight: 24,
   },
   tabs: {
     flexDirection: 'row',
     borderBottomWidth: 1,
-    borderBottomColor: '#2a2a2a',
+    borderBottomColor: colors.border,
   },
   tab: {
     flex: 1,
@@ -761,15 +831,16 @@ const styles = StyleSheet.create({
   },
   tabActive: {
     borderBottomWidth: 2,
-    borderBottomColor: '#3b82f6',
+    borderBottomColor: colors.accent,
   },
   tabText: {
-    color: '#666',
+    color: colors.textMuted,
     fontSize: 14,
+    fontFamily: fontFamily.regular,
   },
   tabTextActive: {
-    color: '#3b82f6',
-    fontWeight: '600',
+    color: colors.accent,
+    fontFamily: fontFamily.semibold,
   },
   chatContainer: {
     flex: 1,
@@ -782,7 +853,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   emptyText: {
-    color: '#6b7280',
+    color: colors.textMuted,
     textAlign: 'center',
     paddingVertical: 20,
   },
@@ -791,12 +862,12 @@ const styles = StyleSheet.create({
     padding: 12,
     borderWidth: 1,
     borderColor: 'transparent',
-    backgroundColor: '#1f1f1f',
+    backgroundColor: colors.bgHover,
   },
   messageUser: {
     alignSelf: 'flex-end',
     maxWidth: '88%',
-    borderColor: '#2a2a2a',
+    borderColor: colors.border,
   },
   messageAssistant: {
     alignSelf: 'stretch',
@@ -805,19 +876,19 @@ const styles = StyleSheet.create({
   },
   messageStreaming: {
     borderLeftWidth: 2,
-    borderLeftColor: '#60a5fa',
+    borderLeftColor: colors.streamingBlue,
     paddingLeft: 10,
   },
   messageThinking: {
     borderLeftWidth: 2,
-    borderLeftColor: '#4de6a8',
+    borderLeftColor: colors.thinkingGreen,
     paddingLeft: 10,
   },
   messagePending: {
     opacity: 0.7,
   },
   messageError: {
-    borderColor: '#ef4444',
+    borderColor: colors.statusFailed,
   },
   messageHeader: {
     flexDirection: 'row',
@@ -826,10 +897,11 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   messageRole: {
-    color: '#9ca3af',
+    color: colors.textSecondary,
     fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 1,
+    fontFamily: fontFamily.medium,
   },
   messageMeta: {
     flexDirection: 'row',
@@ -838,12 +910,12 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   messageText: {
-    color: '#fff',
+    color: colors.textPrimary,
     fontSize: 14,
     lineHeight: 20,
   },
   messageTime: {
-    color: '#6b7280',
+    color: colors.textMuted,
     fontSize: 10,
   },
   metaItem: {
@@ -852,41 +924,41 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   metaText: {
-    color: '#94a3b8',
+    color: colors.textSecondary,
     fontSize: 10,
   },
   metaTextStreaming: {
-    color: '#60a5fa',
+    color: colors.streamingBlue,
     fontSize: 10,
   },
   metaTextThinking: {
-    color: '#4de6a8',
+    color: colors.thinkingGreen,
     fontSize: 10,
   },
   interruptedText: {
-    color: '#c4a67a',
+    color: colors.statusBlocked,
     fontSize: 10,
   },
   errorBadge: {
-    color: '#ef4444',
+    color: colors.statusFailed,
     fontSize: 10,
     letterSpacing: 0.6,
     textTransform: 'uppercase',
-    backgroundColor: 'rgba(239,68,68,0.15)',
+    backgroundColor: 'rgba(184, 120, 125, 0.15)',
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 8,
   },
   thinkingSection: {
     borderWidth: 1,
-    borderColor: '#2a2a2a',
+    borderColor: colors.border,
     borderRadius: 10,
     overflow: 'hidden',
     marginBottom: 8,
   },
   thinkingSectionActive: {
-    borderColor: '#4de6a8',
-    backgroundColor: 'rgba(77,230,168,0.05)',
+    borderColor: colors.thinkingGreen,
+    backgroundColor: 'rgba(77, 230, 168, 0.05)',
   },
   thinkingToggle: {
     flexDirection: 'row',
@@ -894,14 +966,14 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingVertical: 6,
     paddingHorizontal: 10,
-    backgroundColor: '#222',
+    backgroundColor: colors.bgSecondary,
   },
   thinkingToggleIcon: {
-    color: '#9ca3af',
+    color: colors.textSecondary,
     fontSize: 12,
   },
   thinkingToggleLabel: {
-    color: '#9ca3af',
+    color: colors.textSecondary,
     fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
@@ -910,14 +982,14 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#4de6a8',
+    backgroundColor: colors.thinkingGreen,
   },
   thinkingContent: {
     padding: 10,
     borderTopWidth: 1,
-    borderTopColor: '#2a2a2a',
-    backgroundColor: '#151515',
-    color: '#9ca3af',
+    borderTopColor: colors.border,
+    backgroundColor: colors.bgElevated,
+    color: colors.textSecondary,
     fontSize: 12,
     lineHeight: 18,
   },
@@ -928,21 +1000,21 @@ const styles = StyleSheet.create({
     marginTop: 8,
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#2a2a2a',
+    borderTopColor: colors.border,
   },
   retryButton: {
     borderWidth: 1,
-    borderColor: '#ef4444',
+    borderColor: colors.statusFailed,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 10,
   },
   retryText: {
-    color: '#ef4444',
+    color: colors.statusFailed,
     fontSize: 12,
   },
   retryErrorText: {
-    color: '#ef4444',
+    color: colors.statusFailed,
     fontSize: 11,
     flex: 1,
   },
@@ -953,26 +1025,26 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#2a2a2a',
-    backgroundColor: '#151515',
+    borderColor: colors.border,
+    backgroundColor: colors.bgElevated,
   },
   statusLabel: {
-    color: '#9ca3af',
+    color: colors.textSecondary,
     fontSize: 12,
   },
   statusTime: {
-    color: '#6b7280',
+    color: colors.textMuted,
     fontSize: 10,
   },
   toolCard: {
     borderWidth: 1,
-    borderColor: '#2a2a2a',
+    borderColor: colors.border,
     borderRadius: 12,
-    backgroundColor: '#171717',
+    backgroundColor: colors.bgElevated,
     overflow: 'hidden',
   },
   toolCardError: {
-    borderColor: '#ef4444',
+    borderColor: colors.statusFailed,
   },
   toolHeader: {
     padding: 10,
@@ -987,11 +1059,11 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   toolCaret: {
-    color: '#9ca3af',
+    color: colors.textSecondary,
     fontSize: 12,
   },
   toolName: {
-    color: '#fff',
+    color: colors.textPrimary,
     fontSize: 12,
     flexShrink: 1,
   },
@@ -1001,47 +1073,47 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   toolStatusProposed: {
-    color: '#94a3b8',
+    color: colors.textSecondary,
   },
   toolStatusStarted: {
-    color: '#60a5fa',
+    color: colors.streamingBlue,
   },
   toolStatusCompleted: {
-    color: '#22c55e',
+    color: colors.statusRunning,
   },
   toolStatusFailed: {
-    color: '#ef4444',
+    color: colors.statusFailed,
   },
   toolTime: {
-    color: '#6b7280',
+    color: colors.textMuted,
     fontSize: 10,
   },
   toolBody: {
     padding: 10,
     borderTopWidth: 1,
-    borderTopColor: '#2a2a2a',
+    borderTopColor: colors.border,
     gap: 8,
   },
   toolSectionLabel: {
-    color: '#9ca3af',
+    color: colors.textSecondary,
     fontSize: 10,
     textTransform: 'uppercase',
     marginBottom: 4,
   },
   toolCode: {
-    color: '#e2e8f0',
+    color: colors.textPrimary,
     fontSize: 11,
     lineHeight: 16,
   },
   toolErrorLabel: {
-    color: '#ef4444',
+    color: colors.statusFailed,
   },
   toolErrorText: {
-    color: '#ef4444',
+    color: colors.statusFailed,
   },
   thinkingPlaceholder: {
     borderLeftWidth: 2,
-    borderLeftColor: '#4de6a8',
+    borderLeftColor: colors.thinkingGreen,
     paddingLeft: 10,
     paddingVertical: 8,
   },
@@ -1052,7 +1124,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   thinkingRole: {
-    color: '#9ca3af',
+    color: colors.textSecondary,
     fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 1,
@@ -1064,19 +1136,19 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 8,
     borderTopWidth: 1,
-    borderTopColor: '#2a2a2a',
+    borderTopColor: colors.border,
   },
   input: {
-    backgroundColor: '#2a2a2a',
+    backgroundColor: colors.bgHover,
     borderRadius: 16,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    color: '#fff',
+    color: colors.textPrimary,
     fontSize: 14,
     maxHeight: 120,
   },
   errorText: {
-    color: '#ef4444',
+    color: colors.statusFailed,
     fontSize: 12,
   },
   inputActions: {
@@ -1085,30 +1157,34 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     flex: 1,
+    backgroundColor: 'transparent',
     borderWidth: 1,
-    borderColor: '#3b3b3b',
-    borderRadius: 16,
-    paddingVertical: 8,
+    borderColor: colors.borderStrong,
+    borderRadius: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
   },
   actionButtonPrimary: {
-    backgroundColor: '#3b82f6',
-    borderColor: '#3b82f6',
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
   },
   actionButtonDisabled: {
-    opacity: 0.5,
+    opacity: 0.4,
   },
   actionText: {
-    color: '#cbd5f5',
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontFamily: fontFamily.semibold,
+    letterSpacing: 0.3,
   },
   actionTextPrimary: {
-    color: '#fff',
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
+    color: colors.bgPrimary,
+    fontSize: 14,
+    fontFamily: fontFamily.semibold,
+    letterSpacing: 0.3,
   },
   detailsContainer: {
     flex: 1,
@@ -1119,24 +1195,24 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#2a2a2a',
+    borderBottomColor: colors.border,
   },
   detailLabel: {
-    color: '#888',
+    color: colors.textSecondary,
     fontSize: 14,
   },
   detailValue: {
-    color: '#fff',
+    color: colors.textPrimary,
     fontSize: 14,
   },
   mono: {
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontFamily: fontFamily.mono,
   },
   capabilitiesSection: {
     marginTop: 16,
   },
   sectionTitle: {
-    color: '#888',
+    color: colors.textSecondary,
     fontSize: 12,
     textTransform: 'uppercase',
     marginBottom: 8,
@@ -1147,13 +1223,13 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   badge: {
-    backgroundColor: '#2a2a2a',
+    backgroundColor: colors.bgHover,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
   },
   badgeText: {
-    color: '#888',
+    color: colors.textSecondary,
     fontSize: 12,
   },
 });

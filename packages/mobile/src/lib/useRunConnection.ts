@@ -28,15 +28,15 @@ const hasNodeCoreFields = (patch: Partial<NodeState>): patch is Partial<NodeStat
 } =>
   Boolean(
     patch &&
-      typeof patch.label === 'string' &&
-      typeof patch.roleTemplate === 'string' &&
-      typeof patch.provider === 'string' &&
-      typeof patch.status === 'string' &&
-      typeof patch.summary === 'string' &&
-      typeof patch.lastActivityAt === 'string' &&
-      patch.capabilities &&
-      patch.permissions &&
-      patch.session
+    typeof patch.label === 'string' &&
+    typeof patch.roleTemplate === 'string' &&
+    typeof patch.provider === 'string' &&
+    typeof patch.status === 'string' &&
+    typeof patch.summary === 'string' &&
+    typeof patch.lastActivityAt === 'string' &&
+    patch.capabilities &&
+    patch.permissions &&
+    patch.session
   );
 
 export function useRunConnection(runId: string | undefined): ConnectionState {
@@ -49,6 +49,7 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const connectionIdRef = useRef(0);
 
   const setRun = useGraphStore((s) => s.setRun);
   const applyRunPatch = useGraphStore((s) => s.applyRunPatch);
@@ -68,6 +69,26 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
   const addApproval = useGraphStore((s) => s.addApproval);
   const removeApproval = useGraphStore((s) => s.removeApproval);
   const reset = useGraphStore((s) => s.reset);
+
+  const clearReconnectTimeout = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+  }, []);
+
+  const resetConnection = useCallback(
+    (reason: string) => {
+      connectionIdRef.current += 1;
+      clearReconnectTimeout();
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      console.log(`[ws] reset (${reason}) id=${connectionIdRef.current}`);
+    },
+    [clearReconnectTimeout]
+  );
 
   const handleEvent = useCallback(
     (event: EventEnvelope) => {
@@ -239,16 +260,26 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
   const connect = useCallback(() => {
     if (!runId) return;
 
+    resetConnection('connect');
+    const connectionId = connectionIdRef.current;
     const ws = new WebSocket(getWebSocketUrl(runId));
     wsRef.current = ws;
+    console.log(`[ws] connecting id=${connectionId}`);
 
     ws.onopen = () => {
-      console.log('[ws] connected');
+      if (connectionId !== connectionIdRef.current) {
+        ws.close();
+        return;
+      }
+      console.log(`[ws] connected id=${connectionId}`);
       reconnectAttemptsRef.current = 0;
       setState((s) => ({ ...s, connected: true }));
     };
 
     ws.onmessage = (e) => {
+      if (connectionId !== connectionIdRef.current) {
+        return;
+      }
       try {
         const event = JSON.parse(e.data as string) as EventEnvelope;
         handleEvent(event);
@@ -258,25 +289,35 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
     };
 
     ws.onerror = (e) => {
+      if (connectionId !== connectionIdRef.current) {
+        return;
+      }
       console.error('[ws] error:', e);
     };
 
     ws.onclose = () => {
-      console.log('[ws] disconnected');
+      if (connectionId !== connectionIdRef.current) {
+        return;
+      }
+      console.log(`[ws] disconnected id=${connectionId}`);
       setState((s) => ({ ...s, connected: false }));
 
       // Exponential backoff reconnect
       const attempts = reconnectAttemptsRef.current;
       if (attempts < 5) {
         const delay = Math.min(1000 * Math.pow(2, attempts), 30000);
-        console.log(`[ws] reconnecting in ${delay}ms...`);
+        console.log(`[ws] reconnecting in ${delay}ms (attempt ${attempts + 1})`);
+        clearReconnectTimeout();
         reconnectTimeoutRef.current = setTimeout(() => {
-          reconnectAttemptsRef.current++;
+          if (connectionIdRef.current !== connectionId) {
+            return;
+          }
+          reconnectAttemptsRef.current += 1;
           connect();
         }, delay);
       }
     };
-  }, [runId, handleEvent]);
+  }, [runId, handleEvent, clearReconnectTimeout, resetConnection]);
 
   // Initial fetch + WebSocket connection
   useEffect(() => {
@@ -288,10 +329,30 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
     reset();
     setState({ loading: true, error: null, connected: false });
 
-    api
-      .getRun(runId)
-      .then((run) => {
+    Promise.all([api.getRun(runId), api.getRunEvents(runId)])
+      .then(([run, events]) => {
         setRun(run);
+
+        // Replay history (messages, tools, etc)
+        // We skip patches because getRun() already returns the latest state
+        for (const event of events) {
+          switch (event.type) {
+            case 'message.user':
+            case 'message.assistant.delta':
+            case 'message.assistant.final':
+            case 'message.assistant.thinking.delta':
+            case 'message.assistant.thinking.final':
+            case 'tool.proposed':
+            case 'tool.started':
+            case 'tool.completed':
+            case 'turn.status':
+            case 'approval.requested':
+            case 'approval.resolved':
+              handleEvent(event);
+              break;
+          }
+        }
+
         setState((s) => ({ ...s, loading: false }));
         connect();
       })
@@ -300,15 +361,9 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
       });
 
     return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      resetConnection('cleanup');
     };
-  }, [runId, setRun, reset, connect]);
+  }, [runId, setRun, reset, connect, resetConnection]);
 
   return state;
 }

@@ -17,7 +17,8 @@
       "package": "com.vuhlp.mobile"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true

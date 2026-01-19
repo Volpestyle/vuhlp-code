@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
-import { View, StyleSheet, useWindowDimensions, LayoutChangeEvent } from 'react-native';
+import { View, Text, StyleSheet, useWindowDimensions, LayoutChangeEvent } from 'react-native';
 import { Canvas, Path, Skia, Group, Line, vec } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -17,6 +17,8 @@ import {
 } from '@/stores/graph-store';
 import { api } from '@/lib/api';
 import { NodeCard } from './NodeCard';
+import { colors, fontFamily, fontSize, spacing } from '@/lib/theme';
+import { createUuid } from '@/lib/ids';
 
 const SPRING_CONFIG = {
   damping: 20,
@@ -25,7 +27,33 @@ const SPRING_CONFIG = {
 
 const EDGE_SNAP_RADIUS = 30;
 
+let skiaMissingLogged = false;
+
+const isSkiaAvailable = (): boolean => Boolean(Skia?.Path?.Make && Skia?.Matrix);
+
+const logSkiaMissing = () => {
+  if (skiaMissingLogged) return;
+  skiaMissingLogged = true;
+  console.error('[GraphCanvas] Skia API unavailable. Rebuild the dev client to enable graph rendering.');
+};
+
 export function GraphCanvas() {
+  if (!isSkiaAvailable()) {
+    logSkiaMissing();
+    return (
+      <View style={styles.fallback}>
+        <Text style={styles.fallbackTitle}>Graph renderer unavailable</Text>
+        <Text style={styles.fallbackText}>
+          Skia failed to initialize. Rebuild the dev client to enable the run graph.
+        </Text>
+      </View>
+    );
+  }
+
+  return <SkiaGraphCanvas />;
+}
+
+function SkiaGraphCanvas() {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [dimensions, setDimensions] = useState({ width: windowWidth, height: windowHeight });
 
@@ -37,6 +65,7 @@ export function GraphCanvas() {
   const setViewport = useGraphStore((s) => s.setViewport);
   const setViewDimensions = useGraphStore((s) => s.setViewDimensions);
   const selectNode = useGraphStore((s) => s.selectNode);
+  const setInspectorOpen = useGraphStore((s) => s.setInspectorOpen);
   const updateNodePosition = useGraphStore((s) => s.updateNodePosition);
   const startEdgeDrag = useGraphStore((s) => s.startEdgeDrag);
   const updateEdgeDrag = useGraphStore((s) => s.updateEdgeDrag);
@@ -58,11 +87,19 @@ export function GraphCanvas() {
   const viewportZoom = useSharedValue(viewport.zoom);
 
   // Sync shared values from store (gesture math relies on the latest values)
+  // We only sync if no gesture is active to avoid fighting with the UI thread
+  const isGestureActive = useSharedValue(false);
+  const isPinching = useSharedValue(false);
+  const isPanning = useSharedValue(false);
+  const panRebasePending = useSharedValue(false);
+
   useEffect(() => {
-    viewportX.value = viewport.x;
-    viewportY.value = viewport.y;
-    viewportZoom.value = viewport.zoom;
-  }, [viewport.x, viewport.y, viewport.zoom, viewportX, viewportY, viewportZoom]);
+    if (!isGestureActive.value) {
+      viewportX.value = viewport.x;
+      viewportY.value = viewport.y;
+      viewportZoom.value = viewport.zoom;
+    }
+  }, [viewport.x, viewport.y, viewport.zoom, viewportX, viewportY, viewportZoom, isGestureActive]);
 
   // Track gesture state
   const savedX = useSharedValue(0);
@@ -71,6 +108,24 @@ export function GraphCanvas() {
   const pinchWorldX = useSharedValue(0);
   const pinchWorldY = useSharedValue(0);
   const syncFrameCount = useSharedValue(0);
+  const lastPinchPointerCount = useSharedValue(0);
+  const panTranslationOffsetX = useSharedValue(0);
+  const panTranslationOffsetY = useSharedValue(0);
+  const lastPanTranslationX = useSharedValue(0);
+  const lastPanTranslationY = useSharedValue(0);
+
+  const logPinchHandoff = useCallback(
+    (payload: {
+      pointerCount: number;
+      previousPointerCount: number;
+      focalX: number;
+      focalY: number;
+      zoom: number;
+    }) => {
+      console.debug('[graph] pinch handoff rebase', payload);
+    },
+    []
+  );
 
   const syncViewport = useCallback(() => {
     setViewport({
@@ -90,13 +145,31 @@ export function GraphCanvas() {
   // Pinch gesture - always active, works simultaneously with other gestures
   const pinchGesture = Gesture.Pinch()
     .onStart((e) => {
+      isGestureActive.value = true;
+      isPinching.value = true;
+      panRebasePending.value = false;
       savedZoom.value = viewportZoom.value;
       const zoom = viewportZoom.value || 1;
       pinchWorldX.value = (e.focalX - viewportX.value) / zoom;
       pinchWorldY.value = (e.focalY - viewportY.value) / zoom;
       syncFrameCount.value = 0;
+      lastPinchPointerCount.value = e.numberOfPointers;
     })
     .onUpdate((e) => {
+      const pointerCount = e.numberOfPointers;
+      if (pointerCount !== lastPinchPointerCount.value) {
+        const currentZoom = viewportZoom.value || 1;
+        pinchWorldX.value = (e.focalX - viewportX.value) / currentZoom;
+        pinchWorldY.value = (e.focalY - viewportY.value) / currentZoom;
+        runOnJS(logPinchHandoff)({
+          pointerCount,
+          previousPointerCount: lastPinchPointerCount.value,
+          focalX: e.focalX,
+          focalY: e.focalY,
+          zoom: currentZoom,
+        });
+      }
+      lastPinchPointerCount.value = pointerCount;
       const nextZoom = Math.max(0.25, Math.min(savedZoom.value * e.scale, 4));
       const focusX = e.focalX;
       const focusY = e.focalY;
@@ -113,23 +186,54 @@ export function GraphCanvas() {
       }
     })
     .onEnd(() => {
+      isPinching.value = false;
+      lastPinchPointerCount.value = 0;
+      panRebasePending.value = true;
+      if (isPanning.value) {
+        savedX.value = viewportX.value;
+        savedY.value = viewportY.value;
+        syncFrameCount.value = 0;
+      }
+      isGestureActive.value = isPanning.value;
       runOnJS(syncViewport)();
     })
     .onFinalize(() => {
-      runOnJS(syncViewport)();
+      isPinching.value = false;
+      lastPinchPointerCount.value = 0;
+      isGestureActive.value = isPanning.value;
     });
 
   // Pan gesture - single finger allowed now
   const panGesture = Gesture.Pan()
     .maxPointers(1)
-    .onStart(() => {
+    .onStart((e) => {
+      isGestureActive.value = true;
+      isPanning.value = true;
       savedX.value = viewportX.value;
       savedY.value = viewportY.value;
+      panTranslationOffsetX.value = e.translationX;
+      panTranslationOffsetY.value = e.translationY;
+      lastPanTranslationX.value = e.translationX;
+      lastPanTranslationY.value = e.translationY;
       syncFrameCount.value = 0;
     })
     .onUpdate((e) => {
-      const nextX = savedX.value + e.translationX;
-      const nextY = savedY.value + e.translationY;
+      lastPanTranslationX.value = e.translationX;
+      lastPanTranslationY.value = e.translationY;
+      if (panRebasePending.value) {
+        savedX.value = viewportX.value;
+        savedY.value = viewportY.value;
+        panTranslationOffsetX.value = e.translationX;
+        panTranslationOffsetY.value = e.translationY;
+        panRebasePending.value = false;
+        syncFrameCount.value = 0;
+        return;
+      }
+      if (isPinching.value) {
+        return;
+      }
+      const nextX = savedX.value + (e.translationX - panTranslationOffsetX.value);
+      const nextY = savedY.value + (e.translationY - panTranslationOffsetY.value);
       viewportX.value = nextX;
       viewportY.value = nextY;
       syncFrameCount.value += 1;
@@ -142,28 +246,58 @@ export function GraphCanvas() {
       }
     })
     .onEnd(() => {
+      isPanning.value = false;
+      isGestureActive.value = isPinching.value;
       runOnJS(syncViewport)();
     })
     .onFinalize(() => {
-      runOnJS(syncViewport)();
+      isPanning.value = false;
+      isGestureActive.value = isPinching.value;
     });
 
   // Double tap to reset view
   const doubleTapGesture = Gesture.Tap()
     .numberOfTaps(2)
+    .onStart(() => {
+      isGestureActive.value = true;
+    })
     .onEnd(() => {
       viewportX.value = withSpring(0, SPRING_CONFIG);
       viewportY.value = withSpring(0, SPRING_CONFIG);
-      viewportZoom.value = withSpring(1, SPRING_CONFIG, () => {
-        runOnJS(syncViewport)();
+      viewportZoom.value = withSpring(1, SPRING_CONFIG, (finished) => {
+        if (finished) {
+          isGestureActive.value = false;
+          runOnJS(syncViewport)();
+        }
       });
     });
 
-  // Tap to deselect
-  const tapGesture = Gesture.Tap()
-    .onEnd(() => {
-      runOnJS(selectNode)(null);
-    });
+  const handleCanvasTap = useCallback(
+    (worldX: number, worldY: number) => {
+      const hitNode = nodes.some((node) => {
+        const { x, y } = node.position;
+        return (
+          worldX >= x &&
+          worldX <= x + node.dimensions.width &&
+          worldY >= y &&
+          worldY <= y + node.dimensions.height
+        );
+      });
+
+      if (!hitNode) {
+        setInspectorOpen(false);
+      }
+    },
+    [nodes, setInspectorOpen]
+  );
+
+  // Tap on empty space to close the inspector without fighting node taps
+  const tapGesture = Gesture.Tap().onEnd((event) => {
+    const zoom = viewportZoom.value || 1;
+    const worldX = (event.x - viewportX.value) / zoom;
+    const worldY = (event.y - viewportY.value) / zoom;
+    runOnJS(handleCanvasTap)(worldX, worldY);
+  });
 
   // Compose gestures:
   // - Pinch always works (simultaneous with pan for two-finger navigation)
@@ -235,7 +369,7 @@ export function GraphCanvas() {
 
       if (!edgeExists) {
         const newEdge = {
-          id: crypto.randomUUID(),
+          id: createUuid(),
           from: edgeDrag.fromNodeId,
           to: target.nodeId,
           bidirectional: true,
@@ -290,19 +424,27 @@ export function GraphCanvas() {
     };
   }, [edgeDrag, nodes]);
 
-  const nodesTransformStyle = useAnimatedStyle(() => ({
-    transform: [
-      { scale: viewportZoom.value },
-      { translateX: viewportX.value },
-      { translateY: viewportY.value },
-    ],
-  }));
+  const nodesTransformStyle = useAnimatedStyle(
+    () => {
+      return {
+        transform: [
+          { translateX: viewportX.value },
+          { translateY: viewportY.value },
+          { scale: viewportZoom.value },
+        ],
+        // @ts-ignore transformOrigin is available in newer RN versions but types might lag
+        transformOrigin: [0, 0, 0] as any,
+      };
+    },
+    []
+  );
 
-  const groupTransform = useDerivedValue(() => [
-    { scale: viewportZoom.value },
-    { translateX: viewportX.value },
-    { translateY: viewportY.value },
-  ]);
+  const groupTransform = useDerivedValue(() => {
+    const m = Skia.Matrix();
+    m.translate(viewportX.value, viewportY.value);
+    m.scale(viewportZoom.value, viewportZoom.value);
+    return m;
+  });
 
   return (
     <View style={styles.container} onLayout={onLayout}>
@@ -312,13 +454,13 @@ export function GraphCanvas() {
             {/* Skia canvas for edges */}
             <Canvas style={[styles.canvas, { width: dimensions.width, height: dimensions.height }]}>
               <Group
-                transform={groupTransform}
+                matrix={groupTransform}
               >
                 {edgePaths.map(({ edge, path }) => (
                   <Path
                     key={edge.id}
                     path={path}
-                    color={edge.selected ? '#3b82f6' : '#444'}
+                    color={edge.selected ? colors.accent : colors.borderStrong}
                     style="stroke"
                     strokeWidth={edge.selected ? 3 : 2}
                     strokeCap="round"
@@ -330,7 +472,7 @@ export function GraphCanvas() {
                   <Line
                     p1={vec(edgePreviewPath.start.x, edgePreviewPath.start.y)}
                     p2={vec(edgePreviewPath.end.x, edgePreviewPath.end.y)}
-                    color="#3b82f6"
+                    color={colors.accent}
                     style="stroke"
                     strokeWidth={2}
                     strokeCap="round"
@@ -351,8 +493,8 @@ export function GraphCanvas() {
               key={node.id}
               node={node}
               viewportZoom={viewport.zoom}
-              onPress={() => selectNode(node.id)}
-              onDrag={(x, y) => updateNodePosition(node.id, x, y)}
+              onPress={selectNode}
+              onDrag={updateNodePosition}
               onPortDragStart={handlePortDragStart}
               onPortDragMove={handlePortDragMove}
               onPortDragEnd={handlePortDragEnd}
@@ -431,7 +573,26 @@ function findConnectionPoints(source: VisualNode, target: VisualNode) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0a0a0a',
+    backgroundColor: colors.bgPrimary,
+  },
+  fallback: {
+    flex: 1,
+    backgroundColor: colors.bgPrimary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing['3xl'],
+  },
+  fallbackTitle: {
+    color: colors.textPrimary,
+    fontFamily: fontFamily.semibold,
+    fontSize: fontSize.lg,
+    marginBottom: spacing.md,
+    textAlign: 'center',
+  },
+  fallbackText: {
+    color: colors.textMuted,
+    fontSize: fontSize.sm,
+    textAlign: 'center',
   },
   canvasContainer: {
     flex: 1,

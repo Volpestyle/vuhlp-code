@@ -9,6 +9,61 @@ import type {
   TurnStatus,
   UUID,
 } from '@vuhlp/contracts';
+import { createLocalId } from '@/lib/ids';
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isToolCallLine = (line: string): boolean => {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return false;
+  }
+  if (!isRecord(parsed)) {
+    return false;
+  }
+  const container = isRecord(parsed.tool_call)
+    ? parsed.tool_call
+    : isRecord(parsed.toolCall)
+      ? parsed.toolCall
+      : null;
+  if (container) {
+    const name = typeof container.name === 'string' ? container.name.trim() : '';
+    const args = isRecord(container.args)
+      ? container.args
+      : isRecord(container.params)
+        ? container.params
+        : null;
+    return Boolean(name && args);
+  }
+  const directName =
+    typeof parsed.tool === 'string'
+      ? parsed.tool.trim()
+      : typeof parsed.name === 'string'
+        ? parsed.name.trim()
+        : '';
+  const directArgs = isRecord(parsed.args)
+    ? parsed.args
+    : isRecord(parsed.params)
+      ? parsed.params
+      : null;
+  return Boolean(directName && directArgs);
+};
+
+const stripToolCallLines = (content: string): string => {
+  if (!content) {
+    return content;
+  }
+  const lines = content.split('\n');
+  const kept = lines.filter((line) => !isToolCallLine(line));
+  return kept.join('\n');
+};
 
 export interface Point {
   x: number;
@@ -55,6 +110,7 @@ export interface ChatMessage {
   pending?: boolean;
   sendError?: string;
   interrupt?: boolean;
+  rawContent?: string;
 }
 
 export interface ToolEvent {
@@ -193,20 +249,65 @@ function buildVisualNodes(
   const runNodes = Object.values(run.nodes);
   return runNodes.map((node, index) => {
     const existing = existingNodes.get(node.id);
+    const isSelected = node.id === selectedNodeId;
+
+    // Return existing visual node if nothing changed
+    if (
+      existing &&
+      existing.selected === isSelected &&
+      existing.status === node.status &&
+      existing.label === node.label &&
+      existing.summary === node.summary &&
+      existing.lastActivityAt === node.lastActivityAt &&
+      existing.roleTemplate === node.roleTemplate &&
+      existing.provider === node.provider &&
+      // Check complex objects equality by reference (assuming immutable updates in contract)
+      existing.capabilities === node.capabilities &&
+      existing.permissions === node.permissions &&
+      existing.session === node.session &&
+      existing.inboxCount === node.inboxCount &&
+      // Check visual properties
+      existing.position &&
+      existing.dimensions
+    ) {
+      return existing;
+    }
+
     return {
       ...node,
       position: existing?.position ?? defaultPosition(index),
       dimensions: existing?.dimensions ?? DEFAULT_NODE_DIMENSIONS,
-      selected: node.id === selectedNodeId,
+      selected: isSelected,
     };
   });
 }
 
-function buildVisualEdges(run: RunState, selectedEdgeId: string | null): VisualEdge[] {
-  return Object.values(run.edges).map((edge) => ({
-    ...edge,
-    selected: edge.id === selectedEdgeId,
-  }));
+function buildVisualEdges(
+  run: RunState,
+  existingEdges: Map<string, VisualEdge>,
+  selectedEdgeId: string | null
+): VisualEdge[] {
+  return Object.values(run.edges).map((edge) => {
+    const existing = existingEdges.get(edge.id);
+    const isSelected = edge.id === selectedEdgeId;
+
+    if (
+      existing &&
+      existing.selected === isSelected &&
+      existing.from === edge.from &&
+      existing.to === edge.to &&
+      existing.bidirectional === edge.bidirectional &&
+      existing.type === edge.type &&
+      existing.label === edge.label
+    ) {
+      return existing;
+    }
+
+    return {
+      ...edge,
+      selected: isSelected,
+    };
+  });
 }
 
 const initialState = {
@@ -231,10 +332,11 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   setRun: (run) => {
     const state = get();
     const existingNodes = new Map(state.nodes.map((n) => [n.id, n]));
+    const existingEdges = new Map(state.edges.map((e) => [e.id, e]));
     set({
       run,
       nodes: buildVisualNodes(run, existingNodes, state.selectedNodeId),
-      edges: buildVisualEdges(run, state.selectedEdgeId),
+      edges: buildVisualEdges(run, existingEdges, state.selectedEdgeId),
     });
   },
 
@@ -243,10 +345,11 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     if (!state.run) return;
     const updatedRun = { ...state.run, ...patch };
     const existingNodes = new Map(state.nodes.map((n) => [n.id, n]));
+    const existingEdges = new Map(state.edges.map((e) => [e.id, e]));
     set({
       run: updatedRun,
       nodes: buildVisualNodes(updatedRun, existingNodes, state.selectedNodeId),
-      edges: buildVisualEdges(updatedRun, state.selectedEdgeId),
+      edges: buildVisualEdges(updatedRun, existingEdges, state.selectedEdgeId),
     });
   },
 
@@ -290,10 +393,12 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set((state) => {
       if (!state.run) return state;
       const { [nodeId]: _, ...remainingNodes } = state.run.nodes;
+      const isSelected = state.selectedNodeId === nodeId;
       return {
         run: { ...state.run, nodes: remainingNodes },
         nodes: state.nodes.filter((n) => n.id !== nodeId),
-        selectedNodeId: state.selectedNodeId === nodeId ? null : state.selectedNodeId,
+        selectedNodeId: isSelected ? null : state.selectedNodeId,
+        inspectorOpen: isSelected ? false : state.inspectorOpen,
       };
     });
   },
@@ -301,6 +406,9 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   addEdge: (edge) => {
     set((state) => {
       if (!state.run) return state;
+      // Prevent duplicate edges (e.g. race between API response and sync)
+      if (state.run.edges[edge.id]) return state;
+
       return {
         run: { ...state.run, edges: { ...state.run.edges, [edge.id]: edge } },
         edges: [...state.edges, { ...edge, selected: false }],
@@ -363,6 +471,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       selectedNodeId: edgeId ? null : state.selectedNodeId,
       nodes: state.nodes.map((n) => ({ ...n, selected: false })),
       edges: state.edges.map((e) => ({ ...e, selected: e.id === edgeId })),
+      inspectorOpen: edgeId ? false : state.inspectorOpen,
     }));
   },
 
@@ -394,6 +503,40 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   addChatMessage: (message) => {
     set((state) => {
       const existing = state.chatMessages[message.nodeId] ?? [];
+      const existingIdIndex = existing.findIndex((item) => item.id === message.id);
+      if (existingIdIndex >= 0) {
+        const next = [...existing];
+        next[existingIdIndex] = { ...existing[existingIdIndex], ...message };
+        return {
+          chatMessages: {
+            ...state.chatMessages,
+            [message.nodeId]: next,
+          },
+        };
+      }
+
+      const isLocal = message.id.startsWith('local-');
+      if (!isLocal) {
+        const matchIndex = existing.findIndex((item) => {
+          if (!item.id.startsWith('local-')) return false;
+          if (item.role !== message.role) return false;
+          if (item.content.trim() !== message.content.trim()) return false;
+          const existingTime = Date.parse(item.createdAt);
+          const messageTime = Date.parse(message.createdAt);
+          if (Number.isNaN(existingTime) || Number.isNaN(messageTime)) return false;
+          return Math.abs(existingTime - messageTime) < 10000;
+        });
+        if (matchIndex >= 0) {
+          const next = [...existing];
+          next[matchIndex] = { ...message };
+          return {
+            chatMessages: {
+              ...state.chatMessages,
+              [message.nodeId]: next,
+            },
+          };
+        }
+      }
       return {
         chatMessages: {
           ...state.chatMessages,
@@ -410,6 +553,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       const index = messages.findIndex((message) => message.id === messageId);
       if (index < 0) return state;
       const next = [...messages];
+      if (!next[index]) return state;
       next[index] = { ...next[index], ...updates };
       return {
         chatMessages: {
@@ -426,10 +570,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       const existingIndex = messages.findIndex((msg) => msg.id === streamId);
       if (existingIndex >= 0) {
         const existing = messages[existingIndex];
+        if (!existing) return state;
+        const rawContent = `${existing.rawContent ?? existing.content}${delta}`;
+        const content = stripToolCallLines(rawContent);
         const next = [...messages];
         next[existingIndex] = {
           ...existing,
-          content: `${existing.content}${delta}`,
+          content,
+          rawContent,
           createdAt: timestamp,
           streaming: true,
         };
@@ -437,11 +585,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
           chatMessages: { ...state.chatMessages, [nodeId]: next },
         };
       }
+      const rawContent = delta;
+      const content = stripToolCallLines(delta);
       const nextMessage: ChatMessage = {
         id: streamId,
         nodeId,
         role: 'assistant',
-        content: delta,
+        content,
+        rawContent,
         createdAt: timestamp,
         streaming: true,
       };
@@ -477,7 +628,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       const thinking = streamingMsg?.thinking ?? thinkingStreamingMsg?.thinking;
 
       const nextMessage: ChatMessage = {
-        id: id ?? `local-${crypto.randomUUID()}`,
+        id: id ?? createLocalId(),
         nodeId,
         role: 'assistant',
         content,
@@ -501,6 +652,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
       if (existingStreamIndex >= 0) {
         const existing = messages[existingStreamIndex];
+        if (!existing) return state;
         const next = [...messages];
         next[existingStreamIndex] = {
           ...existing,
@@ -518,6 +670,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
       if (existingThinkingIndex >= 0) {
         const existing = messages[existingThinkingIndex];
+        if (!existing) return state;
         const next = [...messages];
         next[existingThinkingIndex] = {
           ...existing,
@@ -557,6 +710,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       const streamIndex = messages.findIndex((msg) => msg.id === streamId);
       if (streamIndex >= 0) {
         const existing = messages[streamIndex];
+        if (!existing) return state;
         const next = [...messages];
         next[streamIndex] = {
           ...existing,
@@ -572,6 +726,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       const thinkingStreamIndex = messages.findIndex((msg) => msg.id === thinkingStreamId);
       if (thinkingStreamIndex >= 0) {
         const existing = messages[thinkingStreamIndex];
+        if (!existing) return state;
         const next = [...messages];
         next[thinkingStreamIndex] = {
           ...existing,
