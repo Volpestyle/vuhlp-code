@@ -38,7 +38,7 @@ import {
 } from '../lib/api';
 import { StatusBadge } from './StatusBadge';
 import { ProviderBadge } from './ProviderBadge';
-import { ThinkingSpinner } from './ThinkingSpinner';
+import { ThinkingSpinner } from '@vuhlp/spinners';
 import { RefreshDouble, Trash, Check, Eye, NavArrowDown, NavArrowRight } from 'iconoir-react';
 import './NodeInspector.css';
 

@@ -4,7 +4,7 @@ import type { ChatMessage, ToolEvent, TurnStatusEvent } from '../stores/runStore
 import { NavArrowDown, NavArrowRight, Wrench, Brain, Refresh, InfoCircle } from 'iconoir-react';
 import { MarkdownContent } from './MarkdownContent';
 import { JsonView } from './JsonView';
-import { ThinkingSpinner } from './ThinkingSpinner';
+import { ThinkingSpinner } from '@vuhlp/spinners';
 import './TimelineItem.css';
 
 interface TimelineItemProps {

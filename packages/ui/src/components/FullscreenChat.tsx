@@ -10,7 +10,7 @@ import { postChat } from '../lib/api';
 import { StatusBadge } from './StatusBadge';
 import { ProviderBadge } from './ProviderBadge';
 import { TimelineItem } from './TimelineItem';
-import { ThinkingSpinner } from './ThinkingSpinner';
+import { ThinkingSpinner } from '@vuhlp/spinners';
 import { SendDiagonal } from 'iconoir-react';
 import { useChatAutoScroll } from '../hooks/useChatAutoScroll';
 import './FullscreenChat.css';

@@ -1,4 +1,4 @@
-import { AsciiSpinner } from './AsciiSpinner';
+import { AsciiSpinner } from '@vuhlp/spinners';
 
 interface PageLoaderProps {
   error?: string | null;
