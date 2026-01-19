@@ -271,11 +271,6 @@ function AnimatedCube({ variant, color }: AnimatedCubeProps) {
           roughness={0.4}
         />
       </mesh>
-      {/* Edges for better definition */}
-      <lineSegments>
-        <edgesGeometry args={[new THREE.BoxGeometry(1, 1, 1)]} />
-        <lineBasicMaterial color={color} opacity={0.5} transparent />
-      </lineSegments>
     </group>
   );
 }
