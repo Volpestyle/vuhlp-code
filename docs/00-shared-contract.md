@@ -59,7 +59,7 @@ Event logs are append-only JSONL files, ordered by write time.
   },
   "permissions": {
     "cliPermissionsMode": "skip | gated",
-    "spawnRequiresApproval": true
+    "agentManagementRequiresApproval": true
   },
   "session": {
     "sessionId": "provider-session-id",
@@ -109,7 +109,8 @@ Defaults:
     "artifacts": [
       { "type": "diff", "ref": "artifact://diff/123" }
     ],
-    "status": { "ok": true, "reason": "tests-pass" }
+    "status": { "ok": true, "reason": "tests-pass" },
+    "response": { "expectation": "optional", "replyTo": "node-a" }
   },
   "contextRef": "contextpack://pack/789"
 }
@@ -123,6 +124,7 @@ Defaults:
 - Inputs are queued per node and consumed on the next turn.
 - No interruption by default.
 - User can explicitly interrupt or queue.
+ - `send_handoff` requires an edge between the sender and receiver.
 
 ## User message record (if stored)
 ```json
@@ -191,9 +193,9 @@ Defaults:
 ## Approval contract
 - `cliPermissionsMode = skip | gated`
 - Gated mode: provider pauses -> approval event -> UI -> user -> response forwarded.
-- Spawn approvals:
+- Agent management approvals (spawn_node, create_edge):
   - Non-orchestrator nodes always require approval.
-  - Orchestrator approval is policy-controlled (`spawnRequiresApproval`).
+  - Orchestrator approval is policy-controlled (`agentManagementRequiresApproval`).
 
 ### Approval event payloads (minimum)
 ```json

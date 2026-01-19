@@ -10,7 +10,7 @@ This document defines how agents communicate, how context is packaged, and how t
 - Support real-time connection state and streaming outputs.
 
 ## Communication model
-Agents communicate through **edges**. Every output produces one or more **envelopes** that are delivered to downstream nodes. Inputs are always auto-consumed.
+Agents communicate through explicit **handoff envelopes**. Edges define allowed communication paths; envelopes are only created when an agent calls `send_handoff` (or when `spawn_node` delivers its initial payload). Outputs do not auto-generate envelopes. Inputs are always auto-consumed once delivered.
 
 ### Envelope (canonical payload)
 Each envelope is a structured JSON object with stable fields:
@@ -29,7 +29,8 @@ Each envelope is a structured JSON object with stable fields:
       { "type": "diff", "ref": "artifact://diff/123" },
       { "type": "log", "ref": "artifact://log/456" }
     ],
-    "status": { "ok": true, "reason": "tests-pass" }
+    "status": { "ok": true, "reason": "tests-pass" },
+    "response": { "expectation": "optional", "replyTo": "node-a" }
   },
   "contextRef": "contextpack://pack/789",
   "meta": { "priority": "normal" }
@@ -47,6 +48,7 @@ Each envelope is a structured JSON object with stable fields:
 - `payload.structured`: structured JSON output.
 - `payload.artifacts`: artifact references (diffs, logs, reports).
 - `payload.status`: pass/fail or decision info.
+- `payload.response`: response expectation (`none`, `optional`, `required`) and optional reply target.
 - `contextRef`: a reference to a stored context pack.
 
 ## Context packs
@@ -105,6 +107,8 @@ Context packs are compact, structured bundles to avoid bloated prompts.
 - Send prompt deltas when session continuity is active.\n+- Always reconstruct and log the full effective prompt for audit.\n+- Build prompts from system + role + mode + pack.
 
 ## Handoff delivery
+- Handoffs are created explicitly via `send_handoff` (or `spawn_node` initial payloads).
+- `send_handoff` requires an edge between the sender and receiver (directional or bidirectional).
 - Inputs are auto-consumed by the target node, but **not** interrupting by default.
 - Each node maintains an inbox; queued inputs are consumed on the next turn.
 - The system logs which inputs were consumed in each turn.
@@ -144,7 +148,7 @@ For every node, the inspector must show:
 ## ASCII flow (handoff + context)
 
 ```
-Node A output
+Node A calls send_handoff
   |
   v
 Envelope (summary + artifact refs + contextRef)

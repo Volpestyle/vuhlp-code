@@ -28,7 +28,7 @@ Build a local-first, graph-based orchestration harness for multiple coding agent
 ## Core concepts (product-level)
 - Run: A single orchestration session with a graph of nodes and edges.
 - Node: A single agent session (CLI process or wrapper) with its own context and tool access.
-- Edge: A data link between nodes that delivers handoffs automatically.
+- Edge: A data link between nodes that agents can use when sending handoffs.
 - Orchestrator: A supervisor node that can delegate, review, and reconcile.
 - Global workflow mode: Planning vs Implementation. Planning is docs + research only. Implementation allows code edits.
 - Orchestration mode: Auto vs Interactive. Auto can re-prompt the orchestrator to achieve the goal. Interactive pauses orchestration for user input.

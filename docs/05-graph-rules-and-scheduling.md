@@ -9,7 +9,7 @@ This document defines the graph execution rules, edge behavior, and scheduling l
 - Avoid hidden ordering or implicit joins.
 
 ## Graph model
-A run is a graph of nodes and edges. Nodes execute in turns. Edges deliver payload envelopes.
+A run is a graph of nodes and edges. Nodes execute in turns. Edges describe potential communication paths; envelopes are created explicitly.
 
 ### Node types
 - Orchestrator
@@ -48,7 +48,7 @@ A run is a graph of nodes and edges. Nodes execute in turns. Edges deliver paylo
    - Always reconstruct and log the full effective prompt for auditability.
 4) Execute provider turn.
 5) Capture outputs and diffs as artifacts.
-6) Dispatch outgoing envelopes.
+6) Dispatch explicit envelopes (if any).
 7) Update node status.
 
 ## Queue semantics
@@ -62,8 +62,9 @@ A run is a graph of nodes and edges. Nodes execute in turns. Edges deliver paylo
 - Only explicit user interrupts can pause a node mid-turn.
 
 ## Edge delivery
-- Each edge appends envelopes to the downstream inbox.
-- Delivery is deterministic and ordered.
+- Envelopes are only created when an agent calls `send_handoff` (or `spawn_node` for initial payloads).
+- `send_handoff` requires an edge between the sender and receiver (directional or bidirectional).
+- Delivery is deterministic and ordered once an envelope is created.
 - The runtime logs delivery events for audit.
 
 ## Output selection
@@ -93,7 +94,7 @@ These statuses must be visible in the UI.
 
 ```
 Node A (running)
-  -> emits diff + summary
+  -> calls send_handoff with diff + summary
   -> envelope queued to Node B
 
 Node B (idle)

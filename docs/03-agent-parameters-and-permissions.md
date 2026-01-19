@@ -17,6 +17,7 @@ Each node has a resolved configuration snapshot at creation time. Changes are al
 {
   "id": "node-123",
   "label": "Implementer A",
+  "alias": "impl-a",
   "provider": "claude",
   "roleTemplate": "implementer",
   "customSystemPrompt": null,
@@ -29,7 +30,7 @@ Each node has a resolved configuration snapshot at creation time. Changes are al
   },
   "permissions": {
     "cliPermissionsMode": "skip",
-    "spawnRequiresApproval": true
+    "agentManagementRequiresApproval": true
   },
   "session": {
     "resume": true,
@@ -42,6 +43,7 @@ Each node has a resolved configuration snapshot at creation time. Changes are al
 
 ### 1) Identity
 - **label**: User-facing node name.
+- **alias**: Optional stable identifier used in tool calls (must be unique per run).
 - **roleTemplate**: Template name used to build the role prompt.
 - **customSystemPrompt**: Optional override; when set, it replaces the role prompt.
 
@@ -57,7 +59,7 @@ When `cliPermissionsMode=skip`, vuhlp adds provider skip flags (`--dangerously-s
 ### 3) Capabilities (opt-in)
 Capabilities determine what the agent is allowed to do. They are enforced by the runtime and the UI.
 
-- **spawnNodes**: Ability to propose new nodes. Non-orchestrator nodes require approval; orchestrator approval is policy-controlled.
+- **spawnNodes**: Ability to propose new nodes or create edges. Non-orchestrator nodes require approval; orchestrator approval is policy-controlled.
 - **writeCode**: Permission to modify code in Implementation mode.
 - **writeDocs**: Permission to modify docs.
 - **runCommands**: Permission to run CLI commands.
@@ -71,7 +73,7 @@ Permissions are enforced at the node level only. There are no run-level override
 - **cliPermissionsMode**:
   - `skip` (default): CLI executes tools immediately.
   - `gated`: CLI pauses for permission; runtime forwards approval events to the UI and back.
-- **spawnRequiresApproval**: Required for all non-orchestrator nodes. Default `false` for orchestrator, but configurable.
+- **agentManagementRequiresApproval**: Required for all non-orchestrator nodes. Default `false` for orchestrator, but configurable. Applies to `spawn_node` and `create_edge`.
 
 **Note**: The runtime does not attempt to classify tool risk. It forwards provider approval requests as-is.
 
@@ -91,11 +93,12 @@ Planning mode allows docs + research only. Implementation mode allows code edits
 - In Implementation:
   - `writeCode` and `writeDocs` are allowed if capabilities enable them.
 
-## Spawn gating
-Nodes can only spawn other nodes if all conditions are met:
+## Agent management gating
+Nodes can only spawn or create edges if all conditions are met:
 1) `capabilities.spawnNodes` is true.
-2) The user approves the spawn request when required (always for non-orchestrator nodes).
-3) The spawned node’s settings are explicitly defined.
+2) The user approves the request when required (always for non-orchestrator nodes).
+3) For `spawn_node`, the spawned node’s settings are explicitly defined.
+4) For `create_edge`, `from` and `to` are explicitly defined.
 
 Spawn is never implicit. It only happens via explicit `spawn_node` output or direct user action.
 

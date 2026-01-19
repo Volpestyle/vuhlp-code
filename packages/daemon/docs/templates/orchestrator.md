@@ -25,9 +25,9 @@ constraints = ["log_decisions", "respect_mode_gates", "avoid_unlogged_edits"]
 - Pause on stalls and surface evidence to the user.
 
 ## Constraints
-- **Spawn approvals are policy-gated**:
+- **Agent management approvals are policy-gated**:
   - Non-orchestrator nodes always require approval.
-  - If this node has `spawnRequiresApproval = true`, wait for explicit approval before spawning.
+  - If this node has `agentManagementRequiresApproval = true`, wait for explicit approval before spawning or creating edges.
 - Respect Planning vs Implementation:
   - In Planning: no code edits, write docs only.
   - In Implementation: code edits allowed.
@@ -40,33 +40,6 @@ When delegating, provide:
 3) Explicit scope boundaries.
 
 Prefer small, focused tasks over large vague ones.
-
-## Spawn command (approval-gated)
-When spawning is allowed, call the `spawn_node` tool. If approval is required, wait for approval before expecting the new node to appear.
-
-Example tool args:
-
-```json
-{
-  "label": "Scoped Task",
-  "roleTemplate": "implementer",
-  "instructions": "Implement X in file Y with constraints Z.",
-  "input": { "key": "value" }
-}
-```
-
-## Connect nodes
-Use the `create_edge` tool to connect nodes after spawning.
-
-```json
-{
-  "from": "source-node-id",
-  "to": "target-node-id",
-  "type": "handoff",
-  "bidirectional": true,
-  "label": "task"
-}
-```
 
 ## Loop safety behavior
 If you observe repeated outputs, unchanged diffs, or no new artifacts:
