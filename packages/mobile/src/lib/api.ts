@@ -114,10 +114,10 @@ export const api = {
   },
 
   // Chat
-  sendMessage: async (runId: string, nodeId: string, message: string) => {
+  sendMessage: async (runId: string, nodeId: string, message: string, interrupt: boolean) => {
     const { messageId } = await request<PostChatResponse>(`/api/runs/${runId}/chat`, {
       method: 'POST',
-      body: JSON.stringify({ nodeId, content: message }),
+      body: JSON.stringify({ nodeId, content: message, interrupt }),
     });
     return messageId;
   },

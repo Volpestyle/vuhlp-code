@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import { useCallback, useState } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, LayoutChangeEvent } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { useGraphStore } from '@/stores/graph-store';
 import { useRunConnection } from '@/lib/useRunConnection';
@@ -13,6 +14,11 @@ export default function RunScreen() {
   const nodeCount = useGraphStore((s) => s.nodes.length);
   const edgeCount = useGraphStore((s) => s.edges.length);
   const pendingCount = useGraphStore((s) => s.pendingApprovals.length);
+  const [statusBarHeight, setStatusBarHeight] = useState(0);
+
+  const handleStatusBarLayout = useCallback((event: LayoutChangeEvent) => {
+    setStatusBarHeight(event.nativeEvent.layout.height);
+  }, []);
 
   if (loading) {
     return (
@@ -42,10 +48,10 @@ export default function RunScreen() {
       <ApprovalQueue />
 
       {/* Bottom inspector sheet */}
-      <NodeInspector />
+      <NodeInspector bottomOverlayHeight={statusBarHeight} />
 
       {/* Status bar */}
-      <View style={styles.statusBar}>
+      <View style={styles.statusBar} onLayout={handleStatusBarLayout}>
         <View style={styles.statusRow}>
           <View style={[styles.statusDot, connected ? styles.connected : styles.disconnected]} />
           <Text style={styles.statusText}>

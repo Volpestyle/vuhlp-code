@@ -1,5 +1,14 @@
 import { create } from 'zustand';
-import type { RunState, NodeState, EdgeState, ApprovalRequestedEvent } from '@vuhlp/contracts';
+import type {
+  RunState,
+  NodeState,
+  EdgeState,
+  ISO8601,
+  ToolCall,
+  ToolCompletedEvent,
+  TurnStatus,
+  UUID,
+} from '@vuhlp/contracts';
 
 export interface Point {
   x: number;
@@ -35,11 +44,35 @@ export interface EdgeDragState {
 
 export interface ChatMessage {
   id: string;
-  nodeId: string;
-  role: 'user' | 'assistant';
+  nodeId: UUID;
+  role: 'user' | 'assistant' | 'system';
   content: string;
-  timestamp: string;
+  createdAt: ISO8601;
   streaming?: boolean;
+  status?: 'final' | 'interrupted';
+  thinking?: string;
+  thinkingStreaming?: boolean;
+  pending?: boolean;
+  sendError?: string;
+  interrupt?: boolean;
+}
+
+export interface ToolEvent {
+  id: UUID;
+  nodeId: UUID;
+  tool: ToolCall;
+  status: 'proposed' | 'started' | 'completed' | 'failed';
+  timestamp: ISO8601;
+  result?: ToolCompletedEvent['result'];
+  error?: ToolCompletedEvent['error'];
+}
+
+export interface TurnStatusEvent {
+  id: UUID;
+  nodeId: UUID;
+  status: TurnStatus;
+  detail?: string;
+  timestamp: ISO8601;
 }
 
 export interface PendingApproval {
@@ -48,7 +81,7 @@ export interface PendingApproval {
   toolName: string;
   toolArgs: Record<string, unknown>;
   context?: string;
-  timestamp: string;
+  timestamp: ISO8601;
 }
 
 interface GraphState {
@@ -57,6 +90,7 @@ interface GraphState {
   nodes: VisualNode[];
   edges: VisualEdge[];
   viewport: Viewport;
+  viewDimensions: Dimensions;
 
   // Selection
   selectedNodeId: string | null;
@@ -66,8 +100,9 @@ interface GraphState {
   edgeDrag: EdgeDragState | null;
 
   // Chat
-  chatMessages: Record<string, ChatMessage[]>;
-  streamingContent: Record<string, string>;
+  chatMessages: Record<UUID, ChatMessage[]>;
+  toolEvents: ToolEvent[];
+  turnStatusEvents: TurnStatusEvent[];
 
   // Approvals
   pendingApprovals: PendingApproval[];
@@ -86,6 +121,7 @@ interface GraphState {
 
   // Viewport
   setViewport: (viewport: Viewport) => void;
+  setViewDimensions: (dimensions: Dimensions) => void;
   panBy: (dx: number, dy: number) => void;
   zoomTo: (zoom: number, focalPoint?: Point) => void;
 
@@ -103,8 +139,27 @@ interface GraphState {
 
   // Chat
   addChatMessage: (message: ChatMessage) => void;
-  appendStreamingContent: (nodeId: string, delta: string) => void;
-  finalizeStreaming: (nodeId: string, content: string) => void;
+  updateChatMessageStatus: (
+    nodeId: UUID,
+    messageId: string,
+    updates: Partial<Pick<ChatMessage, 'pending' | 'sendError'>>
+  ) => void;
+  appendAssistantDelta: (nodeId: UUID, delta: string, timestamp: ISO8601) => void;
+  finalizeAssistantMessage: (
+    nodeId: UUID,
+    content: string,
+    timestamp: ISO8601,
+    status?: ChatMessage['status'],
+    id?: string
+  ) => void;
+  appendAssistantThinkingDelta: (nodeId: UUID, delta: string, timestamp: ISO8601) => void;
+  finalizeAssistantThinking: (nodeId: UUID, content: string, timestamp: ISO8601) => void;
+  clearNodeMessages: (nodeId: UUID) => void;
+
+  // Tool + status events
+  addToolEvent: (event: ToolEvent) => void;
+  updateToolEvent: (toolId: UUID, update: Partial<ToolEvent>) => void;
+  addTurnStatusEvent: (event: TurnStatusEvent) => void;
 
   // Approvals
   addApproval: (approval: PendingApproval) => void;
@@ -159,11 +214,13 @@ const initialState = {
   nodes: [] as VisualNode[],
   edges: [] as VisualEdge[],
   viewport: { x: 0, y: 0, zoom: 1 },
+  viewDimensions: { width: 0, height: 0 },
   selectedNodeId: null,
   selectedEdgeId: null,
   edgeDrag: null,
-  chatMessages: {} as Record<string, ChatMessage[]>,
-  streamingContent: {} as Record<string, string>,
+  chatMessages: {} as Record<UUID, ChatMessage[]>,
+  toolEvents: [],
+  turnStatusEvents: [],
   pendingApprovals: [] as PendingApproval[],
   inspectorOpen: false,
 };
@@ -265,6 +322,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   setViewport: (viewport) => set({ viewport }),
 
+  setViewDimensions: (viewDimensions) => set({ viewDimensions }),
+
   panBy: (dx, dy) => {
     set((state) => ({
       viewport: {
@@ -344,35 +403,230 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     });
   },
 
-  appendStreamingContent: (nodeId, delta) => {
-    set((state) => ({
-      streamingContent: {
-        ...state.streamingContent,
-        [nodeId]: (state.streamingContent[nodeId] ?? '') + delta,
-      },
-    }));
-  },
-
-  finalizeStreaming: (nodeId, content) => {
+  updateChatMessageStatus: (nodeId, messageId, updates) =>
     set((state) => {
-      const { [nodeId]: _, ...remainingStreaming } = state.streamingContent;
-      const message: ChatMessage = {
-        id: crypto.randomUUID(),
+      const messages = state.chatMessages[nodeId];
+      if (!messages) return state;
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index < 0) return state;
+      const next = [...messages];
+      next[index] = { ...next[index], ...updates };
+      return {
+        chatMessages: {
+          ...state.chatMessages,
+          [nodeId]: next,
+        },
+      };
+    }),
+
+  appendAssistantDelta: (nodeId, delta, timestamp) =>
+    set((state) => {
+      const messages = state.chatMessages[nodeId] ?? [];
+      const streamId = `stream-${nodeId}`;
+      const existingIndex = messages.findIndex((msg) => msg.id === streamId);
+      if (existingIndex >= 0) {
+        const existing = messages[existingIndex];
+        const next = [...messages];
+        next[existingIndex] = {
+          ...existing,
+          content: `${existing.content}${delta}`,
+          createdAt: timestamp,
+          streaming: true,
+        };
+        return {
+          chatMessages: { ...state.chatMessages, [nodeId]: next },
+        };
+      }
+      const nextMessage: ChatMessage = {
+        id: streamId,
+        nodeId,
+        role: 'assistant',
+        content: delta,
+        createdAt: timestamp,
+        streaming: true,
+      };
+      return {
+        chatMessages: {
+          ...state.chatMessages,
+          [nodeId]: [...messages, nextMessage],
+        },
+      };
+    }),
+
+  finalizeAssistantMessage: (nodeId, content, timestamp, status, id) =>
+    set((state) => {
+      const messages = state.chatMessages[nodeId] ?? [];
+      const streamId = `stream-${nodeId}`;
+      const thinkingStreamId = `thinking-stream-${nodeId}`;
+      const hasExistingMessage = messages.some((message) => message.id === id);
+      const filtered = messages.filter(
+        (message) => message.id !== streamId && message.id !== thinkingStreamId
+      );
+
+      if (hasExistingMessage) {
+        return {
+          chatMessages: {
+            ...state.chatMessages,
+            [nodeId]: filtered,
+          },
+        };
+      }
+
+      const streamingMsg = messages.find((message) => message.id === streamId);
+      const thinkingStreamingMsg = messages.find((message) => message.id === thinkingStreamId);
+      const thinking = streamingMsg?.thinking ?? thinkingStreamingMsg?.thinking;
+
+      const nextMessage: ChatMessage = {
+        id: id ?? `local-${crypto.randomUUID()}`,
         nodeId,
         role: 'assistant',
         content,
-        timestamp: new Date().toISOString(),
+        createdAt: timestamp,
+        status,
+        thinking,
       };
-      const existing = state.chatMessages[nodeId] ?? [];
       return {
-        streamingContent: remainingStreaming,
         chatMessages: {
           ...state.chatMessages,
-          [nodeId]: [...existing, message],
+          [nodeId]: [...filtered, nextMessage],
         },
       };
-    });
-  },
+    }),
+
+  appendAssistantThinkingDelta: (nodeId, delta, timestamp) =>
+    set((state) => {
+      const messages = state.chatMessages[nodeId] ?? [];
+      const streamId = `stream-${nodeId}`;
+      const existingStreamIndex = messages.findIndex((msg) => msg.id === streamId);
+
+      if (existingStreamIndex >= 0) {
+        const existing = messages[existingStreamIndex];
+        const next = [...messages];
+        next[existingStreamIndex] = {
+          ...existing,
+          thinking: `${existing.thinking ?? ''}${delta}`,
+          thinkingStreaming: true,
+          createdAt: timestamp,
+        };
+        return {
+          chatMessages: { ...state.chatMessages, [nodeId]: next },
+        };
+      }
+
+      const thinkingStreamId = `thinking-stream-${nodeId}`;
+      const existingThinkingIndex = messages.findIndex((msg) => msg.id === thinkingStreamId);
+
+      if (existingThinkingIndex >= 0) {
+        const existing = messages[existingThinkingIndex];
+        const next = [...messages];
+        next[existingThinkingIndex] = {
+          ...existing,
+          thinking: `${existing.thinking ?? ''}${delta}`,
+          thinkingStreaming: true,
+          createdAt: timestamp,
+        };
+        return {
+          chatMessages: { ...state.chatMessages, [nodeId]: next },
+        };
+      }
+
+      const nextMessage: ChatMessage = {
+        id: thinkingStreamId,
+        nodeId,
+        role: 'assistant',
+        content: '',
+        createdAt: timestamp,
+        streaming: true,
+        thinking: delta,
+        thinkingStreaming: true,
+      };
+      return {
+        chatMessages: {
+          ...state.chatMessages,
+          [nodeId]: [...messages, nextMessage],
+        },
+      };
+    }),
+
+  finalizeAssistantThinking: (nodeId, content, timestamp) =>
+    set((state) => {
+      const messages = state.chatMessages[nodeId] ?? [];
+      const streamId = `stream-${nodeId}`;
+      const thinkingStreamId = `thinking-stream-${nodeId}`;
+
+      const streamIndex = messages.findIndex((msg) => msg.id === streamId);
+      if (streamIndex >= 0) {
+        const existing = messages[streamIndex];
+        const next = [...messages];
+        next[streamIndex] = {
+          ...existing,
+          thinking: content,
+          thinkingStreaming: false,
+          createdAt: timestamp,
+        };
+        return {
+          chatMessages: { ...state.chatMessages, [nodeId]: next },
+        };
+      }
+
+      const thinkingStreamIndex = messages.findIndex((msg) => msg.id === thinkingStreamId);
+      if (thinkingStreamIndex >= 0) {
+        const existing = messages[thinkingStreamIndex];
+        const next = [...messages];
+        next[thinkingStreamIndex] = {
+          ...existing,
+          thinking: content,
+          thinkingStreaming: false,
+          createdAt: timestamp,
+        };
+        return {
+          chatMessages: { ...state.chatMessages, [nodeId]: next },
+        };
+      }
+
+      const nextMessage: ChatMessage = {
+        id: thinkingStreamId,
+        nodeId,
+        role: 'assistant',
+        content: '',
+        createdAt: timestamp,
+        streaming: true,
+        thinking: content,
+        thinkingStreaming: false,
+      };
+      return {
+        chatMessages: {
+          ...state.chatMessages,
+          [nodeId]: [...messages, nextMessage],
+        },
+      };
+    }),
+
+  clearNodeMessages: (nodeId) =>
+    set((state) => {
+      if (!state.chatMessages[nodeId]) {
+        return state;
+      }
+      const { [nodeId]: _removed, ...remaining } = state.chatMessages;
+      return { chatMessages: remaining };
+    }),
+
+  addToolEvent: (event) =>
+    set((state) => ({
+      toolEvents: [...state.toolEvents, event].slice(-100),
+    })),
+
+  updateToolEvent: (toolId, update) =>
+    set((state) => ({
+      toolEvents: state.toolEvents.map((event) =>
+        event.tool.id === toolId ? { ...event, ...update } : event
+      ),
+    })),
+
+  addTurnStatusEvent: (event) =>
+    set((state) => ({
+      turnStatusEvents: [...state.turnStatusEvents, event].slice(-200),
+    })),
 
   // Approvals
   addApproval: (approval) => {

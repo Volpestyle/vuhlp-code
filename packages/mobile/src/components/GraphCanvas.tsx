@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useEffect } from 'react';
-import { View, StyleSheet, useWindowDimensions } from 'react-native';
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import { View, StyleSheet, useWindowDimensions, LayoutChangeEvent } from 'react-native';
 import { Canvas, Path, Skia, Group, Line, vec } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -26,19 +26,31 @@ const SPRING_CONFIG = {
 const EDGE_SNAP_RADIUS = 30;
 
 export function GraphCanvas() {
-  const { width, height } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const [dimensions, setDimensions] = useState({ width: windowWidth, height: windowHeight });
+
   const run = useGraphStore((s) => s.run);
   const nodes = useGraphStore((s) => s.nodes);
   const edges = useGraphStore((s) => s.edges);
   const viewport = useGraphStore((s) => s.viewport);
   const edgeDrag = useGraphStore((s) => s.edgeDrag);
   const setViewport = useGraphStore((s) => s.setViewport);
+  const setViewDimensions = useGraphStore((s) => s.setViewDimensions);
   const selectNode = useGraphStore((s) => s.selectNode);
   const updateNodePosition = useGraphStore((s) => s.updateNodePosition);
   const startEdgeDrag = useGraphStore((s) => s.startEdgeDrag);
   const updateEdgeDrag = useGraphStore((s) => s.updateEdgeDrag);
   const endEdgeDrag = useGraphStore((s) => s.endEdgeDrag);
   const addEdge = useGraphStore((s) => s.addEdge);
+
+  const onLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const { width, height } = event.nativeEvent.layout;
+      setDimensions({ width, height });
+      setViewDimensions({ width, height });
+    },
+    [setViewDimensions]
+  );
 
   // Animated viewport values for smooth gestures
   const viewportX = useSharedValue(viewport.x);
@@ -56,6 +68,8 @@ export function GraphCanvas() {
   const savedX = useSharedValue(0);
   const savedY = useSharedValue(0);
   const savedZoom = useSharedValue(1);
+  const pinchWorldX = useSharedValue(0);
+  const pinchWorldY = useSharedValue(0);
   const syncFrameCount = useSharedValue(0);
 
   const syncViewport = useCallback(() => {
@@ -75,20 +89,20 @@ export function GraphCanvas() {
 
   // Pinch gesture - always active, works simultaneously with other gestures
   const pinchGesture = Gesture.Pinch()
-    .onStart(() => {
+    .onStart((e) => {
       savedZoom.value = viewportZoom.value;
+      const zoom = viewportZoom.value || 1;
+      pinchWorldX.value = (e.focalX - viewportX.value) / zoom;
+      pinchWorldY.value = (e.focalY - viewportY.value) / zoom;
       syncFrameCount.value = 0;
     })
     .onUpdate((e) => {
       const nextZoom = Math.max(0.25, Math.min(savedZoom.value * e.scale, 4));
-      const prevZoom = viewportZoom.value;
       const focusX = e.focalX;
       const focusY = e.focalY;
-      const worldX = (focusX - viewportX.value) / prevZoom;
-      const worldY = (focusY - viewportY.value) / prevZoom;
       viewportZoom.value = nextZoom;
-      viewportX.value = focusX - worldX * nextZoom;
-      viewportY.value = focusY - worldY * nextZoom;
+      viewportX.value = focusX - pinchWorldX.value * nextZoom;
+      viewportY.value = focusY - pinchWorldY.value * nextZoom;
       syncFrameCount.value += 1;
       if (syncFrameCount.value % 3 === 0) {
         runOnJS(syncViewportFrame)(
@@ -291,12 +305,12 @@ export function GraphCanvas() {
   ]);
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} onLayout={onLayout}>
       <View style={styles.canvasContainer}>
         <GestureDetector gesture={composedGesture}>
           <View style={styles.gestureLayer}>
             {/* Skia canvas for edges */}
-            <Canvas style={[styles.canvas, { width, height }]}>
+            <Canvas style={[styles.canvas, { width: dimensions.width, height: dimensions.height }]}>
               <Group
                 transform={groupTransform}
               >

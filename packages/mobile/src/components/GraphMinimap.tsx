@@ -18,6 +18,7 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
   const screenDimensions = useWindowDimensions();
   const nodes = useGraphStore((s) => s.nodes);
   const viewport = useGraphStore((s) => s.viewport);
+  const viewDimensions = useGraphStore((s) => s.viewDimensions);
   const setViewport = useGraphStore((s) => s.setViewport);
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
 
@@ -85,8 +86,12 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
 
     // Center viewport on this world position
     // viewport.x = screenWidth/2 - worldX * zoom
-    const newViewportX = screenDimensions.width / 2 - targetWorldX * viewport.zoom;
-    const newViewportY = screenDimensions.height / 2 - targetWorldY * viewport.zoom;
+    // We use the view dimensions here to center correctly
+    const viewW = viewDimensions.width || screenDimensions.width;
+    const viewH = viewDimensions.height || screenDimensions.height;
+    
+    const newViewportX = viewW / 2 - targetWorldX * viewport.zoom;
+    const newViewportY = viewH / 2 - targetWorldY * viewport.zoom;
 
     setViewport({ ...viewport, x: newViewportX, y: newViewportY });
   };
@@ -110,10 +115,13 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
   }
 
   // Calculate visible viewport rectangle in minimap coords
+  const viewW = viewDimensions.width || screenDimensions.width;
+  const viewH = viewDimensions.height || screenDimensions.height;
+
   const viewWorldLeft = -viewport.x / viewport.zoom;
   const viewWorldTop = -viewport.y / viewport.zoom;
-  const viewWorldRight = (screenDimensions.width - viewport.x) / viewport.zoom;
-  const viewWorldBottom = (screenDimensions.height - viewport.y) / viewport.zoom;
+  const viewWorldRight = (viewW - viewport.x) / viewport.zoom;
+  const viewWorldBottom = (viewH - viewport.y) / viewport.zoom;
 
   const viewMiniLeft = (viewWorldLeft - bounds.minX) * transform.scale + transform.offsetX;
   const viewMiniTop = (viewWorldTop - bounds.minY) * transform.scale + transform.offsetY;
@@ -171,8 +179,8 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    top: 60, // Below safe area / header
-    left: 16,
+    top: 0,
+    left: 0,
     backgroundColor: 'rgba(26, 26, 26, 0.95)',
     borderRadius: 8,
     borderWidth: 1,

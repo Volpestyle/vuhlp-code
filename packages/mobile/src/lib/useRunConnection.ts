@@ -1,7 +1,13 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import type { EventEnvelope, NodeState } from '@vuhlp/contracts';
 import { api, getWebSocketUrl } from './api';
-import { useGraphStore, type ChatMessage, type PendingApproval } from '@/stores/graph-store';
+import {
+  useGraphStore,
+  type ChatMessage,
+  type PendingApproval,
+  type ToolEvent,
+  type TurnStatusEvent,
+} from '@/stores/graph-store';
 
 interface ConnectionState {
   loading: boolean;
@@ -52,8 +58,13 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
   const addEdge = useGraphStore((s) => s.addEdge);
   const removeEdge = useGraphStore((s) => s.removeEdge);
   const addChatMessage = useGraphStore((s) => s.addChatMessage);
-  const appendStreamingContent = useGraphStore((s) => s.appendStreamingContent);
-  const finalizeStreaming = useGraphStore((s) => s.finalizeStreaming);
+  const appendAssistantDelta = useGraphStore((s) => s.appendAssistantDelta);
+  const finalizeAssistantMessage = useGraphStore((s) => s.finalizeAssistantMessage);
+  const appendAssistantThinkingDelta = useGraphStore((s) => s.appendAssistantThinkingDelta);
+  const finalizeAssistantThinking = useGraphStore((s) => s.finalizeAssistantThinking);
+  const addToolEvent = useGraphStore((s) => s.addToolEvent);
+  const updateToolEvent = useGraphStore((s) => s.updateToolEvent);
+  const addTurnStatusEvent = useGraphStore((s) => s.addTurnStatusEvent);
   const addApproval = useGraphStore((s) => s.addApproval);
   const removeApproval = useGraphStore((s) => s.removeApproval);
   const reset = useGraphStore((s) => s.reset);
@@ -98,20 +109,80 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
           const userMsg: ChatMessage = {
             id: event.message.id,
             nodeId: event.message.nodeId,
-            role: 'user',
+            role: event.message.role,
             content: event.message.content,
-            timestamp: event.message.createdAt,
+            createdAt: event.message.createdAt,
+            interrupt: event.message.interrupt,
           };
           addChatMessage(userMsg);
           break;
         }
 
         case 'message.assistant.delta':
-          appendStreamingContent(event.nodeId, event.delta);
+          appendAssistantDelta(event.nodeId, event.delta, event.ts);
           break;
 
         case 'message.assistant.final':
-          finalizeStreaming(event.nodeId, event.content);
+          finalizeAssistantMessage(
+            event.nodeId,
+            event.content,
+            event.ts,
+            event.status,
+            event.id
+          );
+          break;
+
+        case 'message.assistant.thinking.delta':
+          appendAssistantThinkingDelta(event.nodeId, event.delta, event.ts);
+          break;
+
+        case 'message.assistant.thinking.final':
+          finalizeAssistantThinking(event.nodeId, event.content, event.ts);
+          break;
+
+        case 'turn.status': {
+          const statusEvent: TurnStatusEvent = {
+            id: event.id,
+            nodeId: event.nodeId,
+            status: event.status,
+            detail: event.detail,
+            timestamp: event.ts,
+          };
+          addTurnStatusEvent(statusEvent);
+          break;
+        }
+
+        case 'tool.proposed': {
+          const toolEvent: ToolEvent = {
+            id: event.id,
+            nodeId: event.nodeId,
+            tool: event.tool,
+            status: 'proposed',
+            timestamp: event.ts,
+          };
+          addToolEvent(toolEvent);
+          break;
+        }
+
+        case 'tool.started': {
+          const toolEvent: ToolEvent = {
+            id: event.id,
+            nodeId: event.nodeId,
+            tool: event.tool,
+            status: 'started',
+            timestamp: event.ts,
+          };
+          addToolEvent(toolEvent);
+          break;
+        }
+
+        case 'tool.completed':
+          updateToolEvent(event.toolId, {
+            status: event.result.ok ? 'completed' : 'failed',
+            result: event.result,
+            error: event.error,
+            timestamp: event.ts,
+          });
           break;
 
         case 'approval.requested': {
@@ -119,7 +190,7 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
             id: event.approvalId,
             nodeId: event.nodeId,
             toolName: event.tool.name,
-            toolArgs: event.tool.args as Record<string, unknown>,
+            toolArgs: event.tool.args,
             context: event.context,
             timestamp: event.ts,
           };
@@ -135,9 +206,6 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
         case 'run.mode':
         case 'run.stalled':
         case 'handoff.sent':
-        case 'tool.proposed':
-        case 'tool.started':
-        case 'tool.completed':
         case 'artifact.created':
           // Log for debugging
           console.log(`[ws] event: ${event.type}`);
@@ -156,8 +224,13 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
       addEdge,
       removeEdge,
       addChatMessage,
-      appendStreamingContent,
-      finalizeStreaming,
+      appendAssistantDelta,
+      finalizeAssistantMessage,
+      appendAssistantThinkingDelta,
+      finalizeAssistantThinking,
+      addToolEvent,
+      updateToolEvent,
+      addTurnStatusEvent,
       addApproval,
       removeApproval,
     ]
