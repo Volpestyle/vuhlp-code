@@ -67,7 +67,8 @@ const areCapabilitiesEqual = (a: NodeCapabilities, b: NodeCapabilities) =>
   (Object.keys(a) as Array<keyof NodeCapabilities>).every((key) => a[key] === b[key]);
 
 const arePermissionsEqual = (a: NodePermissions, b: NodePermissions) =>
-  a.cliPermissionsMode === b.cliPermissionsMode && a.spawnRequiresApproval === b.spawnRequiresApproval;
+  a.cliPermissionsMode === b.cliPermissionsMode &&
+  a.agentManagementRequiresApproval === b.agentManagementRequiresApproval;
 
 const buildNodeTimeline = (
   messages: ChatMessage[],
@@ -386,12 +387,12 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     }));
   };
 
-  const handleSpawnApprovalToggle = () => {
+  const handleAgentManagementApprovalToggle = () => {
     setConfigDraft((prev) => ({
       ...prev,
       permissions: {
         ...prev.permissions,
-        spawnRequiresApproval: !prev.permissions.spawnRequiresApproval,
+        agentManagementRequiresApproval: !prev.permissions.agentManagementRequiresApproval,
       },
     }));
   };
@@ -612,7 +613,7 @@ export function NodeInspector({ node }: NodeInspectorProps) {
             onPromptOverrideModeChange={setPromptOverrideMode}
             onCapabilityToggle={handleCapabilityToggle}
             onPermissionsModeChange={handlePermissionsModeChange}
-            onSpawnApprovalToggle={handleSpawnApprovalToggle}
+            onAgentManagementApprovalToggle={handleAgentManagementApprovalToggle}
             onSaveConfig={handleSaveConfig}
             onDeleteEdge={handleDeleteEdge}
             onSaveEdgeLabel={handleSaveEdgeLabel}
@@ -672,22 +673,44 @@ export function NodeInspector({ node }: NodeInspectorProps) {
           />
           {messageError && <div className="inspector__error">{messageError}</div>}
           <div className="inspector__message-actions">
-            <button
-              className="btn btn--secondary"
-              onClick={() => handleSendMessage(false)}
-              disabled={!messageInput.trim()}
-              title="Queue message for next turn"
-            >
-              Queue
-            </button>
-            <button
-              className="btn btn--primary"
-              onClick={() => handleSendMessage(true)}
-              disabled={!messageInput.trim()}
-              title="Interrupt and send immediately"
-            >
-              Interrupt
-            </button>
+            {node.status === 'running' ? (
+              <>
+                <button
+                  className="btn btn--secondary"
+                  onClick={() => handleSendMessage(false)}
+                  disabled={!messageInput.trim()}
+                  title="Queue message for next turn"
+                >
+                  Queue
+                </button>
+                <button
+                  className="btn btn--primary"
+                  onClick={() => handleSendMessage(true)}
+                  disabled={!messageInput.trim()}
+                  title="Interrupt and send immediately"
+                >
+                  Interrupt
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className="btn btn--secondary"
+                  disabled
+                  title="Queue is only available when running"
+                >
+                  Queue
+                </button>
+                <button
+                  className="btn btn--primary"
+                  onClick={() => handleSendMessage(false)}
+                  disabled={!messageInput.trim()}
+                  title="Send message"
+                >
+                  Send
+                </button>
+              </>
+            )}
           </div>
         </div>
       </footer>
@@ -739,13 +762,13 @@ function ChatTab({
             <span className="timeline-message__role">assistant</span>
             <div className="timeline-message__meta">
               <span className="timeline-message__streaming timeline-message__streaming--thinking">
-                <ThinkingSpinner size="sm" />
+                <ThinkingSpinner size="sm" variant="assemble" color="#7aedc4" />
                 thinking
               </span>
             </div>
           </div>
           <div className="timeline-message__content">
-            <ThinkingSpinner size="lg" />
+            <ThinkingSpinner size="lg" variant="assemble" color="#7aedc4" />
           </div>
         </div>
       )}
@@ -775,7 +798,7 @@ function OverviewTab({
   onPromptOverrideModeChange,
   onCapabilityToggle,
   onPermissionsModeChange,
-  onSpawnApprovalToggle,
+  onAgentManagementApprovalToggle,
   onSaveConfig,
   onDeleteEdge,
   onSaveEdgeLabel,
@@ -802,7 +825,7 @@ function OverviewTab({
   onPromptOverrideModeChange: (mode: 'template' | 'custom') => void;
   onCapabilityToggle: (key: keyof NodeCapabilities) => void;
   onPermissionsModeChange: (mode: NodePermissions['cliPermissionsMode']) => void;
-  onSpawnApprovalToggle: () => void;
+  onAgentManagementApprovalToggle: () => void;
   onSaveConfig: () => void;
   onDeleteEdge: (edgeId: string) => void;
   onSaveEdgeLabel: (edgeId: string, label: string) => void;
@@ -825,6 +848,21 @@ function OverviewTab({
 
   return (
     <div className="inspector__section">
+      {/* Identity */}
+      <div className="inspector__group">
+        <h3 className="inspector__group-title">Identity</h3>
+        <div className="inspector__kv-list">
+          <div className="inspector__kv">
+            <span className="inspector__kv-key">Node ID</span>
+            <span className="inspector__kv-value inspector__kv-value--mono">{node.id}</span>
+          </div>
+          <div className="inspector__kv">
+            <span className="inspector__kv-key">Alias</span>
+            <span className="inspector__kv-value">{node.alias ?? "none"}</span>
+          </div>
+        </div>
+      </div>
+
       {/* Configuration */}
       <div className="inspector__group inspector__group--config">
         <h3 className="inspector__group-title">Configuration</h3>
@@ -893,7 +931,7 @@ function OverviewTab({
                     style={{ height: `${templatePreviewHeight}px` }}
                   >
                     {templateLoading
-                      ? <span className="inspector__loading"><ThinkingSpinner size="sm" /> Loading template</span>
+                      ? <span className="inspector__loading"><ThinkingSpinner size="sm" color="#d4cef0" /> Loading template</span>
                       : templatePreview?.content ?? 'Select a role template to preview.'}
                   </pre>
                   {!templateLoading && templatePreview && !templatePreview.found && (
@@ -930,11 +968,11 @@ function OverviewTab({
             <label className="inspector__toggle">
               <input
                 type="checkbox"
-                checked={configDraft.permissions.spawnRequiresApproval}
-                onChange={onSpawnApprovalToggle}
+                checked={configDraft.permissions.agentManagementRequiresApproval}
+                onChange={onAgentManagementApprovalToggle}
                 disabled={configDisabled}
               />
-              <span>Spawn requires approval</span>
+              <span>Agent management requires approval</span>
             </label>
             <label className="inspector__field">
               <span className="inspector__field-label">CLI Permissions</span>
@@ -1197,6 +1235,12 @@ function HandoffsTab({ handoffs, nodeId }: { handoffs: Envelope[]; nodeId: strin
             </span>
           </div>
           <p className="inspector__handoff-message">{handoff.payload.message}</p>
+          {handoff.payload.response && (
+            <div className="inspector__handoff-response">
+              Response: {handoff.payload.response.expectation}
+              {handoff.payload.response.replyTo ? ` (replyTo ${handoff.payload.response.replyTo})` : ''}
+            </div>
+          )}
           {handoff.payload.status && (
             <div className={`inspector__handoff-status ${handoff.payload.status.ok ? 'inspector__handoff-status--ok' : 'inspector__handoff-status--fail'}`}>
               {handoff.payload.status.ok ? '\u2713' : '\u2717'} {handoff.payload.status.reason || 'No reason'}
@@ -1293,7 +1337,7 @@ function TextArtifactsTab({
                   disabled={isLoading}
                   title="View"
                 >
-                  {isLoading ? <ThinkingSpinner size="sm" /> : <Eye width={14} height={14} />}
+                  {isLoading ? <ThinkingSpinner size="sm" color="#d4cef0" /> : <Eye width={14} height={14} />}
                 </button>
               </div>
             )}

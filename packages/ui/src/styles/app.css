@@ -115,6 +115,108 @@
   opacity: 0.7;
 }
 
+/* App Loader */
+.app__loader {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  position: relative;
+}
+
+.app__loader-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  text-align: center;
+}
+
+.app__loader-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 420px;
+}
+
+.app__loader-title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-primary);
+}
+
+.app__loader-detail {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.app__loader-action {
+  margin-top: var(--space-2);
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.app__loader-action:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-text-accent);
+}
+
+.app__loader-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* App Banner */
+.app__banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-border-strong);
+  background: var(--color-bg-elevated);
+  font-size: var(--font-size-sm);
+}
+
+.app__banner--error .app__banner-message {
+  color: var(--color-text-secondary);
+}
+
+.app__banner-action {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.app__banner-action:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-text-accent);
+}
+
+.app__banner-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Fullscreen mode */
 .app--fullscreen {
   background: linear-gradient(180deg, var(--color-bg-primary), var(--color-void));

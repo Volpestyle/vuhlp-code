@@ -5,6 +5,7 @@ export type EventHandlingMode = 'live' | 'replay';
 
 interface ApplyEventOptions {
   mode?: EventHandlingMode;
+  allowDuplicateHandoffAnimation?: boolean;
 }
 
 const SEEN_EVENT_LIMIT = 2000;
@@ -70,19 +71,22 @@ const hasNodeCoreFields = (patch: Partial<NodeState>): patch is Partial<NodeStat
 } =>
   Boolean(
     patch &&
-      typeof patch.label === 'string' &&
-      typeof patch.roleTemplate === 'string' &&
-      typeof patch.provider === 'string' &&
-      typeof patch.status === 'string' &&
-      typeof patch.summary === 'string' &&
-      typeof patch.lastActivityAt === 'string' &&
-      patch.capabilities &&
-      patch.permissions &&
-      patch.session
+    typeof patch.label === 'string' &&
+    typeof patch.roleTemplate === 'string' &&
+    typeof patch.provider === 'string' &&
+    typeof patch.status === 'string' &&
+    typeof patch.summary === 'string' &&
+    typeof patch.lastActivityAt === 'string' &&
+    patch.capabilities &&
+    patch.permissions &&
+    patch.session
   );
 
 export function applyEventToStore(event: EventEnvelope, options?: ApplyEventOptions): boolean {
-  if (markEventSeen(event)) {
+  const alreadySeen = markEventSeen(event);
+  const allowDuplicateHandoffAnimation =
+    options?.allowDuplicateHandoffAnimation === true && event.type === 'handoff.sent';
+  if (alreadySeen && !allowDuplicateHandoffAnimation) {
     return true;
   }
   const mode = options?.mode ?? 'live';
@@ -204,7 +208,9 @@ export function applyEventToStore(event: EventEnvelope, options?: ApplyEventOpti
       return true;
 
     case 'handoff.sent': {
-      store.addHandoff(event.envelope);
+      if (!alreadySeen) {
+        store.addHandoff(event.envelope);
+      }
       if (isLive && store.run) {
         // Find edge between nodes
         const edges = Object.values(store.run.edges);
@@ -216,7 +222,7 @@ export function applyEventToStore(event: EventEnvelope, options?: ApplyEventOpti
               e.to === event.envelope.fromNodeId)
         );
         if (matchingEdge) {
-          store.triggerHandoffAnimation(matchingEdge.id);
+          store.triggerHandoffAnimation(matchingEdge.id, event.envelope.fromNodeId, event.envelope.toNodeId);
         }
       }
       return true;
@@ -274,6 +280,10 @@ export function applyEventToStore(event: EventEnvelope, options?: ApplyEventOpti
       return true;
 
     case 'tool.proposed': {
+      const existing = store.toolEvents.find((entry) => entry.tool.id === event.tool.id);
+      if (existing) {
+        return true;
+      }
       const toolEvent: ToolEvent = {
         id: event.id,
         nodeId: event.nodeId,
@@ -286,14 +296,22 @@ export function applyEventToStore(event: EventEnvelope, options?: ApplyEventOpti
     }
 
     case 'tool.started': {
-      const toolEvent: ToolEvent = {
+      const existing = store.toolEvents.find((entry) => entry.tool.id === event.tool.id);
+      if (existing) {
+        store.updateToolEvent(event.tool.id, {
+          status: 'started',
+          tool: event.tool,
+          timestamp: event.ts,
+        });
+        return true;
+      }
+      store.addToolEvent({
         id: event.id,
         nodeId: event.nodeId,
         tool: event.tool,
         status: 'started',
         timestamp: event.ts,
-      };
-      store.addToolEvent(toolEvent);
+      });
       return true;
     }
 

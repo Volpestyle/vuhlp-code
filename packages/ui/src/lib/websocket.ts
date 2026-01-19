@@ -12,6 +12,7 @@ interface WebSocketClientOptions {
   url: string;
   runId: string;
   onConnectionChange?: (state: ConnectionState) => void;
+  onEvent?: (event: EventEnvelope) => void;
 }
 
 const DEFAULT_WS_URL = 'ws://localhost:4000';
@@ -51,11 +52,13 @@ class WebSocketClient {
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
   private onConnectionChange?: (state: ConnectionState) => void;
+  private onEvent?: (event: EventEnvelope) => void;
 
   constructor(options: WebSocketClientOptions) {
     this.url = options.url;
     this.runId = options.runId;
     this.onConnectionChange = options.onConnectionChange;
+    this.onEvent = options.onEvent;
   }
 
   connect(): void {
@@ -119,6 +122,10 @@ class WebSocketClient {
   }
 
   private handleEvent(event: EventEnvelope): void {
+    if (this.onEvent) {
+      this.onEvent(event);
+      return;
+    }
     debugLog('[ws] event:', event.type, event);
     const handled = applyEventToStore(event, { mode: 'live' });
     if (!handled) {
@@ -138,7 +145,11 @@ class WebSocketClient {
 // Singleton instance
 let wsClient: WebSocketClient | null = null;
 
-export function connectToRun(runId: string, onConnectionChange?: (state: ConnectionState) => void): WebSocketClient {
+export function connectToRun(
+  runId: string,
+  onConnectionChange?: (state: ConnectionState) => void,
+  onEvent?: (event: EventEnvelope) => void
+): WebSocketClient {
   if (wsClient) {
     wsClient.disconnect();
   }
@@ -152,6 +163,7 @@ export function connectToRun(runId: string, onConnectionChange?: (state: Connect
     url: wsUrl,
     runId,
     onConnectionChange,
+    onEvent,
   });
 
   wsClient.connect();

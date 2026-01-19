@@ -77,7 +77,7 @@ export function useKeyboardShortcuts() {
           },
           permissions: {
             cliPermissionsMode: 'skip',
-            spawnRequiresApproval: true,
+            agentManagementRequiresApproval: true,
           },
           session: {
             resume: true,

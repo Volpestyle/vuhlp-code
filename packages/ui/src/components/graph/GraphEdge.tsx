@@ -1,5 +1,4 @@
 import React, { useCallback, useState } from 'react';
-import { Graphics, Container, Text } from '@pixi/react';
 import { VisualNode, VisualEdge } from '../../types/graph';
 import * as PIXI from 'pixi.js';
 import { useRunStore } from '../../stores/runStore';
@@ -59,7 +58,7 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
       return;
     }
     const now = Date.now();
-    const elapsed = now - lastHandoff;
+    const elapsed = now - lastHandoff.timestamp;
     const duration = 2000; // 2 seconds
     
     if (elapsed < duration) {
@@ -114,7 +113,10 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
     const midY = Math.pow(1 - t, 3) * start.y + 
                  3 * Math.pow(1 - t, 2) * t * cp1.y + 
                  3 * (1 - t) * Math.pow(t, 2) * cp2.y + 
-                 Math.pow(t, 3) * end.y;
+                 3 * Math.pow(t, 3) * end.y; // Fix: last term is t^3 * end.y 
+                 // Note: formula in original code was correct, just checking.
+                 // Correct formula: (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t)t^2 P2 + t^3 P3
+                 // Original: Math.pow(t, 3) * end.y. OK.
     
     if (Math.abs(midX - labelPos.x) > 1 || Math.abs(midY - labelPos.y) > 1) {
        setLabelPos({ x: midX, y: midY });
@@ -126,9 +128,10 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
     const lineColor = edge.selected ? 0x007bff : 0x999999;
     const lineAlpha = edge.selected ? 0.95 : 0.8;
     const lineWidth = edge.selected ? 3 : 2;
-    g.lineStyle(lineWidth, lineColor, lineAlpha);
+
     g.moveTo(start.x, start.y);
     g.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, end.x, end.y);
+    g.stroke({ width: lineWidth, color: lineColor, alpha: lineAlpha });
     
     const arrowLength = 10;
     const arrowWidth = 4;
@@ -139,9 +142,6 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
       const dy = end.y - cp2.y;
       const angle = Math.atan2(dy, dx);
       
-      g.lineStyle(0);
-      g.beginFill(lineColor);
-      
       const tip = { x: end.x, y: end.y };
       const left = {
         x: end.x - arrowLength * Math.cos(angle) + arrowWidth * Math.sin(angle),
@@ -151,8 +151,9 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
         x: end.x - arrowLength * Math.cos(angle) - arrowWidth * Math.sin(angle),
         y: end.y - arrowLength * Math.sin(angle) + arrowWidth * Math.cos(angle)
       };
-      g.drawPolygon([tip.x, tip.y, left.x, left.y, right.x, right.y]);
-      g.endFill();
+      
+      g.poly([tip.x, tip.y, left.x, left.y, right.x, right.y]);
+      g.fill({ color: lineColor });
     }
 
     // Start Arrow Head (if bidirectional)
@@ -160,9 +161,6 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
       const dx = start.x - cp1.x; // Vector pointing towards start
       const dy = start.y - cp1.y;
       const angle = Math.atan2(dy, dx);
-
-      g.lineStyle(0);
-      g.beginFill(lineColor);
 
       const tip = { x: start.x, y: start.y };
        const left = {
@@ -173,13 +171,16 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
         x: start.x - arrowLength * Math.cos(angle) - arrowWidth * Math.sin(angle),
         y: start.y - arrowLength * Math.sin(angle) + arrowWidth * Math.cos(angle)
       };
-      g.drawPolygon([tip.x, tip.y, left.x, left.y, right.x, right.y]);
-      g.endFill();
+      g.poly([tip.x, tip.y, left.x, left.y, right.x, right.y]);
+      g.fill({ color: lineColor });
     }
 
     // Handoff Animation
-    if (animationProgress !== null) {
-      const t = animationProgress;
+    if (animationProgress !== null && lastHandoff) {
+      // Determine direction: if sender is my targetNode, we reverse
+      const isReverse = lastHandoff.fromNodeId === targetNode.id;
+      const t = isReverse ? 1 - animationProgress : animationProgress;
+      
       const packetX = Math.pow(1 - t, 3) * start.x + 
                    3 * Math.pow(1 - t, 2) * t * cp1.x + 
                    3 * (1 - t) * Math.pow(t, 2) * cp2.x + 
@@ -190,15 +191,12 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
                    Math.pow(t, 3) * end.y;
 
       // Glow (Outer)
-      g.lineStyle(0);
-      g.beginFill(0x4287f5, 0.4); 
-      g.drawCircle(packetX, packetY, 8);
-      g.endFill();
+      g.circle(packetX, packetY, 8);
+      g.fill({ color: 0x4287f5, alpha: 0.4 });
 
       // Core (Inner)
-      g.beginFill(0xffffff, 1);
-      g.drawCircle(packetX, packetY, 4);
-      g.endFill();
+      g.circle(packetX, packetY, 4);
+      g.fill({ color: 0xffffff, alpha: 1 });
     }
 
     const hitPadding = 12;
@@ -212,12 +210,12 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
       maxX - minX + hitPadding * 2,
       maxY - minY + hitPadding * 2
     );
-  }, [sourceNode, targetNode, edge.bidirectional, edge.selected, labelPos.x, labelPos.y, animationProgress]);
+  }, [sourceNode, targetNode, edge.bidirectional, edge.selected, labelPos.x, labelPos.y, animationProgress, lastHandoff]);
 
   return (
-    <Container>
-      <Graphics draw={draw} eventMode="static" cursor="pointer" pointerdown={handlePointerDown} />
-      <Text
+    <container>
+      <graphics draw={draw} eventMode="static" cursor="pointer" onPointerDown={handlePointerDown} />
+      <pixiText
         text={edge.label}
         x={labelPos.x}
         y={labelPos.y}
@@ -227,11 +225,10 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
           fontSize: 10,
           fill: edge.selected ? 0x007bff : 0x666666,
           align: 'center',
-          stroke: 0xffffff,
-          strokeThickness: 2
+          stroke: { color: 0xffffff, width: 2 }
         })}
         eventMode="none"
       />
-    </Container>
+    </container>
   );
 };

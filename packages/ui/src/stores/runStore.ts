@@ -22,6 +22,60 @@ import type {
 } from '@vuhlp/contracts';
 import { getInitialTheme, type ThemeMode } from '../lib/theme';
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isToolCallLine = (line: string): boolean => {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return false;
+  }
+  if (!isRecord(parsed)) {
+    return false;
+  }
+  const container = isRecord(parsed.tool_call)
+    ? parsed.tool_call
+    : isRecord(parsed.toolCall)
+      ? parsed.toolCall
+      : null;
+  if (container) {
+    const name = typeof container.name === 'string' ? container.name.trim() : '';
+    const args = isRecord(container.args)
+      ? container.args
+      : isRecord(container.params)
+        ? container.params
+        : null;
+    return Boolean(name && args);
+  }
+  const directName =
+    typeof parsed.tool === 'string'
+      ? parsed.tool.trim()
+      : typeof parsed.name === 'string'
+        ? parsed.name.trim()
+        : '';
+  const directArgs = isRecord(parsed.args)
+    ? parsed.args
+    : isRecord(parsed.params)
+      ? parsed.params
+      : null;
+  return Boolean(directName && directArgs);
+};
+
+const stripToolCallLines = (content: string): string => {
+  if (!content) {
+    return content;
+  }
+  const lines = content.split('\n');
+  const kept = lines.filter((line) => !isToolCallLine(line));
+  return kept.join('\n');
+};
+
 export type ViewMode = 'graph' | 'fullscreen' | 'collapsed';
 
 /** Tool event for tracking tool usage per node */
@@ -63,6 +117,7 @@ export interface ChatMessage {
   thinkingStreaming?: boolean;
   pending?: boolean;
   sendError?: string;
+  rawContent?: string;
 }
 
 /** Stall evidence from run.stalled event */
@@ -84,7 +139,7 @@ interface UIState {
   theme: ThemeMode;
   wsConnectionStatus: WsConnectionStatus;
   wsLastError?: string;
-  lastHandoffs: Record<string, number>;
+  lastHandoffs: Record<string, { timestamp: number; fromNodeId: string; toNodeId: string }>;
 }
 
 /** Stall state for UI notification */
@@ -136,7 +191,7 @@ interface RunStore {
 
   // Actions - Handoffs
   addHandoff: (envelope: Envelope) => void;
-  triggerHandoffAnimation: (edgeId: string) => void;
+  triggerHandoffAnimation: (edgeId: string, fromNodeId: string, toNodeId: string) => void;
 
   // Actions - Chat
   addChatMessage: (message: ChatMessage) => void;
@@ -465,13 +520,13 @@ export const useRunStore = create<RunStore>()(
         recentHandoffs: [envelope, ...state.recentHandoffs].slice(0, 50),
       })),
 
-    triggerHandoffAnimation: (edgeId) =>
+    triggerHandoffAnimation: (edgeId, fromNodeId, toNodeId) =>
       set((state) => ({
         ui: {
           ...state.ui,
           lastHandoffs: {
             ...state.ui.lastHandoffs,
-            [edgeId]: Date.now(),
+            [edgeId]: { timestamp: Date.now(), fromNodeId, toNodeId },
           },
         },
       })),
@@ -549,10 +604,13 @@ export const useRunStore = create<RunStore>()(
         const existingIndex = messages.findIndex((msg) => msg.id === streamId);
         if (existingIndex >= 0) {
           const existing = messages[existingIndex];
+          const rawContent = `${existing.rawContent ?? existing.content}${delta}`;
+          const content = stripToolCallLines(rawContent);
           const next = [...messages];
           next[existingIndex] = {
             ...existing,
-            content: `${existing.content}${delta}`,
+            content,
+            rawContent,
             createdAt: timestamp,
             streaming: true,
           };
@@ -560,11 +618,14 @@ export const useRunStore = create<RunStore>()(
             chatMessages: { ...state.chatMessages, [nodeId]: next },
           };
         }
+        const rawContent = delta;
+        const content = stripToolCallLines(delta);
         const nextMessage: ChatMessage = {
           id: streamId,
           nodeId,
           role: 'assistant',
-          content: delta,
+          content,
+          rawContent,
           createdAt: timestamp,
           streaming: true,
         };

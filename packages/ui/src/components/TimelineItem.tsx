@@ -87,13 +87,13 @@ function MessageItem({ message, onRetry }: MessageItemProps) {
           )}
           {message.streaming && !message.thinkingStreaming && (
             <span className="timeline-message__streaming">
-              <ThinkingSpinner size="sm" />
+              <ThinkingSpinner size="sm" variant="assemble" color="#d4cef0" />
               streaming
             </span>
           )}
           {message.thinkingStreaming && (
             <span className="timeline-message__streaming timeline-message__streaming--thinking">
-              <ThinkingSpinner size="sm" />
+              <ThinkingSpinner size="sm" variant="assemble" color="#7aedc4" />
               thinking
             </span>
           )}

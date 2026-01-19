@@ -148,7 +148,7 @@ export function FullscreenChat({
             <StatusBadge status={node.status} />
             {isStreaming && (
               <span className="fullscreen-chat__streaming">
-                <ThinkingSpinner size="sm" />
+                <ThinkingSpinner size="sm" variant="assemble" color="#d4cef0" />
                 Streaming
               </span>
             )}
@@ -184,7 +184,7 @@ export function FullscreenChat({
 
       {/* Messages */}
       <div className="fullscreen-chat__messages" ref={messagesScrollRef}>
-        {timeline.length === 0 && node.status !== 'running' ? (
+        {timeline.length === 0 && node.status !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true' ? (
           <div className="fullscreen-chat__empty">
             <p className="fullscreen-chat__empty-text">
               Start a conversation with {node.label}
@@ -206,20 +206,20 @@ export function FullscreenChat({
               const lastItem = timeline[timeline.length - 1];
               const isStreamingMessage = lastItem?.type === 'message' && (lastItem.data.streaming || lastItem.data.thinkingStreaming);
 
-              if (node.status === 'running' && !isStreamingMessage) {
+              if ((node.status === 'running' && !isStreamingMessage) || import.meta.env.VITE_TEST_CUBE_SPINNER === 'true') {
                 return (
                   <div className="timeline-message timeline-message--assistant timeline-message--thinking">
                     <div className="timeline-message__header">
                       <span className="timeline-message__role">assistant</span>
                       <div className="timeline-message__meta">
                         <span className="timeline-message__streaming timeline-message__streaming--thinking">
-                          <ThinkingSpinner size="sm" />
+                          <ThinkingSpinner size="sm" variant="assemble" color="#7aedc4" />
                           thinking
                         </span>
                       </div>
                     </div>
                     <div className="timeline-message__content">
-                      <ThinkingSpinner size="lg" />
+                      <ThinkingSpinner size="lg" variant="assemble" color="#7aedc4" />
                     </div>
                   </div>
                 );

@@ -20,14 +20,14 @@ const DEFAULT_CAPABILITIES: NodeCapabilities = {
 
 const DEFAULT_PERMISSIONS: NodePermissions = {
   cliPermissionsMode: 'skip',
-  spawnRequiresApproval: true,
+  agentManagementRequiresApproval: true,
 };
 
 const getSpawnDefaults = (roleTemplate: string) => {
   const isOrchestrator = roleTemplate.trim().toLowerCase() === ORCHESTRATOR_ROLE;
   return {
     spawnNodes: isOrchestrator,
-    spawnRequiresApproval: !isOrchestrator,
+    agentManagementRequiresApproval: !isOrchestrator,
   };
 };
 
@@ -47,7 +47,7 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
   const [capabilities, setCapabilities] = useState<NodeCapabilities>(DEFAULT_CAPABILITIES);
   const [permissions, setPermissions] = useState<NodePermissions>(DEFAULT_PERMISSIONS);
   const [spawnNodesTouched, setSpawnNodesTouched] = useState(false);
-  const [spawnApprovalTouched, setSpawnApprovalTouched] = useState(false);
+  const [agentManagementApprovalTouched, setAgentManagementApprovalTouched] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,7 +59,7 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
     setCapabilities(DEFAULT_CAPABILITIES);
     setPermissions(DEFAULT_PERMISSIONS);
     setSpawnNodesTouched(false);
-    setSpawnApprovalTouched(false);
+    setAgentManagementApprovalTouched(false);
     setError(null);
   }, [open, nodeCount]);
 
@@ -69,10 +69,13 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
     if (!spawnNodesTouched) {
       setCapabilities((prev) => ({ ...prev, spawnNodes: defaults.spawnNodes }));
     }
-    if (!spawnApprovalTouched) {
-      setPermissions((prev) => ({ ...prev, spawnRequiresApproval: defaults.spawnRequiresApproval }));
+    if (!agentManagementApprovalTouched) {
+      setPermissions((prev) => ({
+        ...prev,
+        agentManagementRequiresApproval: defaults.agentManagementRequiresApproval,
+      }));
     }
-  }, [open, roleTemplate, spawnNodesTouched, spawnApprovalTouched]);
+  }, [open, roleTemplate, spawnNodesTouched, agentManagementApprovalTouched]);
 
   if (!open) return null;
 
@@ -163,19 +166,19 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
             <label className="new-node-modal__toggle">
               <input
                 type="checkbox"
-                checked={permissions.spawnRequiresApproval}
+                checked={permissions.agentManagementRequiresApproval}
                 onChange={() =>
                   setPermissions((prev) => {
-                    setSpawnApprovalTouched(true);
+                    setAgentManagementApprovalTouched(true);
                     return {
                       ...prev,
-                      spawnRequiresApproval: !prev.spawnRequiresApproval,
+                      agentManagementRequiresApproval: !prev.agentManagementRequiresApproval,
                     };
                   })
                 }
                 disabled={isSubmitting}
               />
-              <span>Spawn requires approval</span>
+              <span>Agent management requires approval</span>
             </label>
             <div className="form-group">
               <label className="form-label">CLI Permissions</label>

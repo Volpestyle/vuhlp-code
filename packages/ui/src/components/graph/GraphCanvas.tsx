@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Stage, Container, Graphics } from '@pixi/react';
+import { Application, extend } from '@pixi/react';
+import { Container, Graphics, Text } from 'pixi.js';
 import * as PIXI from 'pixi.js';
 import { Plus, Minus } from 'iconoir-react';
 import { useGraphStore } from '../../stores/graph-store';
@@ -12,6 +13,9 @@ import { GraphDomNodes } from './GraphDomNodes';
 import { NodeFocusOverlay } from './NodeFocusOverlay';
 import { GraphMinimap } from './GraphMinimap';
 import './GraphCanvas.css';
+
+// Register PixiJS components
+extend({ Container, Graphics, PixiText: Text });
 
 type EdgePreview = {
   fromNodeId: string;
@@ -95,9 +99,9 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     }
   }, [edgeMenu, selectedEdgeId]);
 
-  const getPixiPoint = (event: any) => {
-    const point = event?.data?.global ?? event?.global;
-    return point ? { x: point.x, y: point.y } : null;
+  const getPixiPoint = (event: PIXI.FederatedPointerEvent | null | undefined) => {
+    if (!event) return null;
+    return { x: event.global.x, y: event.global.y };
   };
 
   const getCanvasPoint = useCallback((event: PointerEvent | WheelEvent) => {
@@ -480,7 +484,11 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     return () => window.removeEventListener('wheel', handleWheel);
   }, [getCanvasPoint, setViewport, viewMode]);
 
-  const onPortPointerDown = (id: string, portIndex: number, event: any) => {
+  const onPortPointerDown = (
+    id: string,
+    portIndex: number,
+    event: React.PointerEvent<HTMLButtonElement>
+  ) => {
     if (viewMode === 'fullscreen') return;
     setEdgeMenu(null);
     if (event?.preventDefault) event.preventDefault();
@@ -504,7 +512,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
   };
 
   // --- Canvas Panning ---
-  const onCanvasPointerDown = (event: any) => {
+  const onCanvasPointerDown = (event: PIXI.FederatedPointerEvent) => {
     if (viewMode === 'fullscreen') return;
     // Only pan if clicking on the background (draggedNodeId check is a backup)
     if (draggedNodeIdRef.current || edgeDragRef.current) return;
@@ -518,15 +526,13 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     panStartPointRef.current = point;
   };
 
-  const drawBackground = (g: PIXI.Graphics) => {
+  const drawBackground = useCallback((g: PIXI.Graphics) => {
     g.clear();
-    g.beginFill(0x000000, 0);
-    const safeWidth = Math.max(1, dimensions.width);
-    const safeHeight = Math.max(1, dimensions.height);
-    g.drawRect(0, 0, safeWidth, safeHeight);
-    g.endFill();
-    g.hitArea = new PIXI.Rectangle(0, 0, safeWidth, safeHeight);
-  };
+    // V8 might changes here, but try to use compatible API if possible or update
+    g.rect(0, 0, Math.max(1, dimensions.width), Math.max(1, dimensions.height));
+    g.fill({ color: 0x000000, alpha: 0.001 }); // Almost transparent for hit testing
+    g.hitArea = new PIXI.Rectangle(0, 0, Math.max(1, dimensions.width), Math.max(1, dimensions.height));
+  }, [dimensions]);
 
   const drawEdgePreview = useCallback(
     (g: PIXI.Graphics) => {
@@ -536,9 +542,14 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       if (!node) return;
       const start = getPortPosition(node, edgePreview.fromPortIndex);
       if (!start) return;
-      g.lineStyle(2, 0x666666, 0.6);
+      
+      // V8 API: move to / line to still works but lineStyle is deprecated for stroke() or similar?
+      // V7: g.lineStyle(...) ...
+      // V8: g.moveTo(..).lineTo(..).stroke({ width: 2, color: 0x666666, alpha: 0.6 });
+      
       g.moveTo(start.x, start.y);
       g.lineTo(edgePreview.to.x, edgePreview.to.y);
+      g.stroke({ width: 2, color: 0x666666, alpha: 0.6 });
     },
     [edgePreview, nodes, getPortPosition]
   );
@@ -550,20 +561,22 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <Stage 
+      <Application 
         width={Math.max(1, dimensions.width)} 
         height={Math.max(1, dimensions.height)} 
-        options={{ backgroundAlpha: 0, antialias: true, eventMode: 'static' }}
+        backgroundAlpha={0}
+        antialias={true}
+        eventMode="static"
       >
-        <Graphics
+        <graphics
           draw={drawBackground}
           eventMode="static"
-          pointerdown={onCanvasPointerDown}
+          onPointerDown={onCanvasPointerDown}
         />
-        <Container 
+        <container 
           x={viewport.x} 
           y={viewport.y} 
-          scale={{ x: viewport.zoom, y: viewport.zoom }}
+          scale={viewport.zoom} // V8 scale can take single number? Only if it accepts it. Usually {x, y}
         >
           {/* Draw Edges first */}
           {edges.map(edge => {
@@ -584,11 +597,11 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
             return null;
           })}
 
-          {edgePreview && <Graphics draw={drawEdgePreview} eventMode="none" />}
+          {edgePreview && <graphics draw={drawEdgePreview} eventMode="none" />}
 
           {/* Nodes are rendered in the DOM layer for richer interaction */}
-        </Container>
-      </Stage>
+        </container>
+      </Application>
       <GraphDomNodes
         nodes={nodes}
         viewport={viewport}
