@@ -1,15 +1,19 @@
 import type {
   ApprovalResolution,
+  ArtifactRef,
   CliPermissionsMode,
   EdgeType,
   EventEnvelope,
   GlobalMode,
+  HandoffResponse,
+  HandoffStatus,
   NodeCapabilities,
   NodePermissions,
   NodeSessionConfig,
   ProviderName,
   UUID
 } from "@vuhlp/contracts";
+import type { JsonObject } from "./json.js";
 
 export type PromptKind = "full" | "delta";
 
@@ -24,6 +28,7 @@ export type ProviderTransport = "cli" | "api";
 
 export interface SpawnNodeRequest {
   label: string;
+  alias?: string;
   roleTemplate: string;
   provider: ProviderName;
   customSystemPrompt?: string | null;
@@ -37,6 +42,7 @@ export interface SpawnNodeRequest {
 export interface SpawnNodeResult {
   nodeId: UUID;
   label: string;
+  alias?: string;
   roleTemplate: string;
   provider: ProviderName;
 }
@@ -62,6 +68,24 @@ export interface CreateEdgeResult {
 
 export type CreateEdgeHandler = (request: CreateEdgeRequest) => Promise<CreateEdgeResult>;
 
+export interface SendHandoffRequest {
+  to: UUID;
+  message: string;
+  structured?: JsonObject;
+  artifacts?: ArtifactRef[];
+  status?: HandoffStatus;
+  contextRef?: string;
+  response?: HandoffResponse;
+}
+
+export interface SendHandoffResult {
+  envelopeId: UUID;
+  from: UUID;
+  to: UUID;
+}
+
+export type SendHandoffHandler = (request: SendHandoffRequest) => Promise<SendHandoffResult>;
+
 interface ProviderConfigBase {
   runId: UUID;
   nodeId: UUID;
@@ -69,9 +93,10 @@ interface ProviderConfigBase {
   cwd?: string;
   env?: Record<string, string>;
   permissionsMode: CliPermissionsMode;
-  spawnRequiresApproval?: boolean;
+  agentManagementRequiresApproval?: boolean;
   spawnNode?: SpawnNodeHandler;
   createEdge?: CreateEdgeHandler;
+  sendHandoff?: SendHandoffHandler;
   resume: boolean;
   resetCommands: string[];
   capabilities?: NodeCapabilities;

@@ -7,7 +7,7 @@ import type {
   UUID
 } from "@vuhlp/contracts";
 import { normalizeCliEvent, type EventContext } from "./normalize.js";
-import { ConsoleLogger, type Logger } from "./logger.js";
+import { ConsoleLogger, type Logger, type LogMeta } from "./logger.js";
 import type {
   ApiProviderConfig,
   ProviderAdapter,
@@ -237,9 +237,9 @@ export class ApiProviderAdapter implements ProviderAdapter {
     this.sessionId = randomUUID();
   }
 
-  private debugLog(message: string, meta?: unknown) {
+  private debugLog(message: string, meta?: LogMeta): void {
     if (this.debug) {
-      console.log(`[API-DEBUG] ${message}`, meta ? JSON.stringify(meta, null, 2) : "");
+      this.logger.debug(message, meta);
     }
   }
 
@@ -402,7 +402,8 @@ export class ApiProviderAdapter implements ProviderAdapter {
 
       const requiresApproval =
         this.config.permissionsMode === "gated" ||
-        (tool.name === "spawn_node" && this.config.spawnRequiresApproval);
+        (this.config.agentManagementRequiresApproval === true &&
+          (tool.name === "spawn_node" || tool.name === "create_edge"));
       if (requiresApproval) {
         const approvalId = tool.id ?? randomUUID();
         this.pendingApproval = { approvalId, tool };
@@ -433,6 +434,7 @@ export class ApiProviderAdapter implements ProviderAdapter {
       defaultProvider: this.config.provider,
       spawnNode: this.config.spawnNode,
       createEdge: this.config.createEdge,
+      sendHandoff: this.config.sendHandoff,
       logger: this.logger
     });
     this.emitEvent(
@@ -481,6 +483,10 @@ export class ApiProviderAdapter implements ProviderAdapter {
       const to = typeof args.to === "string" ? args.to : "unknown";
       const type = typeof args.type === "string" ? args.type : "handoff";
       return `Create edge: ${from} -> ${to} (${type})`;
+    }
+    if (tool.name === "send_handoff") {
+      const to = typeof args.to === "string" ? args.to : "unknown";
+      return `Send handoff to: ${to}`;
     }
     return undefined;
   }
@@ -1213,6 +1219,7 @@ function openAiToolDefinitions() {
           type: "object",
           properties: {
             label: { type: "string", description: "Node display label." },
+            alias: { type: "string", description: "Optional stable alias for the node." },
             roleTemplate: { type: "string", description: "Role template name for the new node." },
             role: { type: "string", description: "Alias for roleTemplate." },
             provider: { type: "string", description: "Provider to use for the new node." },
@@ -1231,7 +1238,7 @@ function openAiToolDefinitions() {
               type: "object",
               properties: {
                 cliPermissionsMode: { type: "string" },
-                spawnRequiresApproval: { type: "boolean" }
+                agentManagementRequiresApproval: { type: "boolean" }
               }
             },
             session: {
@@ -1256,13 +1263,57 @@ function openAiToolDefinitions() {
         parameters: {
           type: "object",
           properties: {
-            from: { type: "string", description: "Source node id." },
-            to: { type: "string", description: "Target node id." },
+            from: { type: "string", description: "Source node id or alias." },
+            to: { type: "string", description: "Target node id or alias." },
             bidirectional: { type: "boolean", description: "Whether the edge is bidirectional." },
             type: { type: "string", description: "Edge type (handoff or report)." },
             label: { type: "string", description: "Edge label." }
           },
           required: ["from", "to"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "send_handoff",
+        description: "Send a handoff envelope to another node.",
+        parameters: {
+          type: "object",
+          properties: {
+            to: { type: "string", description: "Target node id or alias." },
+            message: { type: "string", description: "Summary message for the handoff." },
+            structured: { type: "object", description: "Structured JSON payload." },
+            artifacts: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  type: { type: "string" },
+                  ref: { type: "string" }
+                },
+                required: ["type", "ref"]
+              }
+            },
+            status: {
+              type: "object",
+              properties: {
+                ok: { type: "boolean" },
+                reason: { type: "string" }
+              },
+              required: ["ok"]
+            },
+            response: {
+              type: "object",
+              properties: {
+                expectation: { type: "string", enum: ["none", "optional", "required"] },
+                replyTo: { type: "string", description: "Node id or alias to reply to." }
+              },
+              required: ["expectation"]
+            },
+            contextRef: { type: "string", description: "Context pack reference." }
+          },
+          required: ["to", "message"]
         }
       }
     }
@@ -1334,6 +1385,7 @@ function claudeToolDefinitions() {
         type: "object",
         properties: {
           label: { type: "string", description: "Node display label." },
+          alias: { type: "string", description: "Optional stable alias for the node." },
           roleTemplate: { type: "string", description: "Role template name for the new node." },
           role: { type: "string", description: "Alias for roleTemplate." },
           provider: { type: "string", description: "Provider to use for the new node." },
@@ -1352,7 +1404,7 @@ function claudeToolDefinitions() {
             type: "object",
             properties: {
               cliPermissionsMode: { type: "string" },
-              spawnRequiresApproval: { type: "boolean" }
+              agentManagementRequiresApproval: { type: "boolean" }
             }
           },
           session: {
@@ -1374,13 +1426,54 @@ function claudeToolDefinitions() {
       input_schema: {
         type: "object",
         properties: {
-          from: { type: "string", description: "Source node id." },
-          to: { type: "string", description: "Target node id." },
+          from: { type: "string", description: "Source node id or alias." },
+          to: { type: "string", description: "Target node id or alias." },
           bidirectional: { type: "boolean", description: "Whether the edge is bidirectional." },
           type: { type: "string", description: "Edge type (handoff or report)." },
           label: { type: "string", description: "Edge label." }
         },
         required: ["from", "to"]
+      }
+    },
+    {
+      name: "send_handoff",
+      description: "Send a handoff envelope to another node.",
+      input_schema: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Target node id or alias." },
+          message: { type: "string", description: "Summary message for the handoff." },
+          structured: { type: "object", description: "Structured JSON payload." },
+          artifacts: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string" },
+                ref: { type: "string" }
+              },
+              required: ["type", "ref"]
+            }
+          },
+          status: {
+            type: "object",
+            properties: {
+              ok: { type: "boolean" },
+              reason: { type: "string" }
+            },
+            required: ["ok"]
+          },
+          response: {
+            type: "object",
+            properties: {
+              expectation: { type: "string", enum: ["none", "optional", "required"] },
+              replyTo: { type: "string", description: "Node id or alias to reply to." }
+            },
+            required: ["expectation"]
+          },
+          contextRef: { type: "string", description: "Context pack reference." }
+        },
+        required: ["to", "message"]
       }
     }
   ];
@@ -1451,6 +1544,7 @@ function geminiToolDefinitions() {
         type: "object",
         properties: {
           label: { type: "string", description: "Node display label." },
+          alias: { type: "string", description: "Optional stable alias for the node." },
           roleTemplate: { type: "string", description: "Role template name for the new node." },
           role: { type: "string", description: "Alias for roleTemplate." },
           provider: { type: "string", description: "Provider to use for the new node." },
@@ -1469,7 +1563,7 @@ function geminiToolDefinitions() {
             type: "object",
             properties: {
               cliPermissionsMode: { type: "string" },
-              spawnRequiresApproval: { type: "boolean" }
+              agentManagementRequiresApproval: { type: "boolean" }
             }
           },
           session: {
@@ -1491,13 +1585,54 @@ function geminiToolDefinitions() {
       parameters: {
         type: "object",
         properties: {
-          from: { type: "string", description: "Source node id." },
-          to: { type: "string", description: "Target node id." },
+          from: { type: "string", description: "Source node id or alias." },
+          to: { type: "string", description: "Target node id or alias." },
           bidirectional: { type: "boolean", description: "Whether the edge is bidirectional." },
           type: { type: "string", description: "Edge type (handoff or report)." },
           label: { type: "string", description: "Edge label." }
         },
         required: ["from", "to"]
+      }
+    },
+    {
+      name: "send_handoff",
+      description: "Send a handoff envelope to another node.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Target node id or alias." },
+          message: { type: "string", description: "Summary message for the handoff." },
+          structured: { type: "object", description: "Structured JSON payload." },
+          artifacts: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string" },
+                ref: { type: "string" }
+              },
+              required: ["type", "ref"]
+            }
+          },
+          status: {
+            type: "object",
+            properties: {
+              ok: { type: "boolean" },
+              reason: { type: "string" }
+            },
+            required: ["ok"]
+          },
+          response: {
+            type: "object",
+            properties: {
+              expectation: { type: "string", enum: ["none", "optional", "required"] },
+              replyTo: { type: "string", description: "Node id or alias to reply to." }
+            },
+            required: ["expectation"]
+          },
+          contextRef: { type: "string", description: "Context pack reference." }
+        },
+        required: ["to", "message"]
       }
     }
   ];

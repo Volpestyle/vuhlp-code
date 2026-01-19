@@ -2,10 +2,22 @@ import { exec as execCallback } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { GlobalMode, NodeCapabilities, ProviderName, ToolCall } from "@vuhlp/contracts";
+import type {
+  ArtifactRef,
+  GlobalMode,
+  HandoffResponse,
+  HandoffResponseExpectation,
+  HandoffStatus,
+  NodeCapabilities,
+  ProviderName,
+  ToolCall
+} from "@vuhlp/contracts";
+import { getString, isJsonObject, parseJsonValue, type JsonObject } from "./json.js";
 import type {
   CreateEdgeHandler,
   CreateEdgeRequest,
+  SendHandoffHandler,
+  SendHandoffRequest,
   SpawnNodeHandler,
   SpawnNodeRequest
 } from "./types.js";
@@ -20,6 +32,7 @@ export interface ToolExecutionOptions {
   defaultProvider?: ProviderName;
   spawnNode?: SpawnNodeHandler;
   createEdge?: CreateEdgeHandler;
+  sendHandoff?: SendHandoffHandler;
   logger?: Logger;
 }
 
@@ -100,8 +113,126 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function toJsonObject(value: Record<string, unknown>): JsonObject | null {
+  try {
+    const serialized = JSON.stringify(value);
+    if (!serialized) {
+      return null;
+    }
+    const parsed = parseJsonValue(serialized);
+    return parsed && isJsonObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function toArtifactRefs(value: Array<Record<string, unknown>>): ArtifactRef[] | null {
+  const refs: ArtifactRef[] = [];
+  for (const entry of value) {
+    const type = typeof entry.type === "string" ? entry.type : null;
+    const ref = typeof entry.ref === "string" ? entry.ref : null;
+    if (!type || !ref) {
+      continue;
+    }
+    refs.push({ type, ref });
+  }
+  return refs.length > 0 ? refs : null;
+}
+
+function toHandoffStatus(value: Record<string, unknown>): HandoffStatus | null {
+  const ok = typeof value.ok === "boolean" ? value.ok : null;
+  if (ok === null) {
+    return null;
+  }
+  const reason = typeof value.reason === "string" ? value.reason : undefined;
+  return reason ? { ok, reason } : { ok };
+}
+
+const HANDOFF_RESPONSE_EXPECTATIONS: HandoffResponseExpectation[] = ["none", "optional", "required"];
+
+function toHandoffResponse(value: Record<string, unknown>): HandoffResponse | null {
+  const expectationValue = typeof value.expectation === "string" ? value.expectation : null;
+  if (!expectationValue) {
+    return null;
+  }
+  const expectation = HANDOFF_RESPONSE_EXPECTATIONS.find((entry) => entry === expectationValue) ?? null;
+  if (!expectation) {
+    return null;
+  }
+  const replyTo = typeof value.replyTo === "string" ? value.replyTo : undefined;
+  return replyTo ? { expectation, replyTo } : { expectation };
+}
+
+const TOOL_CALL_BASH_ERROR =
+  "command output contained tool_call JSON; emit tool_call JSON directly in your assistant response (not via Bash)";
+
+function getJsonObjectField(value: JsonObject, key: string): JsonObject | null {
+  const entry = value[key];
+  return entry && isJsonObject(entry) ? entry : null;
+}
+
+function getJsonStringField(value: JsonObject, key: string): string | null {
+  return getString(value[key]);
+}
+
+function looksLikeToolCallObject(value: JsonObject): boolean {
+  const container = getJsonObjectField(value, "tool_call") ?? getJsonObjectField(value, "toolCall");
+  if (container) {
+    return looksLikeToolCallFields(container);
+  }
+  return looksLikeToolCallFields(value);
+}
+
+function looksLikeToolCallFields(value: JsonObject): boolean {
+  const name = getJsonStringField(value, "name") ?? getJsonStringField(value, "tool");
+  if (!name) {
+    return false;
+  }
+  const args = getJsonObjectField(value, "args") ?? getJsonObjectField(value, "params");
+  return Boolean(args);
+}
+
+function findToolCallJsonLine(output: string): string | null {
+  const lines = output.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+      continue;
+    }
+    const parsed = parseJsonValue(trimmed);
+    if (!parsed || !isJsonObject(parsed)) {
+      continue;
+    }
+    if (looksLikeToolCallObject(parsed)) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+function buildToolCallOutputError(
+  tool: ToolCall,
+  output: string,
+  line: string,
+  logger?: Logger
+): ToolExecutionResult {
+  if (logger) {
+    const linePreview = line.length > 240 ? `${line.slice(0, 240)}...` : line;
+    logger.warn("command output contained tool_call JSON; refusing to treat Bash output as tool call", {
+      toolId: tool.id,
+      line: linePreview
+    });
+  }
+  return {
+    ok: false,
+    output,
+    error: TOOL_CALL_BASH_ERROR
+  };
+}
+
 function buildSpawnRequest(args: Record<string, unknown>, defaultProvider?: ProviderName): SpawnNodeRequest | null {
   const label = typeof args.label === "string" ? args.label.trim() : "";
+  const alias = typeof args.alias === "string" ? args.alias.trim() : "";
   const roleTemplate =
     typeof args.roleTemplate === "string"
       ? args.roleTemplate.trim()
@@ -122,6 +253,7 @@ function buildSpawnRequest(args: Record<string, unknown>, defaultProvider?: Prov
 
   return {
     label,
+    alias: alias.length > 0 ? alias : undefined,
     roleTemplate,
     provider,
     customSystemPrompt,
@@ -169,12 +301,20 @@ export async function executeToolCall(
           maxBuffer: 10 * 1024 * 1024
         });
         const output = [result.stdout, result.stderr].filter(Boolean).join("");
+        const toolCallLine = findToolCallJsonLine(output);
+        if (toolCallLine) {
+          return buildToolCallOutputError(tool, output, toolCallLine, options.logger);
+        }
         return { ok: true, output };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const stdout = (error as { stdout?: string }).stdout ?? "";
         const stderr = (error as { stderr?: string }).stderr ?? "";
         const output = [stdout, stderr].filter(Boolean).join("");
+        const toolCallLine = findToolCallJsonLine(output);
+        if (toolCallLine) {
+          return buildToolCallOutputError(tool, output, toolCallLine, options.logger);
+        }
         return { ok: false, output, error: message };
       }
     }
@@ -298,7 +438,66 @@ export async function executeToolCall(
       }
     }
 
+    case "send_handoff": {
+      if (!options.sendHandoff) {
+        return { ok: false, output: "", error: "send_handoff not supported" };
+      }
+      const args = isRecord(tool.args) ? tool.args : {};
+      const toValue = typeof args.to === "string" ? args.to : typeof args.toNodeId === "string" ? args.toNodeId : "";
+      const messageValue =
+        typeof args.message === "string" ? args.message : typeof args.summary === "string" ? args.summary : "";
+      const to = toValue.trim();
+      const message = messageValue.trim();
+      if (!to || !message) {
+        return { ok: false, output: "", error: "send_handoff requires to and message" };
+      }
+      const request: SendHandoffRequest = { to, message };
+      const structured = isRecord(args.structured) ? toJsonObject(args.structured) : null;
+      if (structured) {
+        request.structured = structured;
+      }
+      const artifactsInput = Array.isArray(args.artifacts)
+        ? args.artifacts.filter((entry) => isRecord(entry))
+        : [];
+      const artifacts = artifactsInput.length > 0 ? toArtifactRefs(artifactsInput) : null;
+      if (artifacts) {
+        request.artifacts = artifacts;
+      }
+      const status = isRecord(args.status) ? toHandoffStatus(args.status) : null;
+      if (status) {
+        request.status = status;
+      }
+      const response = isRecord(args.response) ? toHandoffResponse(args.response) : null;
+      if (response) {
+        request.response = response;
+      }
+      const contextRef = typeof args.contextRef === "string" ? args.contextRef : undefined;
+      if (contextRef) {
+        request.contextRef = contextRef;
+      }
+      try {
+        const result = await options.sendHandoff(request);
+        return { ok: true, output: JSON.stringify(result) };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { ok: false, output: "", error: message };
+      }
+    }
+
+    case "provider_tool": {
+      const name = typeof tool.args.name === "string" ? tool.args.name : "unknown";
+      options.logger?.info("provider tool handled by CLI", {
+        tool: name,
+        toolId: tool.id
+      });
+      return {
+        ok: true,
+        output: JSON.stringify({ handledByProvider: true, tool: name })
+      };
+    }
+
     default:
+      options.logger?.warn("unsupported tool call", { tool: tool.name, toolId: tool.id });
       return { ok: false, output: "", error: `unsupported tool: ${tool.name}` };
   }
 }

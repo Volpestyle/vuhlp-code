@@ -4,7 +4,7 @@ import type { JsonObject, JsonValue } from "./json.js";
 
 export type ParsedCliEvent =
   | { type: "message.assistant.delta"; delta: string }
-  | { type: "message.assistant.final"; content: string; id?: UUID }
+  | { type: "message.assistant.final"; content: string; id?: UUID; toolCalls?: ToolCall[] }
   | { type: "message.assistant.thinking.delta"; delta: string }
   | { type: "message.assistant.thinking.final"; content: string }
   | { type: "tool.proposed"; tool: ToolCall }

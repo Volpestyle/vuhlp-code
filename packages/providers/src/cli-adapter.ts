@@ -7,9 +7,11 @@ import type {
   EventEnvelope,
   NodePatchEvent,
   NodeState,
+  ToolCall,
   TurnStatus,
   UUID
 } from "@vuhlp/contracts";
+import { asJsonObject, getNumber, getString, parseJsonValue, type JsonObject } from "./json.js";
 import { parseCliEventLine, parseCliStreamEndLine, type ParsedCliEvent } from "./cli-protocol.js";
 import { ConsoleLogger, type Logger } from "./logger.js";
 import { normalizeCliEvent } from "./normalize.js";
@@ -48,6 +50,7 @@ function nowIso(): string {
 export class CliProviderAdapter implements ProviderAdapter {
   private readonly config: CliProviderConfig;
   private readonly logger: Logger;
+  private readonly debugCli: boolean;
   private process: ReturnType<typeof spawn> | null = null;
   private readonly eventListeners = createListenerSet<EventEnvelope>();
   private readonly errorListeners = createListenerSet<Error>();
@@ -58,11 +61,19 @@ export class CliProviderAdapter implements ProviderAdapter {
   private sawTurnOutput = false;
   private hadProcessError = false;
   private streamBuffer: { content: string; thinking: string } | null = null;
+  private streamToolBlocks = new Map<
+    number,
+    { id?: string; name?: string; inputJson: string; hasInitialInput: boolean }
+  >();
+  private nextSyntheticToolIndex = -1;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: CliProviderConfig, logger: Logger = new ConsoleLogger()) {
     this.config = config;
     this.logger = logger;
+    this.debugCli = ["1", "true", "yes", "on"].includes(
+      (process.env.VUHLP_DEBUG_CLI ?? "").toLowerCase()
+    );
   }
 
   onEvent(listener: ProviderEventListener): () => void {
@@ -82,17 +93,20 @@ export class CliProviderAdapter implements ProviderAdapter {
 
   async send(input: ProviderTurnInput): Promise<void> {
     await this.ensureProcess();
-    this.shouldCloseAfterTurn = !this.config.resume;
+    const closeAfterPrompt = this.shouldCloseAfterPrompt();
+    this.shouldCloseAfterTurn = !this.config.resume || closeAfterPrompt;
     this.awaitingTurn = true;
     this.sawTurnOutput = false;
     this.hadProcessError = false;
     this.streamBuffer = { content: "", thinking: "" };
+    this.streamToolBlocks.clear();
+    this.nextSyntheticToolIndex = -1;
     this.emitTurnStatus("turn.started");
     this.emitTurnStatus("waiting_for_model");
     this.startHeartbeat();
     const payload = this.serializePrompt(input);
     await this.writeLine(payload);
-    if (this.shouldCloseAfterTurn) {
+    if (closeAfterPrompt) {
       this.endInput();
     }
   }
@@ -229,8 +243,11 @@ export class CliProviderAdapter implements ProviderAdapter {
     const usesStructuredOutput = this.config.protocol !== "raw";
     const trimmed = line.trim();
     const looksLikeJson = trimmed.startsWith("{") && trimmed.endsWith("}");
-    const parsed = usesStructuredOutput ? parseCliEventLine(line) : null;
-    let handledStructured = false;
+    const capturedToolUse = usesStructuredOutput && looksLikeJson
+      ? this.captureStreamToolUse(trimmed)
+      : false;
+    const parsed = usesStructuredOutput && !capturedToolUse ? parseCliEventLine(line) : null;
+    let handledStructured = capturedToolUse;
 
     if (parsed) {
       handledStructured = true;
@@ -238,14 +255,13 @@ export class CliProviderAdapter implements ProviderAdapter {
     } else if (usesStructuredOutput && parseCliStreamEndLine(line)) {
       handledStructured = true;
       await this.handleStreamEnd();
-    } else if (usesStructuredOutput) {
-      if (looksLikeJson) {
-        const excerpt = trimmed.length > 200 ? `${trimmed.slice(0, 200)}...` : trimmed;
-        this.logger.debug("unrecognized structured event line", {
-          nodeId: this.config.nodeId,
-          line: excerpt
-        });
-      }
+    } else if (usesStructuredOutput && looksLikeJson && !handledStructured) {
+      const excerpt =
+        this.debugCli || trimmed.length <= 200 ? trimmed : `${trimmed.slice(0, 200)}...`;
+      this.logger.debug("unrecognized structured event line", {
+        nodeId: this.config.nodeId,
+        line: excerpt
+      });
     }
 
     const shouldLog = source === "stderr" || this.config.protocol === "raw" || !handledStructured;
@@ -282,13 +298,42 @@ export class CliProviderAdapter implements ProviderAdapter {
   }
 
   private async handleParsedEvent(event: ParsedCliEvent): Promise<void> {
+    let adjustedEvent = event;
     if (event.type === "message.assistant.delta") {
-      this.appendStreamDelta("content", event.delta);
+      const normalizedDelta = this.normalizeStreamDelta("content", event.delta);
+      if (!normalizedDelta) {
+        return;
+      }
+      this.appendStreamDelta("content", normalizedDelta);
+      if (normalizedDelta !== event.delta) {
+        adjustedEvent = { ...event, delta: normalizedDelta };
+      }
     }
     if (event.type === "message.assistant.thinking.delta") {
-      this.appendStreamDelta("thinking", event.delta);
+      const normalizedDelta = this.normalizeStreamDelta("thinking", event.delta);
+      if (!normalizedDelta) {
+        return;
+      }
+      this.appendStreamDelta("thinking", normalizedDelta);
+      if (normalizedDelta !== event.delta) {
+        adjustedEvent = { ...event, delta: normalizedDelta };
+      }
     }
     if (event.type === "message.assistant.final") {
+      if (this.config.protocol === "stream-json") {
+        if (!this.streamBuffer) {
+          this.streamBuffer = { content: "", thinking: "" };
+        }
+        this.streamBuffer.content = event.content;
+        return;
+      }
+      const toolCalls = this.buildToolCalls();
+      if (toolCalls.length > 0) {
+        adjustedEvent = {
+          ...event,
+          toolCalls
+        };
+      }
       this.streamBuffer = null;
     }
 
@@ -324,11 +369,37 @@ export class CliProviderAdapter implements ProviderAdapter {
       }
     }
 
-    this.eventListeners.emit(normalizeCliEvent(this.eventContext(), event));
+    this.eventListeners.emit(normalizeCliEvent(this.eventContext(), adjustedEvent));
 
-    if (event.type === "message.assistant.final") {
+    if (adjustedEvent.type === "message.assistant.final") {
       await this.completeTurn();
     }
+  }
+
+  private normalizeStreamDelta(kind: "content" | "thinking", delta: string): string | null {
+    if (!delta) {
+      return null;
+    }
+    const buffer = this.streamBuffer;
+    if (!buffer) {
+      return delta;
+    }
+    const existing = kind === "content" ? buffer.content : buffer.thinking;
+    if (!existing) {
+      return delta;
+    }
+    if (delta.length > existing.length && delta.startsWith(existing)) {
+      const remainder = delta.slice(existing.length);
+      this.logger.debug("normalized snapshot stream delta", {
+        nodeId: this.config.nodeId,
+        kind,
+        previousLength: existing.length,
+        incomingLength: delta.length,
+        emittedLength: remainder.length
+      });
+      return remainder;
+    }
+    return delta;
   }
 
   private appendStreamDelta(kind: "content" | "thinking", delta: string): void {
@@ -349,8 +420,9 @@ export class CliProviderAdapter implements ProviderAdapter {
     if (!this.awaitingTurn) {
       return;
     }
+    const toolCalls = this.buildToolCalls();
     const buffer = this.streamBuffer;
-    if (buffer && (buffer.content.length > 0 || buffer.thinking.length > 0)) {
+    if (buffer && (buffer.content.length > 0 || buffer.thinking.length > 0 || toolCalls.length > 0)) {
       if (buffer.thinking.length > 0) {
         const thinkingFinal = normalizeCliEvent(this.eventContext(), {
           type: "message.assistant.thinking.final",
@@ -360,12 +432,217 @@ export class CliProviderAdapter implements ProviderAdapter {
       }
       const finalEvent = normalizeCliEvent(this.eventContext(), {
         type: "message.assistant.final",
-        content: buffer.content
+        content: buffer.content,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined
       });
       this.eventListeners.emit(finalEvent);
     }
     this.streamBuffer = null;
     await this.completeTurn();
+  }
+
+  private captureStreamToolUse(line: string): boolean {
+    if (this.config.protocol === "raw") {
+      return false;
+    }
+    const parsed = parseJsonValue(line);
+    if (!parsed) {
+      return false;
+    }
+    const obj = asJsonObject(parsed);
+    if (!obj) {
+      return false;
+    }
+    const captured = this.trackToolEvent(obj);
+    if (captured && this.debugCli) {
+      this.logger.debug("captured structured tool event", {
+        nodeId: this.config.nodeId,
+        line
+      });
+    }
+    return captured;
+  }
+
+  private trackToolEvent(obj: JsonObject): boolean {
+    const type = getString(obj.type);
+    if (!type) {
+      return false;
+    }
+    if (type === "stream_event") {
+      const inner = asJsonObject(obj.event ?? null);
+      if (inner) {
+        return this.trackToolEvent(inner);
+      }
+      return false;
+    }
+    if (type === "content_block_start") {
+      const index = getNumber(obj.index);
+      const contentBlock = asJsonObject(obj.content_block ?? null);
+      if (index === null || !contentBlock) {
+        return false;
+      }
+      const blockType = getString(contentBlock.type);
+      if (blockType !== "tool_use") {
+        return false;
+      }
+      const id = getString(contentBlock.id ?? null) ?? undefined;
+      const name = getString(contentBlock.name ?? null) ?? undefined;
+      const input = asJsonObject(contentBlock.input ?? null);
+      const inputJson = input ? JSON.stringify(input) : "";
+      this.streamToolBlocks.set(index, { id, name, inputJson, hasInitialInput: inputJson.length > 0 });
+      return true;
+    }
+    if (type === "content_block_delta") {
+      const index = getNumber(obj.index);
+      const delta = asJsonObject(obj.delta ?? null);
+      if (index === null || !delta) {
+        return false;
+      }
+      const deltaType = getString(delta.type ?? null);
+      if (deltaType !== "input_json_delta") {
+        return false;
+      }
+      const partialJson = getString(delta.partial_json ?? null);
+      if (!partialJson) {
+        return false;
+      }
+      const entry = this.streamToolBlocks.get(index);
+      if (entry) {
+        if (entry.hasInitialInput) {
+          entry.inputJson = "";
+          entry.hasInitialInput = false;
+        }
+        entry.inputJson += partialJson;
+        return true;
+      }
+      this.streamToolBlocks.set(index, { inputJson: partialJson, hasInitialInput: false });
+      return true;
+    }
+    if (type === "tool_use") {
+      const tool = asJsonObject(obj.tool ?? null);
+      const name = getString(obj.tool_name) ?? getString(obj.name) ?? (tool ? getString(tool.name) : null);
+      const id =
+        getString(obj.tool_id) ?? getString(obj.id) ?? (tool ? getString(tool.id) : null) ?? undefined;
+      const parameters =
+        asJsonObject(obj.parameters ?? null) ??
+        asJsonObject(obj.args ?? null) ??
+        asJsonObject(obj.input ?? null) ??
+        (tool ? asJsonObject(tool.parameters ?? null) ?? asJsonObject(tool.args ?? null) ?? asJsonObject(tool.input ?? null) : null);
+      if (!name || !parameters) {
+        return false;
+      }
+      const inputJson = JSON.stringify(parameters);
+      const index = this.nextSyntheticToolIndex;
+      this.nextSyntheticToolIndex -= 1;
+      this.streamToolBlocks.set(index, { id, name, inputJson, hasInitialInput: true });
+      return true;
+    }
+    if (type === "tool_result") {
+      return true;
+    }
+    return false;
+  }
+
+  private buildToolCalls(): ToolCall[] {
+    if (this.streamToolBlocks.size === 0) {
+      return [];
+    }
+    const toolCalls: ToolCall[] = [];
+    for (const entry of this.streamToolBlocks.values()) {
+      if (!entry.name) {
+        continue;
+      }
+      const args = this.parseToolArgs(entry.inputJson);
+      const mapped = this.mapToolUse(entry.name, args);
+      if (!mapped) {
+        this.logger.debug("ignored provider tool", { nodeId: this.config.nodeId, tool: entry.name });
+        continue;
+      }
+      const id = entry.id ?? randomUUID();
+      toolCalls.push({ id, name: mapped.name, args: mapped.args });
+    }
+    this.streamToolBlocks.clear();
+    return toolCalls;
+  }
+
+  private parseToolArgs(inputJson: string): JsonObject {
+    const trimmed = inputJson.trim();
+    if (!trimmed) {
+      return {};
+    }
+    const parsed = parseJsonValue(trimmed);
+    const obj = parsed ? asJsonObject(parsed) : null;
+    if (!obj) {
+      const input =
+        this.debugCli || trimmed.length <= 200 ? trimmed : `${trimmed.slice(0, 200)}...`;
+      this.logger.warn("failed to parse tool input JSON", {
+        nodeId: this.config.nodeId,
+        input
+      });
+      return {};
+    }
+    return obj;
+  }
+
+  private mapToolUse(name: string, args: JsonObject): { name: string; args: JsonObject } | null {
+    const normalized = name.trim().toLowerCase();
+    if (normalized === "task") {
+      return { name: "spawn_node", args: this.mapTaskArgs(args) };
+    }
+    if (normalized === "bash") {
+      const cmd = this.pickString(args, ["cmd", "command", "script"]);
+      if (!cmd) {
+        return null;
+      }
+      return { name: "command", args: { cmd } };
+    }
+    if (!normalized) {
+      return null;
+    }
+    return { name: "provider_tool", args: { name: normalized, input: args } };
+  }
+
+  private mapTaskArgs(args: JsonObject): JsonObject {
+    const label =
+      this.pickString(args, ["label", "title", "name", "description"]) ?? "Subagent";
+    const alias = this.pickString(args, ["alias"]);
+    const roleTemplate =
+      this.pickString(args, ["roleTemplate", "role", "template"]) ?? "implementer";
+    const instructions = this.pickString(args, ["instructions", "prompt", "task", "description"]);
+    const provider = this.pickString(args, ["provider"]);
+    const input =
+      asJsonObject(args.input ?? null) ??
+      asJsonObject(args.context ?? null) ??
+      asJsonObject(args.payload ?? null);
+
+    const mapped: JsonObject = {
+      label,
+      roleTemplate
+    };
+    if (alias) {
+      mapped.alias = alias;
+    }
+    if (instructions) {
+      mapped.instructions = instructions;
+    }
+    if (provider) {
+      mapped.provider = provider;
+    }
+    if (input) {
+      mapped.input = input;
+    }
+    return mapped;
+  }
+
+  private pickString(obj: JsonObject, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = obj[key];
+      const str = value !== undefined ? getString(value) : null;
+      if (str) {
+        return str;
+      }
+    }
+    return null;
   }
 
   private async completeTurn(): Promise<void> {
@@ -467,6 +744,14 @@ export class CliProviderAdapter implements ProviderAdapter {
     if (!this.process) {
       await this.spawnProcess();
     }
+  }
+
+  private shouldCloseAfterPrompt(): boolean {
+    if (this.config.protocol === "raw") {
+      return false;
+    }
+    const args = this.config.args ?? [];
+    return args.includes("--print");
   }
 
   private serializePrompt(input: ProviderTurnInput): string {

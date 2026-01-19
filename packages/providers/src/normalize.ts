@@ -41,7 +41,8 @@ export function normalizeCliEvent(context: EventContext, event: ParsedCliEvent):
         ts: context.now(),
         type: event.type,
         nodeId: context.nodeId,
-        content: event.content
+        content: event.content,
+        toolCalls: event.toolCalls
       };
       return envelope;
     }
