@@ -27,7 +27,16 @@ import { Scheduler } from "./scheduler.js";
 import { NoopRunner, type NodeRunner } from "./runner.js";
 import { CliRunner } from "./cli-runner.js";
 import { newId, nowIso } from "./utils.js";
-import type { CreateEdgeRequest, CreateEdgeResult, SpawnNodeRequest, SpawnNodeResult } from "@vuhlp/providers";
+import {
+  ConsoleLogger,
+  CreateEdgeRequest,
+  CreateEdgeResult,
+  type Logger,
+  SendHandoffRequest,
+  SendHandoffResult,
+  SpawnNodeRequest,
+  SpawnNodeResult
+} from "@vuhlp/providers";
 
 const addUsage = (current: UsageTotals | undefined, delta: UsageTotals): UsageTotals => ({
   promptTokens: (current?.promptTokens ?? 0) + delta.promptTokens,
@@ -41,6 +50,7 @@ export interface RuntimeOptions {
   stallThreshold?: number;
   repoRoot?: string;
   systemTemplatesDir?: string;
+  logger?: Logger;
 }
 
 export class Runtime {
@@ -51,12 +61,14 @@ export class Runtime {
   private readonly dataDir: string;
   private readonly repoRoot: string;
   private readonly systemTemplatesDir?: string;
+  private readonly logger: Logger;
   private readonly artifactStores = new Map<UUID, ArtifactStore>();
 
   constructor(options: RuntimeOptions) {
     this.dataDir = options.dataDir;
     this.repoRoot = options.repoRoot ?? process.cwd();
     this.systemTemplatesDir = options.systemTemplatesDir;
+    this.logger = options.logger ?? new ConsoleLogger({ scope: "runtime" });
     this.store = new RunStore(this.dataDir);
     this.eventBus = new EventBus();
     this.runner =
@@ -66,7 +78,9 @@ export class Runtime {
         emitEvent: this.emitEvent.bind(this),
         spawnNode: this.spawnNodeFromTool.bind(this),
         createEdge: this.createEdgeFromTool.bind(this),
-        systemTemplatesDir: this.systemTemplatesDir
+        sendHandoff: this.sendHandoffFromTool.bind(this),
+        systemTemplatesDir: this.systemTemplatesDir,
+        logger: this.logger
       });
     this.scheduler = new Scheduler({
       store: this.store,
@@ -122,7 +136,7 @@ export class Runtime {
         }
       }
       const message = error instanceof Error ? error.message : String(error);
-      console.warn("role template not found", { name, message, templatePath });
+      this.logger.warn("role template not found", { name, message, templatePath });
       return { name, content: `Role template not found: ${name}`, found: false };
     }
   }
@@ -201,7 +215,7 @@ export class Runtime {
         try {
           await this.runner.closeNode(nodeRecord.state.id);
         } catch (error) {
-          console.error("failed to close node session", {
+          this.logger.error("failed to close node session", {
             nodeId: nodeRecord.state.id,
             runId,
             message: error instanceof Error ? error.message : String(error)
@@ -216,7 +230,7 @@ export class Runtime {
     try {
       await fs.rm(path.join(this.dataDir, "runs", runId), { recursive: true, force: true });
     } catch (error) {
-      console.error("failed to remove run data", {
+      this.logger.error("failed to remove run data", {
         runId,
         compiler: "runtime",
         message: error instanceof Error ? error.message : String(error),
@@ -245,7 +259,7 @@ export class Runtime {
       try {
         await this.runner.resetNode(nodeId);
       } catch (error) {
-        console.error("failed to reset node session", {
+        this.logger.error("failed to reset node session", {
           nodeId,
           runId,
           message: error instanceof Error ? error.message : String(error)
@@ -311,7 +325,7 @@ export class Runtime {
       try {
         await this.runner.closeNode(nodeId);
       } catch (error) {
-        console.error("failed to close node session", {
+        this.logger.error("failed to close node session", {
           nodeId,
           runId,
           message: error instanceof Error ? error.message : String(error)
@@ -439,10 +453,15 @@ export class Runtime {
     const record = this.requireRun(runId);
     const now = nowIso();
     const normalized = this.normalizeNodeConfig(config);
+    const nodeId = normalized.id ?? newId();
+    if (normalized.alias) {
+      this.assertAliasAvailable(record, normalized.alias, nodeId);
+    }
     const nodeState: NodeState = {
-      id: normalized.id ?? newId(),
+      id: nodeId,
       runId,
       label: normalized.label,
+      alias: normalized.alias,
       roleTemplate: normalized.roleTemplate,
       customSystemPrompt: normalized.customSystemPrompt ?? null,
       provider: normalized.provider,
@@ -501,6 +520,7 @@ export class Runtime {
     return {
       nodeId: node.id,
       label: node.label,
+      alias: node.alias,
       roleTemplate: node.roleTemplate,
       provider: node.provider
     };
@@ -511,11 +531,28 @@ export class Runtime {
     _fromNodeId: UUID,
     request: CreateEdgeRequest
   ): Promise<CreateEdgeResult> {
+    const record = this.requireRun(runId);
+    const missingNodes: string[] = [];
+    const fromResolved = this.resolveNodeRef(record, request.from);
+    const toResolved = this.resolveNodeRef(record, request.to);
+    if (!fromResolved) {
+      missingNodes.push(`from=${request.from}`);
+    }
+    if (!toResolved) {
+      missingNodes.push(`to=${request.to}`);
+    }
+    if (missingNodes.length > 0) {
+      throw new Error(
+        `create_edge requires known node ids or aliases (${missingNodes.join(
+          ", "
+        )}). Use Task Payload Known nodes (id or alias).`
+      );
+    }
     const type = request.type ?? "handoff";
     const label = request.label ?? (type === "report" ? "report" : "task");
     const edge = this.createEdge(runId, {
-      from: request.from,
-      to: request.to,
+      from: fromResolved ?? request.from,
+      to: toResolved ?? request.to,
       bidirectional: request.bidirectional ?? true,
       type,
       label
@@ -530,11 +567,91 @@ export class Runtime {
     };
   }
 
+  private async sendHandoffFromTool(
+    runId: UUID,
+    fromNodeId: UUID,
+    request: SendHandoffRequest
+  ): Promise<SendHandoffResult> {
+    const record = this.requireRun(runId);
+    const missingNodes: string[] = [];
+    if (!record.nodes.has(fromNodeId)) {
+      missingNodes.push(`from=${fromNodeId}`);
+    }
+    const toResolved = this.resolveNodeRef(record, request.to);
+    if (!toResolved) {
+      missingNodes.push(`to=${request.to}`);
+    }
+    if (missingNodes.length > 0) {
+      throw new Error(
+        `send_handoff requires known node ids or aliases (${missingNodes.join(
+          ", "
+        )}). Use Task Payload Known nodes (id or alias).`
+      );
+    }
+    const resolvedTo = toResolved ?? request.to;
+    if (!this.hasEdgeBetween(record, fromNodeId, resolvedTo)) {
+      throw new Error(
+        `send_handoff requires an edge between ${fromNodeId} and ${resolvedTo}. Create the edge first.`
+      );
+    }
+    const now = nowIso();
+    const payload: Envelope["payload"] = { message: request.message.trim() };
+    if (request.structured) {
+      payload.structured = request.structured;
+    }
+    if (request.artifacts && request.artifacts.length > 0) {
+      payload.artifacts = request.artifacts;
+    }
+    if (request.status) {
+      payload.status = request.status;
+    }
+    if (request.response) {
+      payload.response = request.response;
+    }
+    const envelope: Envelope = {
+      kind: "handoff",
+      id: newId(),
+      fromNodeId,
+      toNodeId: resolvedTo,
+      createdAt: now,
+      payload
+    };
+    if (request.contextRef) {
+      envelope.contextRef = request.contextRef;
+    }
+    this.deliverEnvelope(runId, envelope);
+    return { envelopeId: envelope.id, from: fromNodeId, to: resolvedTo };
+  }
+
+  private hasEdgeBetween(record: RunRecord, from: UUID, to: UUID): boolean {
+    for (const edge of record.edges.values()) {
+      if (edge.from === from && edge.to === to) {
+        return true;
+      }
+      if (edge.bidirectional && edge.from === to && edge.to === from) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   updateNode(runId: UUID, nodeId: UUID, patch: Partial<NodeState>, config?: Partial<NodeConfig>): NodeState {
     const record = this.requireRun(runId);
     const now = nowIso();
     const nodeRecord = this.requireNode(record, nodeId);
     let updatedPatch = { ...patch };
+    let configPatch = config;
+
+    const aliasInput =
+      typeof patch.alias === "string" ? patch.alias : typeof config?.alias === "string" ? config.alias : undefined;
+    if (aliasInput !== undefined) {
+      const normalizedAlias = this.normalizeAlias(aliasInput);
+      if (normalizedAlias) {
+        this.assertAliasAvailable(record, normalizedAlias, nodeId);
+      }
+      updatedPatch = { ...updatedPatch, alias: normalizedAlias };
+      configPatch = { ...(configPatch ?? {}), alias: normalizedAlias };
+    }
 
     if (config?.provider && config.provider !== nodeRecord.config.provider) {
       if (this.runner.closeNode) {
@@ -561,8 +678,8 @@ export class Runtime {
     }
 
     const updated = this.store.updateNode(runId, nodeId, updatedPatch);
-    if (config) {
-      this.store.updateNodeConfig(runId, nodeId, config);
+    if (configPatch) {
+      this.store.updateNodeConfig(runId, nodeId, configPatch);
     }
     this.touchRun(record, now);
     this.emitEvent(runId, {
@@ -659,7 +776,7 @@ export class Runtime {
     const resolver = this.runner.resolveApproval?.(approvalId, resolution);
     if (resolver) {
       resolver.catch((error) => {
-        console.error("failed to forward approval resolution", {
+        this.logger.error("failed to forward approval resolution", {
           approvalId,
           runId,
           message: error instanceof Error ? error.message : String(error)
@@ -686,7 +803,7 @@ export class Runtime {
     const resolver = this.runner.resolveApproval?.(approvalId, resolution);
     if (resolver) {
       resolver.catch((error) => {
-        console.error("failed to forward approval resolution", {
+        this.logger.error("failed to forward approval resolution", {
           approvalId,
           runId: resolved.runId,
           message: error instanceof Error ? error.message : String(error)
@@ -824,6 +941,7 @@ export class Runtime {
     return {
       id: config.id,
       label: config.label,
+      alias: this.normalizeAlias(config.alias),
       provider: config.provider,
       roleTemplate: config.roleTemplate,
       customSystemPrompt: config.customSystemPrompt ?? null,
@@ -836,13 +954,69 @@ export class Runtime {
       },
       permissions: {
         cliPermissionsMode: config.permissions?.cliPermissionsMode ?? "skip",
-        spawnRequiresApproval: config.permissions?.spawnRequiresApproval ?? !isOrchestrator
+        agentManagementRequiresApproval:
+          config.permissions?.agentManagementRequiresApproval ?? !isOrchestrator
       },
       session: {
         resume: config.session?.resume ?? true,
         resetCommands: config.session?.resetCommands ?? ["/new", "/clear"]
       }
     };
+  }
+
+  private normalizeAlias(value?: string | null): string | undefined {
+    if (typeof value !== "string") {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  private assertAliasAvailable(record: RunRecord, alias: string, nodeId?: UUID): void {
+    const normalized = alias.toLowerCase();
+    if (nodeId && nodeId.toLowerCase() === normalized) {
+      this.logger.warn("node alias conflicts with node id", { alias, nodeId });
+      throw new Error(`alias "${alias}" conflicts with node id ${nodeId}`);
+    }
+    for (const node of record.nodes.values()) {
+      if (nodeId && node.state.id === nodeId) {
+        continue;
+      }
+      if (node.state.id.toLowerCase() === normalized) {
+        this.logger.warn("node alias conflicts with existing node id", {
+          alias,
+          nodeId: node.state.id
+        });
+        throw new Error(`alias "${alias}" conflicts with node id ${node.state.id}`);
+      }
+      const existingAlias = node.state.alias;
+      if (existingAlias && existingAlias.toLowerCase() === normalized) {
+        this.logger.warn("node alias already in use", {
+          alias,
+          nodeId: node.state.id,
+          label: node.state.label
+        });
+        throw new Error(`alias "${alias}" is already in use by ${node.state.label} (${node.state.id})`);
+      }
+    }
+  }
+
+  private resolveNodeRef(record: RunRecord, ref: string): UUID | null {
+    const trimmed = ref.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (record.nodes.has(trimmed)) {
+      return trimmed;
+    }
+    const target = trimmed.toLowerCase();
+    for (const node of record.nodes.values()) {
+      const alias = node.state.alias;
+      if (alias && alias.toLowerCase() === target) {
+        return node.state.id;
+      }
+    }
+    return null;
   }
 
   private requireRun(runId: UUID): RunRecord {
@@ -944,7 +1118,7 @@ export class Runtime {
       });
       if (wasRunning && this.runner.interruptNode) {
         this.runner.interruptNode(nodeId).catch((error) => {
-          console.error("failed to interrupt node session", {
+          this.logger.error("failed to interrupt node session", {
             nodeId,
             runId: record.state.id,
             message: error instanceof Error ? error.message : String(error)
@@ -1002,7 +1176,7 @@ export class Runtime {
       });
       if (this.runner.closeNode) {
         this.runner.closeNode(nodeId).catch((error) => {
-          console.error("failed to close node session", {
+          this.logger.error("failed to close node session", {
             nodeId,
             runId: record.state.id,
             message: error instanceof Error ? error.message : String(error)

@@ -1,8 +1,11 @@
 import { existsSync, readFileSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { ConsoleLogger } from "@vuhlp/providers";
 import { Runtime } from "./runtime/runtime.js";
 import { createServer } from "./api/server.js";
+
+const logger = new ConsoleLogger({ scope: "daemon" });
 
 function loadEnvFile(filePath: string): void {
   if (!existsSync(filePath)) {
@@ -34,7 +37,7 @@ function loadEnvFile(filePath: string): void {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn("failed to load env file", { filePath, message });
+    logger.warn("failed to load env file", { filePath, message });
   }
 }
 
@@ -67,10 +70,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const systemTemplatesDir = path.resolve(__dirname, "..", "docs", "templates");
 
-const runtime = new Runtime({ dataDir, repoRoot, systemTemplatesDir });
+const runtime = new Runtime({ dataDir, repoRoot, systemTemplatesDir, logger });
 runtime.start();
 
 const server = createServer(runtime);
-server.listen(port, '0.0.0.0', () => {
-  console.log(`vuhlp daemon listening on http://0.0.0.0:${port}`);
+server.listen(port, "0.0.0.0", () => {
+  logger.info(`vuhlp daemon listening on http://0.0.0.0:${port}`, { port });
 });

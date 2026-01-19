@@ -1,12 +1,16 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type {
+  EdgeState,
   Envelope,
   GlobalMode,
+  NodeState,
   PromptArtifacts,
   PromptBlocks,
-  UserMessageRecord
+  UserMessageRecord,
+  UUID
 } from "@vuhlp/contracts";
+import { ConsoleLogger, type Logger } from "@vuhlp/providers";
 import type { TurnInput } from "./runner.js";
 import { hashString } from "./utils.js";
 
@@ -46,10 +50,12 @@ export class PromptBuilder {
   private readonly repoRoot: string;
   private readonly systemTemplatesDir?: string;
   private readonly templateCache = new Map<string, string>();
+  private readonly logger: Logger;
 
-  constructor(repoRoot: string, systemTemplatesDir?: string) {
+  constructor(repoRoot: string, systemTemplatesDir?: string, logger?: Logger) {
     this.repoRoot = repoRoot;
     this.systemTemplatesDir = systemTemplatesDir;
+    this.logger = logger ?? new ConsoleLogger({ scope: "prompt-builder" });
   }
 
   async build(input: TurnInput, options: PromptBuildOptions = {}): Promise<PromptBuildResult> {
@@ -111,7 +117,10 @@ export class PromptBuilder {
       }
 
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`role template not found: ${repoPath}`, { message, template: templateName });
+      this.logger.warn(`role template not found: ${repoPath}`, {
+        message,
+        template: templateName
+      });
       const fallback = `Role template not found: ${templateName}`;
       this.templateCache.set(templateName, fallback);
       return fallback;
@@ -127,6 +136,20 @@ export class PromptBuilder {
     lines.push(`Provider: ${input.node.provider}`);
     lines.push(`Orchestration: ${input.run.mode}`);
     lines.push(`Global mode: ${input.run.globalMode}`);
+    const caps = input.node.capabilities;
+    lines.push(
+      `Capabilities: spawnNodes=${caps.spawnNodes}, runCommands=${caps.runCommands}, writeCode=${caps.writeCode}, writeDocs=${caps.writeDocs}, delegateOnly=${caps.delegateOnly}`
+    );
+    const perms = input.node.permissions;
+    lines.push(
+      `Permissions: cliPermissionsMode=${perms.cliPermissionsMode}, agentManagementRequiresApproval=${perms.agentManagementRequiresApproval}`
+    );
+    lines.push("");
+    lines.push("Known nodes:");
+    lines.push(...this.formatNodeRoster(input.run.nodes));
+    lines.push("");
+    lines.push("Known edges:");
+    lines.push(...this.formatEdgeRoster(input.run.edges, input.run.nodes));
     lines.push("");
     lines.push("Incoming messages:");
     lines.push(...this.formatMessages(input.messages));
@@ -134,6 +157,42 @@ export class PromptBuilder {
     lines.push("Incoming handoffs:");
     lines.push(...this.formatEnvelopes(input.envelopes));
     return lines.join("\n");
+  }
+
+  private formatNodeRoster(nodes: Record<UUID, NodeState>): string[] {
+    const entries = Object.values(nodes);
+    if (entries.length === 0) {
+      return ["- none"];
+    }
+    const sorted = [...entries].sort((left, right) => {
+      const labelCompare = left.label.localeCompare(right.label);
+      if (labelCompare !== 0) {
+        return labelCompare;
+      }
+      return left.id.localeCompare(right.id);
+    });
+    return sorted.map((node) => {
+      const caps = node.capabilities;
+      const alias = node.alias ? ` alias=${node.alias}` : "";
+      return `- ${node.label} (${node.id})${alias} role=${node.roleTemplate} provider=${node.provider} status=${node.status} spawnNodes=${caps.spawnNodes}`;
+    });
+  }
+
+  private formatEdgeRoster(edges: Record<UUID, EdgeState>, nodes: Record<UUID, NodeState>): string[] {
+    const entries = Object.values(edges);
+    if (entries.length === 0) {
+      return ["- none"];
+    }
+    const sorted = [...entries].sort((left, right) => {
+      const leftKey = `${left.from}-${left.to}-${left.label}`;
+      const rightKey = `${right.from}-${right.to}-${right.label}`;
+      return leftKey.localeCompare(rightKey);
+    });
+    return sorted.map((edge) => {
+      const fromLabel = nodes[edge.from]?.label ?? "unknown";
+      const toLabel = nodes[edge.to]?.label ?? "unknown";
+      return `- ${fromLabel} (${edge.from}) -> ${toLabel} (${edge.to}) type=${edge.type} bidirectional=${edge.bidirectional} label=${edge.label}`;
+    });
   }
 
   private formatMessages(messages: UserMessageRecord[]): string[] {
@@ -164,6 +223,10 @@ export class PromptBuilder {
         const status = envelope.payload.status.ok ? "ok" : "failed";
         const reason = envelope.payload.status.reason ? ` (${envelope.payload.status.reason})` : "";
         lines.push(`  status: ${status}${reason}`);
+      }
+      if (envelope.payload.response) {
+        const replyTo = envelope.payload.response.replyTo ? ` replyTo=${envelope.payload.response.replyTo}` : "";
+        lines.push(`  response: ${envelope.payload.response.expectation}${replyTo}`);
       }
       if (envelope.contextRef) {
         lines.push(`  context: ${envelope.contextRef}`);

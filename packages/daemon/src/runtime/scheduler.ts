@@ -1,7 +1,6 @@
 import type {
   Artifact,
   ArtifactMetadata,
-  Envelope,
   EventEnvelope,
   NodeConnection,
   NodeState,
@@ -314,7 +313,9 @@ export class Scheduler {
     }
 
     const diffArtifact = await this.recordDiffArtifact(record, runId, nodeId, result.diff);
-    artifacts.push(diffArtifact);
+    if (diffArtifact) {
+      artifacts.push(diffArtifact);
+    }
 
     const outputHash = result.outputHash ?? hashString(result.message);
     const diffHash = result.diffHash ?? (result.diff?.content ? hashString(result.diff.content) : undefined);
@@ -389,12 +390,7 @@ export class Scheduler {
       connection: idleConnection
     });
 
-    const refs = artifacts.map((artifact) => ({
-      type: artifact.kind,
-      ref: `artifact://${artifact.id}`
-    }));
-
-    const outgoing = result.outgoing ?? this.buildDefaultEnvelopes(record, nodeId, result.summary, refs);
+    const outgoing = result.outgoing ?? [];
     for (const envelope of outgoing) {
       this.store.enqueueEnvelope(runId, envelope.toNodeId, envelope);
       this.emitEvent(runId, {
@@ -483,11 +479,12 @@ export class Scheduler {
     runId: UUID,
     nodeId: UUID,
     diff?: { content: string; filesChanged?: string[]; summary?: string }
-  ): Promise<Artifact> {
-    const content = diff?.content ?? "no changes";
-    const metadata: ArtifactMetadata | undefined = diff
-      ? { filesChanged: diff.filesChanged, summary: diff.summary }
-      : { summary: "no changes" };
+  ): Promise<Artifact | undefined> {
+    if (!diff) {
+      return undefined;
+    }
+    const content = diff.content;
+    const metadata: ArtifactMetadata = { filesChanged: diff.filesChanged, summary: diff.summary };
     return this.recordArtifact(record, runId, nodeId, "diff", "diff.patch", content, metadata);
   }
 
@@ -563,38 +560,6 @@ export class Scheduler {
     const store = new ArtifactStore(this.dataDir, runId);
     this.artifactStores.set(runId, store);
     return store;
-  }
-
-  private buildDefaultEnvelopes(
-    record: RunRecord,
-    fromNodeId: UUID,
-    summary: string,
-    artifacts: Array<{ type: string; ref: string }>
-  ): Envelope[] {
-    const envelopes: Envelope[] = [];
-    const now = nowIso();
-    for (const edge of record.edges.values()) {
-      if (edge.from === fromNodeId) {
-        envelopes.push({
-          kind: "handoff",
-          id: newId(),
-          fromNodeId,
-          toNodeId: edge.to,
-          createdAt: now,
-          payload: { message: summary, artifacts }
-        });
-      } else if (edge.bidirectional && edge.to === fromNodeId) {
-        envelopes.push({
-          kind: "handoff",
-          id: newId(),
-          fromNodeId,
-          toNodeId: edge.from,
-          createdAt: now,
-          payload: { message: summary, artifacts }
-        });
-      }
-    }
-    return envelopes;
   }
 
   private patchNode(record: RunRecord, nodeRecord: NodeRecord, patch: Partial<NodeState>): void {

@@ -22,6 +22,8 @@ import {
   type ProviderAdapter,
   type ProviderConfig,
   type ProviderProtocol,
+  type SendHandoffRequest,
+  type SendHandoffResult,
   type SpawnNodeRequest,
   type SpawnNodeResult,
   type ToolExecutionResult
@@ -71,22 +73,48 @@ interface ProviderSession {
   resumeArgs?: string[];
   replayTurns: number;
   transcript: UserMessageRecord[];
+  statelessProtocol: boolean;
 }
 
 type TurnSignal =
   | { type: "message.assistant.delta"; delta: string }
-  | { type: "message.assistant.final"; content: string }
+  | { type: "message.assistant.final"; content: string; toolCalls?: ToolCall[] }
   | { type: "interrupted" }
   | { type: "approval.requested"; approval: ApprovalRequest }
   | { type: "error"; error: Error };
 
 const CLI_TOOL_PROTOCOL = [
-  "Tool calls (CLI protocol):",
-  "If function calling is unavailable, request tools by emitting a single-line JSON object:",
-  "{\"tool_call\":{\"id\":\"<uuid>\",\"name\":\"<tool>\",\"args\":{...}}}",
+  "Tool calls:",
+  "Use native tool calling when available (Claude CLI: Task for spawning, Bash for shell commands).",
+  "vuhlp maps native tools to vuhlp tools (Task -> spawn_node, Bash -> command).",
+  "If a tool is not available natively, emit a single-line JSON object in your response:",
+  "{\"tool_call\":{\"id\":\"tool-1\",\"name\":\"<tool>\",\"args\":{...}}}",
   "Do not wrap the JSON in markdown. One tool call per line.",
-  "Only emit tool_call JSON when invoking a tool; do not include it in examples.",
-  "Available tools: command, read_file, write_file, list_files, delete_file, spawn_node, create_edge."
+  "Tool_call JSON must be the entire line with no extra text.",
+  "Use args (not params) for tool_call JSON.",
+  "Tool_call id can be any short unique string or omitted (vuhlp will generate one). Do not call Bash to generate ids.",
+  "Do not use Bash to emit tool_call JSON or simulate tool calls.",
+  "Bash output containing tool_call JSON is treated as an error.",
+  "Only use spawn_node/create_edge (Task) when Task Payload shows spawnNodes=true.",
+  "Use spawn_node alias to reference freshly spawned nodes in the same response.",
+  "Aliases must be unique within the run.",
+  "Tool schemas (tool_call args):",
+  "command: { cmd: string, cwd?: string }",
+  "read_file: { path: string }",
+  "write_file: { path: string, content: string }",
+  "list_files: { path?: string }",
+  "delete_file: { path: string }",
+  "spawn_node: { label: string, alias?: string, roleTemplate: string, instructions?: string, input?: object, provider?: string, capabilities?: object, permissions?: object, session?: object, customSystemPrompt?: string }",
+  "create_edge: { from: string, to: string, bidirectional?: boolean, type?: \"handoff\" | \"report\", label?: string } (from/to = node id or alias)",
+  "send_handoff: { to: string, message: string, structured?: object, artifacts?: [{type: string, ref: string}], status?: {ok: boolean, reason?: string}, response?: {expectation: \"none\" | \"optional\" | \"required\", replyTo?: string}, contextRef?: string } (to/replyTo = node id or alias)",
+  "Examples (emit exactly as a single line when calling):",
+  "{\"tool_call\":{\"id\":\"<uuid>\",\"name\":\"spawn_node\",\"args\":{\"label\":\"Docs Agent\",\"alias\":\"docs-agent\",\"roleTemplate\":\"planner\",\"instructions\":\"Summarize docs/.\",\"provider\":\"claude\"}}}",
+  "{\"tool_call\":{\"id\":\"<uuid>\",\"name\":\"create_edge\",\"args\":{\"from\":\"<node-id-or-alias>\",\"to\":\"<node-id-or-alias>\",\"type\":\"handoff\",\"bidirectional\":true,\"label\":\"docs\"}}}",
+  "{\"tool_call\":{\"id\":\"<uuid>\",\"name\":\"send_handoff\",\"args\":{\"to\":\"<node-id-or-alias>\",\"message\":\"Status update\"}}}",
+  "Available vuhlp tools: command, read_file, write_file, list_files, delete_file, spawn_node, create_edge, send_handoff.",
+  "Outgoing handoffs are explicit; use send_handoff to communicate between nodes.",
+  "create_edge only connects nodes; it does not deliver messages.",
+  "send_handoff requires to + message and an existing edge between nodes; optional structured, artifacts, status, response, contextRef."
 ].join("\n");
 
 export interface CliRunnerOptions {
@@ -95,6 +123,7 @@ export interface CliRunnerOptions {
   logger?: Logger;
   spawnNode?: (runId: UUID, fromNodeId: UUID, request: SpawnNodeRequest) => Promise<SpawnNodeResult>;
   createEdge?: (runId: UUID, fromNodeId: UUID, request: CreateEdgeRequest) => Promise<CreateEdgeResult>;
+  sendHandoff?: (runId: UUID, fromNodeId: UUID, request: SendHandoffRequest) => Promise<SendHandoffResult>;
   systemTemplatesDir?: string;
 }
 
@@ -108,14 +137,16 @@ export class CliRunner implements NodeRunner {
   private readonly repoRoot: string;
   private readonly spawnNode?: (runId: UUID, fromNodeId: UUID, request: SpawnNodeRequest) => Promise<SpawnNodeResult>;
   private readonly createEdge?: (runId: UUID, fromNodeId: UUID, request: CreateEdgeRequest) => Promise<CreateEdgeResult>;
+  private readonly sendHandoff?: (runId: UUID, fromNodeId: UUID, request: SendHandoffRequest) => Promise<SendHandoffResult>;
 
   constructor(options: CliRunnerOptions) {
     this.repoRoot = options.repoRoot;
     this.emitEvent = options.emitEvent;
     this.logger = options.logger ?? new ConsoleLogger();
-    this.promptBuilder = new PromptBuilder(this.repoRoot, options.systemTemplatesDir);
+    this.promptBuilder = new PromptBuilder(this.repoRoot, options.systemTemplatesDir, this.logger);
     this.spawnNode = options.spawnNode;
     this.createEdge = options.createEdge;
+    this.sendHandoff = options.sendHandoff;
   }
 
   supports(_provider: ProviderName): boolean {
@@ -137,7 +168,7 @@ export class CliRunner implements NodeRunner {
     }
 
     const promptInput = this.injectReplayMessages(input, session);
-    const toolProtocol = session.config.transport === "cli" ? CLI_TOOL_PROTOCOL : undefined;
+    const toolProtocol = this.buildToolProtocol(session.config);
     const prompt = await this.promptBuilder.build(promptInput, { toolProtocol });
     const promptHeaderHash = this.buildPromptHeaderHash(prompt.artifacts);
     const promptKind = this.resolvePromptKind(session, promptHeaderHash);
@@ -314,6 +345,13 @@ export class CliRunner implements NodeRunner {
     return hashString(header);
   }
 
+  private buildToolProtocol(config: ProviderConfig): string | undefined {
+    if (config.transport !== "cli") {
+      return undefined;
+    }
+    return CLI_TOOL_PROTOCOL;
+  }
+
   private async resumePendingTurn(session: ProviderSession, input: TurnInput): Promise<TurnResult> {
     const pending = session.pendingTurn;
     if (!pending) {
@@ -395,7 +433,23 @@ export class CliRunner implements NodeRunner {
       }
       if (signal.type === "message.assistant.final") {
         const message = signal.content.trim().length > 0 ? signal.content : pending.partialOutput;
-        const extracted = this.extractToolCalls(message);
+        const toolCalls = signal.toolCalls ?? [];
+        const shouldParseToolCalls = this.shouldParseToolCallLines(session);
+        const extracted = shouldParseToolCalls
+          ? this.extractToolCalls(message, session.config.nodeId)
+          : { message, toolCalls: [] };
+        if (toolCalls.length > 0) {
+          if (extracted.toolCalls.length > 0) {
+            this.logger.warn("tool_call JSON ignored because native tool calls are present", {
+              nodeId: session.config.nodeId,
+              count: extracted.toolCalls.length
+            });
+          }
+          pending.toolQueue = toolCalls;
+          pending.toolMessage = extracted.message;
+          pending.toolErrors = [];
+          return this.processToolQueue(session, pending);
+        }
         if (extracted.toolCalls.length > 0) {
           pending.toolQueue = extracted.toolCalls;
           pending.toolMessage = extracted.message;
@@ -445,7 +499,8 @@ export class CliRunner implements NodeRunner {
     }
     const baseArgs = session.baseArgs ?? [];
     const resumeArgs = session.resumeArgs ?? [];
-    const shouldResume = session.completedTurns > 0 && resumeArgs.length > 0;
+    const shouldResume =
+      session.config.resume && session.completedTurns > 0 && resumeArgs.length > 0;
     session.config.args = shouldResume ? [...baseArgs, ...resumeArgs] : [...baseArgs];
   }
 
@@ -536,13 +591,17 @@ export class CliRunner implements NodeRunner {
     return null;
   }
 
-  private extractToolCalls(message: string): { message: string; toolCalls: ToolCall[] } {
+  private shouldParseToolCallLines(session: ProviderSession): boolean {
+    return session.config.transport === "cli";
+  }
+
+  private extractToolCalls(message: string, nodeId?: UUID): { message: string; toolCalls: ToolCall[] } {
     const lines = message.split("\n");
     const toolCalls: ToolCall[] = [];
     const keptLines: string[] = [];
 
     for (const line of lines) {
-      const toolCall = this.parseToolCallLine(line);
+      const toolCall = this.parseToolCallLine(line, nodeId);
       if (toolCall) {
         toolCalls.push(toolCall);
         continue;
@@ -557,19 +616,19 @@ export class CliRunner implements NodeRunner {
     return { message: keptLines.join("\n").trim(), toolCalls };
   }
 
-  private parseToolCallLine(line: string): ToolCall | null {
+  private parseToolCallLine(line: string, nodeId?: UUID): ToolCall | null {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
-      return null;
-    }
-    if (!trimmed.includes("\"tool_call\"") && !trimmed.includes("\"toolCall\"")) {
       return null;
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(trimmed);
     } catch (error) {
-      this.logger.warn("failed to parse tool call JSON", { message: String(error) });
+      this.logger.warn("failed to parse tool call JSON", {
+        nodeId,
+        message: String(error)
+      });
       return null;
     }
     if (!this.isRecord(parsed)) {
@@ -581,10 +640,40 @@ export class CliRunner implements NodeRunner {
         ? parsed.toolCall
         : null;
     if (!container) {
-      return null;
+      const directName =
+        typeof parsed.tool === "string"
+          ? parsed.tool.trim()
+          : typeof parsed.name === "string"
+            ? parsed.name.trim()
+            : "";
+      const directArgs = this.isRecord(parsed.args)
+        ? parsed.args
+        : this.isRecord(parsed.params)
+          ? parsed.params
+          : null;
+      if (!directName || !directArgs) {
+        return null;
+      }
+      const directId = typeof parsed.id === "string" ? parsed.id.trim() : "";
+      const id = directId.length > 0 ? directId : newId();
+      this.logger.warn("nonstandard tool_call JSON shape; prefer tool_call wrapper", {
+        nodeId,
+        tool: directName
+      });
+      return { id, name: directName, args: directArgs };
     }
     const name = typeof container.name === "string" ? container.name.trim() : "";
-    const args = this.isRecord(container.args) ? container.args : null;
+    const args = this.isRecord(container.args)
+      ? container.args
+      : this.isRecord(container.params)
+        ? container.params
+        : null;
+    if (!this.isRecord(container.args) && this.isRecord(container.params)) {
+      this.logger.warn("tool_call JSON used params; prefer args", {
+        nodeId,
+        tool: name
+      });
+    }
     const idValue = typeof container.id === "string" ? container.id.trim() : "";
     const id = idValue.length > 0 ? idValue : newId();
     if (!name || !args) {
@@ -622,6 +711,18 @@ export class CliRunner implements NodeRunner {
 
     while (toolQueue.length > 0) {
       let tool = toolQueue[0];
+      if (this.isAgentManagementTool(tool) && !this.canSpawnNodes(session)) {
+        const errorMessage = "spawnNodes capability is disabled";
+        this.emitToolCompleted(session, tool.id, { ok: false, output: "" }, errorMessage);
+        this.logger.warn("tool blocked by capabilities", {
+          nodeId: session.config.nodeId,
+          tool: tool.name,
+          toolId: tool.id
+        });
+        toolErrors.push(`${tool.name}: ${errorMessage}`);
+        toolQueue.shift();
+        continue;
+      }
       if (this.requiresToolApproval(session, tool)) {
         const resolution = this.pendingToolResolutions.get(tool.id);
         if (!resolution) {
@@ -690,15 +791,31 @@ export class CliRunner implements NodeRunner {
       defaultProvider: session.config.provider,
       spawnNode: session.config.spawnNode,
       createEdge: session.config.createEdge,
+      sendHandoff: session.config.sendHandoff,
       logger: this.logger
     };
+  }
+
+  private canSpawnNodes(session: ProviderSession): boolean {
+    const capabilities = session.config.capabilities;
+    if (!capabilities) {
+      return true;
+    }
+    return capabilities.spawnNodes;
+  }
+
+  private isAgentManagementTool(tool: ToolCall): boolean {
+    return tool.name === "spawn_node" || tool.name === "create_edge";
   }
 
   private requiresToolApproval(session: ProviderSession, tool: ToolCall): boolean {
     if (session.config.permissionsMode === "gated") {
       return true;
     }
-    return tool.name === "spawn_node" && session.config.spawnRequiresApproval === true;
+    if (session.config.agentManagementRequiresApproval !== true) {
+      return false;
+    }
+    return this.isAgentManagementTool(tool);
   }
 
   private buildApprovalRequest(session: ProviderSession, tool: ToolCall): ApprovalRequest {
@@ -727,6 +844,10 @@ export class CliRunner implements NodeRunner {
       const to = typeof args.to === "string" ? args.to : "unknown";
       const type = typeof args.type === "string" ? args.type : "handoff";
       return `Create edge: ${from} -> ${to} (${type})`;
+    }
+    if (tool.name === "send_handoff") {
+      const to = typeof args.to === "string" ? args.to : "unknown";
+      return `Send handoff to: ${to}`;
     }
     return undefined;
   }
@@ -804,6 +925,7 @@ export class CliRunner implements NodeRunner {
   private async ensureSession(input: TurnInput): Promise<ProviderSession | null> {
     const existing = this.sessions.get(input.node.id);
     if (existing) {
+      this.refreshSessionConfig(existing, input);
       return existing;
     }
     const spec = this.resolveProviderSpec(input.config.provider);
@@ -827,12 +949,15 @@ export class CliRunner implements NodeRunner {
       provider: input.config.provider,
       cwd: input.run.cwd ?? this.repoRoot,
       permissionsMode: resolvePermissionsMode(input.config.permissions.cliPermissionsMode),
-      spawnRequiresApproval: input.node.permissions.spawnRequiresApproval,
+      agentManagementRequiresApproval: input.node.permissions.agentManagementRequiresApproval,
       spawnNode: this.spawnNode
         ? (request: SpawnNodeRequest) => this.spawnNode?.(input.run.id, input.node.id, request)
         : undefined,
       createEdge: this.createEdge
         ? (request: CreateEdgeRequest) => this.createEdge?.(input.run.id, input.node.id, request)
+        : undefined,
+      sendHandoff: this.sendHandoff
+        ? (request: SendHandoffRequest) => this.sendHandoff?.(input.run.id, input.node.id, request)
         : undefined,
       resume,
       resetCommands: input.config.session.resetCommands,
@@ -873,7 +998,8 @@ export class CliRunner implements NodeRunner {
       baseArgs,
       resumeArgs: isCli ? [...(spec.resumeArgs ?? [])] : undefined,
       replayTurns: spec.replayTurns ?? 0,
-      transcript: []
+      transcript: [],
+      statelessProtocol
     };
 
     adapter.onEvent((event: EventEnvelope) => this.handleAdapterEvent(session, event));
@@ -892,6 +1018,43 @@ export class CliRunner implements NodeRunner {
     this.updateSessionId(input.node, session);
     this.sessions.set(input.node.id, session);
     return session;
+  }
+
+  private refreshSessionConfig(session: ProviderSession, input: TurnInput): void {
+    const config = session.config;
+    const nextPermissionsMode = resolvePermissionsMode(input.config.permissions.cliPermissionsMode);
+    const nextSpawnNodes = input.node.capabilities.spawnNodes;
+    const prevSpawnNodes = config.capabilities?.spawnNodes;
+    const prevPermissionsMode = config.permissionsMode;
+
+    config.cwd = input.run.cwd ?? this.repoRoot;
+    config.globalMode = input.run.globalMode;
+    config.capabilities = input.node.capabilities;
+    config.permissionsMode = nextPermissionsMode;
+    config.agentManagementRequiresApproval = input.node.permissions.agentManagementRequiresApproval;
+    config.resetCommands = input.config.session.resetCommands;
+    const requestedResume = input.config.session.resume;
+    if (session.statelessProtocol && requestedResume) {
+      this.logger.warn("stateless protocol disables session resume; keeping resume disabled", {
+        nodeId: input.node.id,
+        provider: input.config.provider,
+        protocol: session.config.transport === "cli" ? session.config.protocol : undefined
+      });
+    }
+    config.resume = session.statelessProtocol ? false : requestedResume;
+
+    if (prevSpawnNodes !== undefined && prevSpawnNodes !== nextSpawnNodes) {
+      this.logger.info("node capabilities updated", {
+        nodeId: input.node.id,
+        spawnNodes: nextSpawnNodes
+      });
+    }
+    if (prevPermissionsMode !== nextPermissionsMode) {
+      this.logger.info("node permissions mode updated", {
+        nodeId: input.node.id,
+        permissionsMode: nextPermissionsMode
+      });
+    }
   }
 
   private updateSessionId(node: NodeState, session: ProviderSession): void {
@@ -928,7 +1091,11 @@ export class CliRunner implements NodeRunner {
       if (session.interrupted) {
         return;
       }
-      session.queue.push({ type: "message.assistant.final", content: event.content });
+      session.queue.push({
+        type: "message.assistant.final",
+        content: event.content,
+        toolCalls: event.toolCalls
+      });
       return;
     }
     // Forward thinking events to UI
@@ -979,7 +1146,11 @@ export class CliRunner implements NodeRunner {
     const prefix = provider.toUpperCase();
     const transportEnv = this.readEnv(`VUHLP_${prefix}_TRANSPORT`);
     const transport = transportEnv?.toLowerCase() === "api" ? "api" : "cli";
-    const statefulStreaming = this.readEnvFlag(`VUHLP_${prefix}_STATEFUL_STREAMING`);
+    const statefulDefault = provider === "claude";
+    const statefulStreaming = this.readEnvFlag(
+      `VUHLP_${prefix}_STATEFUL_STREAMING`,
+      statefulDefault
+    );
     const resumeArgsRaw = this.parseArgs(this.readEnv(`VUHLP_${prefix}_RESUME_ARGS`));
     const resumeArgs = resumeArgsRaw.length > 0 ? resumeArgsRaw : this.defaultResumeArgs(provider);
     const replayTurnsRaw = this.readEnv(`VUHLP_${prefix}_REPLAY_TURNS`);
