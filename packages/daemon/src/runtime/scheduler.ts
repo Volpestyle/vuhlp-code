@@ -84,6 +84,9 @@ export class Scheduler {
     if (nodeRecord.state.status !== "idle") {
       return false;
     }
+    if (nodeRecord.state.connection?.status === "disconnected") {
+      return false;
+    }
     return (
       nodeRecord.runtime.inbox.length > 0 ||
       nodeRecord.runtime.queuedMessages.length > 0 ||

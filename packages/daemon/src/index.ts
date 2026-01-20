@@ -63,14 +63,23 @@ if (envPath) {
 }
 
 const port = Number(process.env.VUHLP_PORT ?? 4000);
-const dataDir = process.env.VUHLP_DATA_DIR ?? path.resolve(process.cwd(), "data");
-const repoRoot = process.env.VUHLP_REPO_ROOT;
+const dataDir = process.env.VUHLP_DATA_DIR
+  ? path.resolve(process.env.VUHLP_DATA_DIR)
+  : path.resolve(process.cwd(), "data");
+const repoRoot = process.env.VUHLP_REPO_ROOT
+  ? path.resolve(process.env.VUHLP_REPO_ROOT)
+  : process.cwd();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const systemTemplatesDir = path.resolve(__dirname, "..", "docs", "templates");
+const appRoot = process.env.VUHLP_APP_ROOT
+  ? path.resolve(process.env.VUHLP_APP_ROOT)
+  : path.resolve(__dirname, "..", "..", "..");
 
-const runtime = new Runtime({ dataDir, repoRoot, systemTemplatesDir, logger });
+logger.info("resolved runtime paths", { appRoot, repoRoot, dataDir });
+
+const runtime = new Runtime({ dataDir, repoRoot, appRoot, systemTemplatesDir, logger });
 runtime.start();
 
 const server = createServer(runtime);

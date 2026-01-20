@@ -138,7 +138,7 @@ export class PromptBuilder {
     lines.push(`Global mode: ${input.run.globalMode}`);
     const caps = input.node.capabilities;
     lines.push(
-      `Capabilities: spawnNodes=${caps.spawnNodes}, runCommands=${caps.runCommands}, writeCode=${caps.writeCode}, writeDocs=${caps.writeDocs}, delegateOnly=${caps.delegateOnly}`
+      `Capabilities: edgeManagement=${caps.edgeManagement}, runCommands=${caps.runCommands}, writeCode=${caps.writeCode}, writeDocs=${caps.writeDocs}, delegateOnly=${caps.delegateOnly}`
     );
     const perms = input.node.permissions;
     lines.push(
@@ -174,7 +174,7 @@ export class PromptBuilder {
     return sorted.map((node) => {
       const caps = node.capabilities;
       const alias = node.alias ? ` alias=${node.alias}` : "";
-      return `- ${node.label} (${node.id})${alias} role=${node.roleTemplate} provider=${node.provider} status=${node.status} spawnNodes=${caps.spawnNodes}`;
+      return `- ${node.label} (${node.id})${alias} role=${node.roleTemplate} provider=${node.provider} status=${node.status} edgeManagement=${caps.edgeManagement}`;
     });
   }
 

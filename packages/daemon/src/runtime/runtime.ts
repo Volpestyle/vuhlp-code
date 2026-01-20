@@ -6,11 +6,15 @@ import type {
   Artifact,
   ArtifactKind,
   ArtifactMetadata,
+  EdgeManagementScope,
   EdgeState,
   Envelope,
   EventEnvelope,
+  FileEntry,
   GlobalMode,
   GetRoleTemplateResponse,
+  ListDirectoryResponse,
+  NodeConnection,
   NodeConfig,
   NodeConfigInput,
   NodeState,
@@ -49,6 +53,7 @@ export interface RuntimeOptions {
   runner?: NodeRunner;
   stallThreshold?: number;
   repoRoot?: string;
+  appRoot?: string;
   systemTemplatesDir?: string;
   logger?: Logger;
 }
@@ -60,13 +65,15 @@ export class Runtime {
   private readonly runner: NodeRunner;
   private readonly dataDir: string;
   private readonly repoRoot: string;
+  private readonly appRoot: string;
   private readonly systemTemplatesDir?: string;
   private readonly logger: Logger;
   private readonly artifactStores = new Map<UUID, ArtifactStore>();
 
   constructor(options: RuntimeOptions) {
     this.dataDir = options.dataDir;
-    this.repoRoot = options.repoRoot ?? process.cwd();
+    this.repoRoot = path.resolve(options.repoRoot ?? process.cwd());
+    this.appRoot = path.resolve(options.appRoot ?? this.repoRoot);
     this.systemTemplatesDir = options.systemTemplatesDir;
     this.logger = options.logger ?? new ConsoleLogger({ scope: "runtime" });
     this.store = new RunStore(this.dataDir);
@@ -75,6 +82,7 @@ export class Runtime {
       options.runner ??
       new CliRunner({
         repoRoot: this.repoRoot,
+        appRoot: this.appRoot,
         emitEvent: this.emitEvent.bind(this),
         spawnNode: this.spawnNodeFromTool.bind(this),
         createEdge: this.createEdgeFromTool.bind(this),
@@ -209,13 +217,13 @@ export class Runtime {
     const record = this.requireRun(runId);
     const now = nowIso();
 
-    if (this.runner.closeNode) {
+    if (this.runner.disposeNode) {
       for (const nodeRecord of record.nodes.values()) {
         nodeRecord.runtime.cancelRequested = true;
         try {
-          await this.runner.closeNode(nodeRecord.state.id);
+          await this.runner.disposeNode(nodeRecord.state.id);
         } catch (error) {
-          this.logger.error("failed to close node session", {
+          this.logger.error("failed to dispose node session", {
             nodeId: nodeRecord.state.id,
             runId,
             message: error instanceof Error ? error.message : String(error)
@@ -267,7 +275,7 @@ export class Runtime {
       }
     }
 
-    const idleConnection = nodeRecord.state.connection
+    const idleConnection: NodeConnection | undefined = nodeRecord.state.connection
       ? {
         ...nodeRecord.state.connection,
         status: "idle",
@@ -312,6 +320,169 @@ export class Runtime {
     });
   }
 
+  async startNodeProcess(runId: UUID, nodeId: UUID): Promise<void> {
+    const record = this.requireRun(runId);
+    const nodeRecord = this.requireNode(record, nodeId);
+    const now = nowIso();
+
+    if (!this.runner.startNode) {
+      throw new Error("Runner does not support starting node sessions");
+    }
+
+    try {
+      await this.runner.startNode({
+        run: record.state,
+        node: nodeRecord.state,
+        config: nodeRecord.config
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error("failed to start node session", {
+        nodeId,
+        runId,
+        message
+      });
+      throw error;
+    }
+
+    const connection: NodeConnection = nodeRecord.state.connection
+      ? {
+        ...nodeRecord.state.connection,
+        status: "idle",
+        streaming: false,
+        lastHeartbeatAt: now,
+        lastOutputAt: now
+      }
+      : {
+        status: "idle",
+        streaming: false,
+        lastHeartbeatAt: now,
+        lastOutputAt: now
+      };
+    const summary =
+      nodeRecord.state.connection?.status === "disconnected"
+        ? "process started"
+        : nodeRecord.state.summary;
+
+    nodeRecord.state = {
+      ...nodeRecord.state,
+      summary,
+      lastActivityAt: now,
+      connection
+    };
+    record.state.nodes[nodeId] = nodeRecord.state;
+    record.state.updatedAt = now;
+
+    this.emitEvent(runId, {
+      id: newId(),
+      runId,
+      ts: now,
+      type: "node.patch",
+      nodeId,
+      patch: {
+        summary,
+        lastActivityAt: now,
+        connection
+      }
+    });
+  }
+
+  async stopNodeProcess(runId: UUID, nodeId: UUID): Promise<void> {
+    const record = this.requireRun(runId);
+    const nodeRecord = this.requireNode(record, nodeId);
+    const now = nowIso();
+
+    if (!this.runner.stopNode) {
+      throw new Error("Runner does not support stopping node sessions");
+    }
+
+    if (nodeRecord.state.status === "running") {
+      nodeRecord.runtime.cancelRequested = true;
+    }
+    nodeRecord.runtime.pendingTurn = false;
+    for (const [approvalId, approval] of record.approvals.entries()) {
+      if (approval.nodeId === nodeId) {
+        record.approvals.delete(approvalId);
+      }
+    }
+
+    try {
+      await this.runner.stopNode(nodeId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error("failed to stop node session", {
+        nodeId,
+        runId,
+        message
+      });
+      throw error;
+    }
+
+    const connection: NodeConnection = nodeRecord.state.connection
+      ? {
+        ...nodeRecord.state.connection,
+        status: "disconnected",
+        streaming: false,
+        lastHeartbeatAt: now,
+        lastOutputAt: now
+      }
+      : {
+        status: "disconnected",
+        streaming: false,
+        lastHeartbeatAt: now,
+        lastOutputAt: now
+      };
+
+    nodeRecord.state = {
+      ...nodeRecord.state,
+      status: "idle",
+      summary: "process stopped",
+      lastActivityAt: now,
+      connection
+    };
+    record.state.nodes[nodeId] = nodeRecord.state;
+    record.state.updatedAt = now;
+
+    this.emitEvent(runId, {
+      id: newId(),
+      runId,
+      ts: now,
+      type: "node.patch",
+      nodeId,
+      patch: {
+        status: "idle",
+        summary: "process stopped",
+        lastActivityAt: now,
+        connection
+      }
+    });
+  }
+
+  async interruptNodeProcess(runId: UUID, nodeId: UUID): Promise<void> {
+    const record = this.requireRun(runId);
+    const nodeRecord = this.requireNode(record, nodeId);
+
+    if (!this.runner.interruptNode) {
+      throw new Error("Runner does not support interrupting node sessions");
+    }
+
+    if (nodeRecord.state.status !== "running") {
+      throw new Error("Node is not running");
+    }
+
+    try {
+      await this.runner.interruptNode(nodeId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error("failed to interrupt node session", {
+        nodeId,
+        runId,
+        message
+      });
+      throw error;
+    }
+  }
+
   async deleteNode(runId: UUID, nodeId: UUID): Promise<void> {
     const record = this.requireRun(runId);
     const now = nowIso();
@@ -320,12 +491,12 @@ export class Runtime {
       throw new Error(`Node ${nodeId} not found`);
     }
 
-    if (this.runner.closeNode) {
+    if (this.runner.disposeNode) {
       nodeRecord.runtime.cancelRequested = true;
       try {
-        await this.runner.closeNode(nodeId);
+        await this.runner.disposeNode(nodeId);
       } catch (error) {
-        this.logger.error("failed to close node session", {
+        this.logger.error("failed to dispose node session", {
           nodeId,
           runId,
           message: error instanceof Error ? error.message : String(error)
@@ -501,6 +672,9 @@ export class Runtime {
     fromNodeId: UUID,
     request: SpawnNodeRequest
   ): Promise<SpawnNodeResult> {
+    const record = this.requireRun(runId);
+    const caller = this.requireNode(record, fromNodeId);
+    this.ensureEdgeManagementForSpawn(caller);
     const { instructions, input, ...config } = request;
     const node = this.createNode(runId, config);
     const message = typeof instructions === "string" ? instructions.trim() : "";
@@ -528,10 +702,11 @@ export class Runtime {
 
   private async createEdgeFromTool(
     runId: UUID,
-    _fromNodeId: UUID,
+    fromNodeId: UUID,
     request: CreateEdgeRequest
   ): Promise<CreateEdgeResult> {
     const record = this.requireRun(runId);
+    const caller = this.requireNode(record, fromNodeId);
     const missingNodes: string[] = [];
     const fromResolved = this.resolveNodeRef(record, request.from);
     const toResolved = this.resolveNodeRef(record, request.to);
@@ -548,11 +723,14 @@ export class Runtime {
         )}). Use Task Payload Known nodes (id or alias).`
       );
     }
+    const resolvedFrom = fromResolved ?? request.from;
+    const resolvedTo = toResolved ?? request.to;
+    this.ensureEdgeManagementForCreateEdge(caller, resolvedFrom, resolvedTo);
     const type = request.type ?? "handoff";
     const label = request.label ?? (type === "report" ? "report" : "task");
     const edge = this.createEdge(runId, {
-      from: fromResolved ?? request.from,
-      to: toResolved ?? request.to,
+      from: resolvedFrom,
+      to: resolvedTo,
       bidirectional: request.bidirectional ?? true,
       type,
       label
@@ -654,17 +832,17 @@ export class Runtime {
     }
 
     if (config?.provider && config.provider !== nodeRecord.config.provider) {
-      if (this.runner.closeNode) {
+      if (this.runner.disposeNode) {
         if (nodeRecord.state.status === "running") {
           nodeRecord.runtime.cancelRequested = true;
         }
-        void this.runner.closeNode(nodeId);
+        void this.runner.disposeNode(nodeId);
       }
       if (updatedPatch.provider === undefined) {
         updatedPatch = { ...updatedPatch, provider: config.provider };
       }
-      const disconnected = {
-        status: "disconnected" as const,
+      const disconnected: NodeConnection = {
+        status: "disconnected",
         streaming: false,
         lastHeartbeatAt: now,
         lastOutputAt: now
@@ -907,6 +1085,14 @@ export class Runtime {
         ts: timestamp
       };
     }
+    if (event.type === "node.patch") {
+      const nodeRecord = record.nodes.get(event.nodeId);
+      if (nodeRecord) {
+        nodeRecord.state = { ...nodeRecord.state, ...event.patch };
+        record.state.nodes[event.nodeId] = nodeRecord.state;
+        record.state.updatedAt = event.ts ?? nowIso();
+      }
+    }
     void record.eventLog.append(event);
     this.eventBus.emit(event);
 
@@ -946,7 +1132,7 @@ export class Runtime {
       roleTemplate: config.roleTemplate,
       customSystemPrompt: config.customSystemPrompt ?? null,
       capabilities: {
-        spawnNodes: config.capabilities?.spawnNodes ?? isOrchestrator,
+        edgeManagement: this.resolveEdgeManagement(config.capabilities?.edgeManagement, isOrchestrator),
         writeCode: config.capabilities?.writeCode ?? true,
         writeDocs: config.capabilities?.writeDocs ?? true,
         runCommands: config.capabilities?.runCommands ?? true,
@@ -962,6 +1148,56 @@ export class Runtime {
         resetCommands: config.session?.resetCommands ?? ["/new", "/clear"]
       }
     };
+  }
+
+  private resolveEdgeManagement(
+    value: EdgeManagementScope | undefined,
+    isOrchestrator: boolean
+  ): EdgeManagementScope {
+    if (value === "none" || value === "self" || value === "all") {
+      return value;
+    }
+    return isOrchestrator ? "all" : "none";
+  }
+
+  private ensureEdgeManagementForSpawn(nodeRecord: NodeRecord): void {
+    const scope = nodeRecord.state.capabilities.edgeManagement;
+    if (scope === "all") {
+      return;
+    }
+    this.logger.warn("spawn_node blocked by edgeManagement", {
+      nodeId: nodeRecord.state.id,
+      label: nodeRecord.state.label,
+      edgeManagement: scope
+    });
+    throw new Error("edgeManagement=all required to spawn nodes");
+  }
+
+  private ensureEdgeManagementForCreateEdge(nodeRecord: NodeRecord, from: UUID, to: UUID): void {
+    const scope = nodeRecord.state.capabilities.edgeManagement;
+    if (scope === "all") {
+      return;
+    }
+    if (scope === "none") {
+      this.logger.warn("create_edge blocked by edgeManagement", {
+        nodeId: nodeRecord.state.id,
+        label: nodeRecord.state.label,
+        edgeManagement: scope,
+        from,
+        to
+      });
+      throw new Error("edgeManagement capability is disabled");
+    }
+    if (from !== nodeRecord.state.id && to !== nodeRecord.state.id) {
+      this.logger.warn("create_edge blocked by edgeManagement=self", {
+        nodeId: nodeRecord.state.id,
+        label: nodeRecord.state.label,
+        edgeManagement: scope,
+        from,
+        to
+      });
+      throw new Error("edgeManagement=self only allows edges that include the calling node");
+    }
   }
 
   private normalizeAlias(value?: string | null): string | undefined {
@@ -1085,7 +1321,7 @@ export class Runtime {
       const wasRunning = nodeRecord.state.status === "running";
       nodeRecord.runtime.pendingTurn = false;
       nodeRecord.runtime.wasInterrupted = wasRunning;
-      const connection = nodeRecord.state.connection
+      const connection: NodeConnection | undefined = nodeRecord.state.connection
         ? {
           ...nodeRecord.state.connection,
           status: "idle",
@@ -1144,7 +1380,7 @@ export class Runtime {
       const nodeId = nodeRecord.state.id;
       nodeRecord.runtime.pendingTurn = false;
       nodeRecord.runtime.wasInterrupted = false;
-      const connection = nodeRecord.state.connection
+      const connection: NodeConnection | undefined = nodeRecord.state.connection
         ? {
           ...nodeRecord.state.connection,
           status: "disconnected",
@@ -1174,9 +1410,9 @@ export class Runtime {
           connection
         }
       });
-      if (this.runner.closeNode) {
-        this.runner.closeNode(nodeId).catch((error) => {
-          this.logger.error("failed to close node session", {
+      if (this.runner.stopNode) {
+        this.runner.stopNode(nodeId).catch((error) => {
+          this.logger.error("failed to stop node session", {
             nodeId,
             runId: record.state.id,
             message: error instanceof Error ? error.message : String(error)

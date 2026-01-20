@@ -137,6 +137,33 @@ export function createServer(runtime: Runtime): http.Server {
     }
   });
 
+  app.post("/api/runs/:id/nodes/:nodeId/start", async (req, res) => {
+    try {
+      await runtime.startNodeProcess(req.params.id, req.params.nodeId);
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(400).json({ error: String(error) });
+    }
+  });
+
+  app.post("/api/runs/:id/nodes/:nodeId/stop", async (req, res) => {
+    try {
+      await runtime.stopNodeProcess(req.params.id, req.params.nodeId);
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(400).json({ error: String(error) });
+    }
+  });
+
+  app.post("/api/runs/:id/nodes/:nodeId/interrupt", async (req, res) => {
+    try {
+      await runtime.interruptNodeProcess(req.params.id, req.params.nodeId);
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(400).json({ error: String(error) });
+    }
+  });
+
   app.get("/api/runs/:id/artifacts/:artifactId", async (req, res) => {
     try {
       const result = await runtime.getArtifactContent(req.params.id, req.params.artifactId);

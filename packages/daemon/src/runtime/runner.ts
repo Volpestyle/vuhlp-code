@@ -71,9 +71,11 @@ export type TurnResult =
 export interface NodeRunner {
   supports(provider: ProviderName): boolean;
   runTurn(input: TurnInput): Promise<TurnResult>;
+  startNode?(input: { run: RunState; node: NodeState; config: NodeConfig }): Promise<void>;
+  stopNode?(nodeId: UUID): Promise<void>;
+  disposeNode?(nodeId: UUID): Promise<void>;
   resolveApproval?(approvalId: UUID, resolution: ApprovalResolution): Promise<void>;
   resetNode?(nodeId: UUID): Promise<void>;
-  closeNode?(nodeId: UUID): Promise<void>;
   interruptNode?(nodeId: UUID): Promise<void>;
 }
 
