@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, memo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, TouchableOpacity } from 'react-native-gesture-handler';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -8,6 +8,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import type { VisualNode, Point } from '@/stores/graph-store';
 import { colors, getStatusColor, getProviderColors, fontFamily } from '@/lib/theme';
+import { Expand } from 'iconoir-react-native';
+import { formatRelativeTime } from '@vuhlp/shared';
 
 const PROVIDER_LABELS: Record<string, string> = {
   claude: 'Claude',
@@ -24,21 +26,11 @@ interface NodeCardProps {
   onPortDragStart: (nodeId: string, portIndex: number, point: Point) => void;
   onPortDragMove: (point: Point) => void;
   onPortDragEnd: (targetNodeId: string | null, targetPortIndex: number | null) => void;
+  onExpand: (nodeId: string) => void;
 }
 
 const PORT_SIZE = 16;
 const PORT_HIT_SLOP = 12;
-
-function formatTime(iso: string): string {
-  const date = new Date(iso);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-
-  if (diffSec < 60) return `${diffSec}s ago`;
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-  return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-}
 
 export const NodeCard = memo(function NodeCard({
   node,
@@ -48,6 +40,7 @@ export const NodeCard = memo(function NodeCard({
   onPortDragStart,
   onPortDragMove,
   onPortDragEnd,
+  onExpand,
 }: NodeCardProps) {
   const { position, dimensions, status, label, summary, selected, provider, roleTemplate, lastActivityAt } = node;
   const effectiveZoom = Math.max(0.1, viewportZoom);
@@ -85,6 +78,10 @@ export const NodeCard = memo(function NodeCard({
   const handlePress = useCallback(() => {
     onPress(node.id);
   }, [onPress, node.id]);
+
+  const handleExpand = useCallback(() => {
+    onExpand(node.id);
+  }, [onExpand, node.id]);
 
   const dragGesture = Gesture.Pan()
     .maxPointers(1)
@@ -170,6 +167,14 @@ export const NodeCard = memo(function NodeCard({
           <Text style={styles.roleTemplate} numberOfLines={1}>
             {roleTemplate}
           </Text>
+
+          <TouchableOpacity 
+            onPress={handleExpand}
+            hitSlop={8}
+            style={styles.expandButton}
+          >
+            <Expand width={14} height={14} color={colors.textMuted} />
+          </TouchableOpacity>
         </View>
 
         {/* Title */}
@@ -190,7 +195,7 @@ export const NodeCard = memo(function NodeCard({
               {status}
             </Text>
           </View>
-          <Text style={styles.timestamp}>{formatTime(lastActivityAt)}</Text>
+          <Text style={styles.timestamp}>{formatRelativeTime(lastActivityAt)}</Text>
         </View>
 
         {/* Streaming indicator */}
@@ -350,6 +355,10 @@ const styles = StyleSheet.create({
     fontFamily: fontFamily.semibold,
     textTransform: 'uppercase',
     letterSpacing: 1.8,
+  },
+  expandButton: {
+    padding: 2,
+    opacity: 0.8,
   },
   title: {
     color: colors.textPrimary,

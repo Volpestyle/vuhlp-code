@@ -8,62 +8,10 @@ import type {
   ToolCompletedEvent,
   TurnStatus,
   UUID,
+  Envelope,
 } from '@vuhlp/contracts';
+import { stripToolCallLines } from '@vuhlp/shared';
 import { createLocalId } from '@/lib/ids';
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const isToolCallLine = (line: string): boolean => {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    return false;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return false;
-  }
-  if (!isRecord(parsed)) {
-    return false;
-  }
-  const container = isRecord(parsed.tool_call)
-    ? parsed.tool_call
-    : isRecord(parsed.toolCall)
-      ? parsed.toolCall
-      : null;
-  if (container) {
-    const name = typeof container.name === 'string' ? container.name.trim() : '';
-    const args = isRecord(container.args)
-      ? container.args
-      : isRecord(container.params)
-        ? container.params
-        : null;
-    return Boolean(name && args);
-  }
-  const directName =
-    typeof parsed.tool === 'string'
-      ? parsed.tool.trim()
-      : typeof parsed.name === 'string'
-        ? parsed.name.trim()
-        : '';
-  const directArgs = isRecord(parsed.args)
-    ? parsed.args
-    : isRecord(parsed.params)
-      ? parsed.params
-      : null;
-  return Boolean(directName && directArgs);
-};
-
-const stripToolCallLines = (content: string): string => {
-  if (!content) {
-    return content;
-  }
-  const lines = content.split('\n');
-  const kept = lines.filter((line) => !isToolCallLine(line));
-  return kept.join('\n');
-};
 
 export interface Point {
   x: number;
@@ -162,6 +110,7 @@ interface GraphState {
 
   // Approvals
   pendingApprovals: PendingApproval[];
+  recentHandoffs: Envelope[];
 
   // UI
   inspectorOpen: boolean;
@@ -211,6 +160,7 @@ interface GraphState {
   appendAssistantThinkingDelta: (nodeId: UUID, delta: string, timestamp: ISO8601) => void;
   finalizeAssistantThinking: (nodeId: UUID, content: string, timestamp: ISO8601) => void;
   clearNodeMessages: (nodeId: UUID) => void;
+  finalizeNodeMessages: (nodeId: UUID, timestamp: ISO8601) => void;
 
   // Tool + status events
   addToolEvent: (event: ToolEvent) => void;
@@ -220,6 +170,9 @@ interface GraphState {
   // Approvals
   addApproval: (approval: PendingApproval) => void;
   removeApproval: (approvalId: string) => void;
+
+  // Handoffs
+  addHandoff: (envelope: Envelope) => void;
 
   // UI
   setInspectorOpen: (open: boolean) => void;
@@ -323,6 +276,7 @@ const initialState = {
   toolEvents: [],
   turnStatusEvents: [],
   pendingApprovals: [] as PendingApproval[],
+  recentHandoffs: [] as Envelope[],
   inspectorOpen: false,
 };
 
@@ -757,6 +711,36 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       };
     }),
 
+  finalizeNodeMessages: (nodeId, timestamp) =>
+    set((state) => {
+      const messages = state.chatMessages[nodeId];
+      if (!messages) return state;
+
+      const needsFinalization = messages.some(
+        (m) => m.streaming || m.thinkingStreaming
+      );
+      if (!needsFinalization) return state;
+
+      const next = messages.map((m) => {
+        if (!m.streaming && !m.thinkingStreaming) return m;
+
+        return {
+          ...m,
+          streaming: false,
+          thinkingStreaming: false,
+          status: m.status ?? 'interrupted',
+          createdAt: timestamp,
+        };
+      });
+
+      return {
+        chatMessages: {
+          ...state.chatMessages,
+          [nodeId]: next,
+        },
+      };
+    }),
+
   clearNodeMessages: (nodeId) =>
     set((state) => {
       if (!state.chatMessages[nodeId]) {
@@ -765,6 +749,11 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       const { [nodeId]: _removed, ...remaining } = state.chatMessages;
       return { chatMessages: remaining };
     }),
+
+  addHandoff: (envelope) =>
+    set((state) => ({
+      recentHandoffs: [envelope, ...state.recentHandoffs].slice(0, 50),
+    })),
 
   addToolEvent: (event) =>
     set((state) => ({

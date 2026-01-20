@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useGraphStore, type PendingApproval } from '@/stores/graph-store';
 import { api } from '@/lib/api';
 import { colors, fontFamily } from '@/lib/theme';
+import { truncateText } from '@vuhlp/shared';
 
 export function ApprovalQueue() {
   const insets = useSafeAreaInsets();
@@ -87,7 +88,7 @@ interface ApprovalCardProps {
 function ApprovalCard({ approval, nodeLabel, onApprove, onDeny }: ApprovalCardProps) {
   const argsPreview = Object.entries(approval.toolArgs)
     .slice(0, 2)
-    .map(([k, v]) => `${k}: ${truncate(String(v), 20)}`)
+    .map(([k, v]) => `${k}: ${truncateText(String(v), 20)}`)
     .join(', ');
 
   return (
@@ -115,11 +116,6 @@ function ApprovalCard({ approval, nodeLabel, onApprove, onDeny }: ApprovalCardPr
       </View>
     </View>
   );
-}
-
-function truncate(str: string, maxLen: number): string {
-  if (str.length <= maxLen) return str;
-  return str.slice(0, maxLen - 3) + '...';
 }
 
 const styles = StyleSheet.create({

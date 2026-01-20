@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
 import type { NativeScrollEvent, NativeSyntheticEvent, ScrollView } from 'react-native';
+import { useAutoScrollState } from '@vuhlp/shared';
 
 interface UseChatAutoScrollOptions {
-  scrollRef: React.RefObject<ScrollView>;
+  scrollRef: React.RefObject<ScrollView | null>;
   enabled?: boolean;
   threshold?: number;
   updateKey?: string;
@@ -16,27 +17,26 @@ export function useChatAutoScroll({
   updateKey,
   resetKey,
 }: UseChatAutoScrollOptions) {
-  const [isPinned, setIsPinned] = useState(true);
+  const scrollToEnd = useCallback(() => {
+    scrollRef.current?.scrollToEnd({ animated: true });
+  }, [scrollRef]);
+
+  const { isPinned, updatePinned } = useAutoScrollState({
+    enabled,
+    threshold,
+    updateKey,
+    resetKey,
+    scrollToEnd,
+  });
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
       const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
-      setIsPinned(distanceFromBottom <= threshold);
+      updatePinned(distanceFromBottom);
     },
-    [threshold]
+    [updatePinned]
   );
-
-  useEffect(() => {
-    if (!enabled || !isPinned) return;
-    scrollRef.current?.scrollToEnd({ animated: true });
-  }, [enabled, isPinned, scrollRef, updateKey]);
-
-  useEffect(() => {
-    if (resetKey !== undefined) {
-      setIsPinned(true);
-    }
-  }, [resetKey]);
 
   return { handleScroll, isPinned };
 }

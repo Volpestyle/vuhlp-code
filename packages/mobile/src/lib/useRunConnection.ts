@@ -63,11 +63,13 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
   const finalizeAssistantMessage = useGraphStore((s) => s.finalizeAssistantMessage);
   const appendAssistantThinkingDelta = useGraphStore((s) => s.appendAssistantThinkingDelta);
   const finalizeAssistantThinking = useGraphStore((s) => s.finalizeAssistantThinking);
+  const finalizeNodeMessages = useGraphStore((s) => s.finalizeNodeMessages);
   const addToolEvent = useGraphStore((s) => s.addToolEvent);
   const updateToolEvent = useGraphStore((s) => s.updateToolEvent);
   const addTurnStatusEvent = useGraphStore((s) => s.addTurnStatusEvent);
   const addApproval = useGraphStore((s) => s.addApproval);
   const removeApproval = useGraphStore((s) => s.removeApproval);
+  const addHandoff = useGraphStore((s) => s.addHandoff);
   const reset = useGraphStore((s) => s.reset);
 
   const clearReconnectTimeout = useCallback(() => {
@@ -103,6 +105,9 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
           } else {
             updateNode(event.nodeId, event.patch);
           }
+          if (event.patch.status && event.patch.status !== 'running') {
+            finalizeNodeMessages(event.nodeId, event.ts);
+          }
           break;
 
         case 'node.deleted':
@@ -114,6 +119,9 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
             status: event.status,
             summary: event.summary,
           });
+          if (event.status !== 'running') {
+            finalizeNodeMessages(event.nodeId, event.ts);
+          }
           break;
 
         case 'edge.created':
@@ -174,6 +182,12 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
         }
 
         case 'tool.proposed': {
+          const existing = useGraphStore
+            .getState()
+            .toolEvents.find((entry) => entry.tool.id === event.tool.id);
+          if (existing) {
+            break;
+          }
           const toolEvent: ToolEvent = {
             id: event.id,
             nodeId: event.nodeId,
@@ -186,6 +200,17 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
         }
 
         case 'tool.started': {
+          const existing = useGraphStore
+            .getState()
+            .toolEvents.find((entry) => entry.tool.id === event.tool.id);
+          if (existing) {
+            updateToolEvent(event.tool.id, {
+              status: 'started',
+              tool: event.tool,
+              timestamp: event.ts,
+            });
+            break;
+          }
           const toolEvent: ToolEvent = {
             id: event.id,
             nodeId: event.nodeId,
@@ -226,7 +251,14 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
         // Events we acknowledge but don't need to handle yet
         case 'run.mode':
         case 'run.stalled':
+          // Log for debugging
+          console.log(`[ws] event: ${event.type}`);
+          break;
+
         case 'handoff.sent':
+          addHandoff(event.envelope);
+          break;
+
         case 'artifact.created':
           // Log for debugging
           console.log(`[ws] event: ${event.type}`);
@@ -249,11 +281,13 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
       finalizeAssistantMessage,
       appendAssistantThinkingDelta,
       finalizeAssistantThinking,
+      finalizeNodeMessages,
       addToolEvent,
       updateToolEvent,
       addTurnStatusEvent,
       addApproval,
       removeApproval,
+      addHandoff,
     ]
   );
 

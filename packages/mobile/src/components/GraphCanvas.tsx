@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
-import { View, Text, StyleSheet, useWindowDimensions, LayoutChangeEvent } from 'react-native';
+import { View, Text, StyleSheet, useWindowDimensions, LayoutChangeEvent, Alert } from 'react-native';
 import { Canvas, Path, Skia, Group, Line, vec } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -28,8 +28,20 @@ const SPRING_CONFIG = {
 const EDGE_SNAP_RADIUS = 30;
 
 let skiaMissingLogged = false;
+let skiaAvailableCache: boolean | null = null;
 
-const isSkiaAvailable = (): boolean => Boolean(Skia?.Path?.Make && Skia?.Matrix);
+const isSkiaAvailable = (): boolean => {
+  if (skiaAvailableCache !== null) {
+    return skiaAvailableCache;
+  }
+  try {
+    const path = Skia.Path.Make();
+    skiaAvailableCache = Boolean(path) && Boolean(Skia.Matrix);
+  } catch {
+    skiaAvailableCache = false;
+  }
+  return skiaAvailableCache;
+};
 
 const logSkiaMissing = () => {
   if (skiaMissingLogged) return;
@@ -112,7 +124,13 @@ function SkiaGraphCanvas() {
   const panTranslationOffsetX = useSharedValue(0);
   const panTranslationOffsetY = useSharedValue(0);
   const lastPanTranslationX = useSharedValue(0);
+
   const lastPanTranslationY = useSharedValue(0);
+
+  // Manual double tap detection tracking
+  const lastTapX = useSharedValue(0);
+  const lastTapY = useSharedValue(0);
+  const lastTapTime = useSharedValue(0);
 
   const logPinchHandoff = useCallback(
     (payload: {
@@ -255,13 +273,10 @@ function SkiaGraphCanvas() {
       isGestureActive.value = isPinching.value;
     });
 
-  // Double tap to reset view
-  const doubleTapGesture = Gesture.Tap()
-    .numberOfTaps(2)
-    .onStart(() => {
-      isGestureActive.value = true;
-    })
-    .onEnd(() => {
+  // Fit to view helper
+  const fitToView = useCallback(() => {
+    isGestureActive.value = true;
+    if (nodes.length === 0) {
       viewportX.value = withSpring(0, SPRING_CONFIG);
       viewportY.value = withSpring(0, SPRING_CONFIG);
       viewportZoom.value = withSpring(1, SPRING_CONFIG, (finished) => {
@@ -270,8 +285,46 @@ function SkiaGraphCanvas() {
           runOnJS(syncViewport)();
         }
       });
-    });
+      return;
+    }
 
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const node of nodes) {
+      minX = Math.min(minX, node.position.x);
+      minY = Math.min(minY, node.position.y);
+      maxX = Math.max(maxX, node.position.x + node.dimensions.width);
+      maxY = Math.max(maxY, node.position.y + node.dimensions.height);
+    }
+
+    const padding = 50;
+    const contentWidth = maxX - minX + padding * 2;
+    const contentHeight = maxY - minY + padding * 2;
+    const contentCenterX = minX - padding + contentWidth / 2;
+    const contentCenterY = minY - padding + contentHeight / 2;
+
+    const scaleX = dimensions.width / contentWidth;
+    const scaleY = dimensions.height / contentHeight;
+    // Limit max zoom to prevent zooming in too close on single small nodes
+    const targetZoom = Math.min(scaleX, scaleY, 1.5);
+
+    const targetVx = dimensions.width / 2 - contentCenterX * targetZoom;
+    const targetVy = dimensions.height / 2 - contentCenterY * targetZoom;
+
+    viewportX.value = withSpring(targetVx, SPRING_CONFIG);
+    viewportY.value = withSpring(targetVy, SPRING_CONFIG);
+    viewportZoom.value = withSpring(targetZoom, SPRING_CONFIG, (finished) => {
+      if (finished) {
+        isGestureActive.value = false;
+        runOnJS(syncViewport)();
+      }
+    });
+  }, [nodes, dimensions, viewportX, viewportY, viewportZoom, isGestureActive, syncViewport]);
+
+  // Double tap to reset view
   const handleCanvasTap = useCallback(
     (worldX: number, worldY: number) => {
       const hitNode = nodes.some((node) => {
@@ -285,27 +338,48 @@ function SkiaGraphCanvas() {
       });
 
       if (!hitNode) {
-        setInspectorOpen(false);
+        selectNode(null);
       }
     },
-    [nodes, setInspectorOpen]
+    [nodes, selectNode]
   );
+  
+  // Consolidated tap handler for both single and double taps
+  // We manually detect double taps to ensure they are close together spatially
+  const tapGesture = Gesture.Tap()
+    .maxDuration(250)
+    .onEnd((event) => {
+      if (isPanning.value || isPinching.value) return;
 
-  // Tap on empty space to close the inspector without fighting node taps
-  const tapGesture = Gesture.Tap().onEnd((event) => {
-    const zoom = viewportZoom.value || 1;
-    const worldX = (event.x - viewportX.value) / zoom;
-    const worldY = (event.y - viewportY.value) / zoom;
-    runOnJS(handleCanvasTap)(worldX, worldY);
-  });
+      const now = Date.now();
+      const timeDiff = now - lastTapTime.value;
+      const dist = Math.hypot(event.x - lastTapX.value, event.y - lastTapY.value);
+
+      // Check for double tap: close in time (<300ms) and space (<40px)
+      if (timeDiff < 300 && dist < 40) {
+        runOnJS(fitToView)();
+        // Reset time to prevent triple-tap confusion
+        lastTapTime.value = 0;
+      } else {
+        // Single tap behavior
+        const zoom = viewportZoom.value || 1;
+        const worldX = (event.x - viewportX.value) / zoom;
+        const worldY = (event.y - viewportY.value) / zoom;
+        runOnJS(handleCanvasTap)(worldX, worldY);
+
+        // Record this tap for potential double tap
+        lastTapTime.value = now;
+        lastTapX.value = event.x;
+        lastTapY.value = event.y;
+      }
+    });
 
   // Compose gestures:
   // - Pinch always works (simultaneous with pan for two-finger navigation)
-  // - Double-tap has priority over single-tap
+  // - Pan is exclusive with tap gestures (dragging won't trigger tap)
   const composedGesture = Gesture.Simultaneous(
     pinchGesture,
-    panGesture,
-    Gesture.Exclusive(doubleTapGesture, tapGesture)
+    Gesture.Exclusive(panGesture, tapGesture)
   );
 
   // Port drag handlers
@@ -351,6 +425,43 @@ function SkiaGraphCanvas() {
     [nodes]
   );
 
+  // Focus on a specific node (expand/maximize)
+  const focusNode = useCallback(
+    (nodeId: string) => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+
+      runOnJS(selectNode)(nodeId);
+
+      // Animation targets
+      const padding = 40;
+      const contentWidth = node.dimensions.width + padding * 2;
+      const contentHeight = node.dimensions.height + padding * 2;
+      
+      const scaleX = dimensions.width / contentWidth;
+      const scaleY = dimensions.height / contentHeight;
+      // Cap zoom at 1.5x or fit-to-screen
+      const targetZoom = Math.min(scaleX, scaleY, 1.5);
+
+      const contentCenterX = node.position.x + node.dimensions.width / 2;
+      const contentCenterY = node.position.y + node.dimensions.height / 2;
+
+      const targetVx = dimensions.width / 2 - contentCenterX * targetZoom;
+      const targetVy = dimensions.height / 2 - contentCenterY * targetZoom;
+
+      isGestureActive.value = true;
+      viewportX.value = withSpring(targetVx, SPRING_CONFIG);
+      viewportY.value = withSpring(targetVy, SPRING_CONFIG);
+      viewportZoom.value = withSpring(targetZoom, SPRING_CONFIG, (finished) => {
+        if (finished) {
+          isGestureActive.value = false;
+          runOnJS(syncViewport)();
+        }
+      });
+    },
+    [nodes, dimensions, selectNode, viewportX, viewportY, viewportZoom, isGestureActive, syncViewport]
+  );
+
   const handlePortDragEnd = useCallback(() => {
     if (!edgeDrag || !run) {
       endEdgeDrag();
@@ -381,7 +492,15 @@ function SkiaGraphCanvas() {
         api
           .createEdge(run.id, newEdge)
           .then((created) => addEdge(created))
-          .catch((err) => console.error('[graph] failed to create edge:', err));
+          .catch((err) => {
+            console.error('[graph] failed to create edge:', err);
+            const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+            Alert.alert(
+              'Edge Creation Failed',
+              `Could not create connection between nodes: ${errorMessage}`,
+              [{ text: 'OK' }]
+            );
+          });
       }
     }
 
@@ -432,8 +551,7 @@ function SkiaGraphCanvas() {
           { translateY: viewportY.value },
           { scale: viewportZoom.value },
         ],
-        // @ts-ignore transformOrigin is available in newer RN versions but types might lag
-        transformOrigin: [0, 0, 0] as any,
+        transformOrigin: 'top left',
       };
     },
     []
@@ -498,6 +616,7 @@ function SkiaGraphCanvas() {
               onPortDragStart={handlePortDragStart}
               onPortDragMove={handlePortDragMove}
               onPortDragEnd={handlePortDragEnd}
+              onExpand={focusNode}
             />
           ))}
         </Animated.View>

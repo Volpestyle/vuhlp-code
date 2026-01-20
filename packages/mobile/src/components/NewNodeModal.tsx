@@ -17,37 +17,29 @@ import { Plus } from 'iconoir-react-native';
 import { colors, fontFamily, fontSize, radius, spacing } from '@/lib/theme';
 import { api } from '@/lib/api';
 import { useGraphStore } from '@/stores/graph-store';
-
-const PROVIDER_OPTIONS: ProviderName[] = ['claude', 'codex', 'gemini', 'custom'];
-const PERMISSIONS_MODE_OPTIONS: Array<NodePermissions['cliPermissionsMode']> = ['skip', 'gated'];
-const ORCHESTRATOR_ROLE = 'orchestrator';
-
-const DEFAULT_CAPABILITIES: NodeCapabilities = {
-  spawnNodes: false,
-  writeCode: true,
-  writeDocs: true,
-  runCommands: true,
-  delegateOnly: false,
-};
-
-const DEFAULT_PERMISSIONS: NodePermissions = {
-  cliPermissionsMode: 'skip',
-  agentManagementRequiresApproval: true,
-};
-
-function getSpawnDefaults(roleTemplate: string) {
-  const isOrchestrator = roleTemplate.trim().toLowerCase() === ORCHESTRATOR_ROLE;
-  return {
-    spawnNodes: isOrchestrator,
-    agentManagementRequiresApproval: !isOrchestrator,
-  };
-}
+import {
+  DEFAULT_CAPABILITIES,
+  DEFAULT_PERMISSIONS,
+  EDGE_MANAGEMENT_OPTIONS,
+  PERMISSIONS_MODE_OPTIONS,
+  PROVIDER_OPTIONS,
+  getEdgeManagementDefaults,
+  parseEdgeManagement,
+} from '@vuhlp/shared';
 
 interface NewNodeModalProps {
   visible: boolean;
   onClose: () => void;
   runId: string;
 }
+
+type BooleanCapability = Exclude<keyof NodeCapabilities, 'edgeManagement'>;
+const BOOLEAN_CAPABILITIES: BooleanCapability[] = [
+  'writeCode',
+  'writeDocs',
+  'runCommands',
+  'delegateOnly',
+];
 
 export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
   const nodeCount = useGraphStore((s) => s.nodes.length);
@@ -59,7 +51,7 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
   const [provider, setProvider] = useState<ProviderName>('claude');
   const [capabilities, setCapabilities] = useState<NodeCapabilities>(DEFAULT_CAPABILITIES);
   const [permissions, setPermissions] = useState<NodePermissions>(DEFAULT_PERMISSIONS);
-  const [spawnNodesTouched, setSpawnNodesTouched] = useState(false);
+  const [edgeManagementTouched, setEdgeManagementTouched] = useState(false);
   const [agentManagementApprovalTouched, setAgentManagementApprovalTouched] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +64,7 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
     setProvider('claude');
     setCapabilities(DEFAULT_CAPABILITIES);
     setPermissions(DEFAULT_PERMISSIONS);
-    setSpawnNodesTouched(false);
+    setEdgeManagementTouched(false);
     setAgentManagementApprovalTouched(false);
     setError(null);
   }, [visible, nodeCount]);
@@ -80,9 +72,9 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
   // Smart defaults based on role template
   useEffect(() => {
     if (!visible) return;
-    const defaults = getSpawnDefaults(roleTemplate);
-    if (!spawnNodesTouched) {
-      setCapabilities((prev) => ({ ...prev, spawnNodes: defaults.spawnNodes }));
+    const defaults = getEdgeManagementDefaults(roleTemplate);
+    if (!edgeManagementTouched) {
+      setCapabilities((prev) => ({ ...prev, edgeManagement: defaults.edgeManagement }));
     }
     if (!agentManagementApprovalTouched) {
       setPermissions((prev) => ({
@@ -90,7 +82,7 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
         agentManagementRequiresApproval: defaults.agentManagementRequiresApproval,
       }));
     }
-  }, [visible, roleTemplate, spawnNodesTouched, agentManagementApprovalTouched]);
+  }, [visible, roleTemplate, edgeManagementTouched, agentManagementApprovalTouched]);
 
   const canSubmit = label.trim().length > 0 && !isSubmitting;
 
@@ -137,11 +129,19 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
     onClose,
   ]);
 
-  const handleCapabilityToggle = useCallback((key: keyof NodeCapabilities) => {
-    if (key === 'spawnNodes') {
-      setSpawnNodesTouched(true);
-    }
+  const handleBooleanCapabilityToggle = useCallback((key: BooleanCapability) => {
     setCapabilities((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const handleEdgeManagementChange = useCallback((value: string) => {
+    const parsed = parseEdgeManagement(value);
+    if (!parsed) {
+      console.warn('[NewNodeModal] unsupported edge management', value);
+      setError('Unsupported edge management selected.');
+      return;
+    }
+    setEdgeManagementTouched(true);
+    setCapabilities((prev) => ({ ...prev, edgeManagement: parsed }));
   }, []);
 
   const handlePermissionsToggle = useCallback(() => {
@@ -292,12 +292,37 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
             {/* Capabilities section */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Capabilities</Text>
-              {(Object.keys(capabilities) as Array<keyof NodeCapabilities>).map((key) => (
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Edge Management</Text>
+                <View style={styles.providerRow}>
+                  {EDGE_MANAGEMENT_OPTIONS.map((option) => (
+                    <TouchableOpacity
+                      key={option}
+                      style={[
+                        styles.providerOption,
+                        capabilities.edgeManagement === option && styles.providerOptionSelected,
+                      ]}
+                      onPress={() => handleEdgeManagementChange(option)}
+                      disabled={isSubmitting}
+                    >
+                      <Text
+                        style={[
+                          styles.providerOptionText,
+                          capabilities.edgeManagement === option && styles.providerOptionTextSelected,
+                        ]}
+                      >
+                        {option.toUpperCase()}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+              {BOOLEAN_CAPABILITIES.map((key) => (
                 <View key={key} style={styles.toggleRow}>
                   <Text style={styles.toggleLabel}>{formatCapabilityLabel(key)}</Text>
                   <Switch
                     value={capabilities[key]}
-                    onValueChange={() => handleCapabilityToggle(key)}
+                    onValueChange={() => handleBooleanCapabilityToggle(key)}
                     trackColor={{ false: colors.bgHover, true: colors.accentDim }}
                     thumbColor={capabilities[key] ? colors.accent : colors.textMuted}
                     disabled={isSubmitting}

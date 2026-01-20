@@ -5,15 +5,20 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
 import { useGraphStore } from '@/stores/graph-store';
 import { colors } from '@/lib/theme';
+import {
+  MINIMAP_PADDING,
+  MINIMAP_PADDING_RATIO,
+  getMinimapBounds,
+  getMinimapTransform,
+  getMinimapWorldPoint,
+  getViewportForWorldCenter,
+  getMinimapViewportRect,
+} from '@vuhlp/shared';
 
 interface GraphMinimapProps {
   width?: number;
   height?: number;
 }
-
-// Constants
-const MINIMAP_PADDING = 720; // Base world padding to keep the minimap zoomed out
-const MINIMAP_PADDING_RATIO = 1.0; // Extra padding based on graph size
 
 export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
   const screenDimensions = useWindowDimensions();
@@ -24,77 +29,33 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
 
   // Calculate the bounding box of all nodes with padding
-  const bounds = useMemo(() => {
-    if (nodes.length === 0) return null;
-
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-
-    nodes.forEach((node) => {
-      minX = Math.min(minX, node.position.x);
-      minY = Math.min(minY, node.position.y);
-      maxX = Math.max(maxX, node.position.x + node.dimensions.width);
-      maxY = Math.max(maxY, node.position.y + node.dimensions.height);
-    });
-
-    // Add padding
-    const boundsWidth = maxX - minX;
-    const boundsHeight = maxY - minY;
-    const padX = Math.max(MINIMAP_PADDING, boundsWidth * MINIMAP_PADDING_RATIO);
-    const padY = Math.max(MINIMAP_PADDING, boundsHeight * MINIMAP_PADDING_RATIO);
-
-    minX -= padX;
-    minY -= padY;
-    maxX += padX;
-    maxY += padY;
-
-    // Ensure non-zero size
-    if (maxX <= minX) maxX = minX + 1;
-    if (maxY <= minY) maxY = minY + 1;
-
-    return {
-      minX,
-      minY,
-      maxX,
-      maxY,
-      width: maxX - minX,
-      height: maxY - minY,
-    };
-  }, [nodes]);
+  const bounds = useMemo(
+    () =>
+      getMinimapBounds(nodes, {
+        padding: MINIMAP_PADDING,
+        paddingRatio: MINIMAP_PADDING_RATIO,
+      }),
+    [nodes]
+  );
 
   // Calculate transform for rendering
   const transform = useMemo(() => {
     if (!bounds) return null;
-
-    const scaleX = width / bounds.width;
-    const scaleY = height / bounds.height;
-    const scale = Math.min(scaleX, scaleY);
-    const offsetX = (width - bounds.width * scale) / 2;
-    const offsetY = (height - bounds.height * scale) / 2;
-
-    return { scale, offsetX, offsetY };
+    return getMinimapTransform(bounds, { width, height });
   }, [bounds, width, height]);
 
   // Handle tap/drag to navigate
   const navigateToPoint = (x: number, y: number) => {
     if (!bounds || !transform) return;
 
-    // Convert minimap coords to world coords
-    const targetWorldX = (x - transform.offsetX) / transform.scale + bounds.minX;
-    const targetWorldY = (y - transform.offsetY) / transform.scale + bounds.minY;
+    const viewSize = {
+      width: viewDimensions.width || screenDimensions.width,
+      height: viewDimensions.height || screenDimensions.height,
+    };
+    const targetWorld = getMinimapWorldPoint(bounds, transform, { x, y });
+    const nextViewport = getViewportForWorldCenter(viewSize, targetWorld, viewport.zoom);
 
-    // Center viewport on this world position
-    // viewport.x = screenWidth/2 - worldX * zoom
-    // We use the view dimensions here to center correctly
-    const viewW = viewDimensions.width || screenDimensions.width;
-    const viewH = viewDimensions.height || screenDimensions.height;
-    
-    const newViewportX = viewW / 2 - targetWorldX * viewport.zoom;
-    const newViewportY = viewH / 2 - targetWorldY * viewport.zoom;
-
-    setViewport({ ...viewport, x: newViewportX, y: newViewportY });
+    setViewport({ ...viewport, x: nextViewport.x, y: nextViewport.y });
   };
 
   // Pan gesture for drag navigation
@@ -116,18 +77,16 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
   }
 
   // Calculate visible viewport rectangle in minimap coords
-  const viewW = viewDimensions.width || screenDimensions.width;
-  const viewH = viewDimensions.height || screenDimensions.height;
+  const viewSize = {
+    width: viewDimensions.width || screenDimensions.width,
+    height: viewDimensions.height || screenDimensions.height,
+  };
+  const viewRect = getMinimapViewportRect(bounds, transform, viewport, viewSize);
 
-  const viewWorldLeft = -viewport.x / viewport.zoom;
-  const viewWorldTop = -viewport.y / viewport.zoom;
-  const viewWorldRight = (viewW - viewport.x) / viewport.zoom;
-  const viewWorldBottom = (viewH - viewport.y) / viewport.zoom;
-
-  const viewMiniLeft = (viewWorldLeft - bounds.minX) * transform.scale + transform.offsetX;
-  const viewMiniTop = (viewWorldTop - bounds.minY) * transform.scale + transform.offsetY;
-  const viewMiniWidth = (viewWorldRight - viewWorldLeft) * transform.scale;
-  const viewMiniHeight = (viewWorldBottom - viewWorldTop) * transform.scale;
+  const viewMiniLeft = viewRect.x;
+  const viewMiniTop = viewRect.y;
+  const viewMiniWidth = viewRect.width;
+  const viewMiniHeight = viewRect.height;
 
   return (
     <View style={[styles.container, { width, height }]}>

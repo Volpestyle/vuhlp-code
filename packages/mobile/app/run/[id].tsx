@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, LayoutChangeEvent, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { useGraphStore } from '@/stores/graph-store';
 import { useRunConnection } from '@/lib/useRunConnection';
@@ -11,18 +11,16 @@ import { NewNodeModal } from '@/components/NewNodeModal';
 import { Plus } from 'iconoir-react-native';
 import { colors, fontFamily, fontSize, radius, spacing } from '@/lib/theme';
 
+import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
+
 export default function RunScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { loading, error, connected } = useRunConnection(id);
   const nodeCount = useGraphStore((s) => s.nodes.length);
   const edgeCount = useGraphStore((s) => s.edges.length);
   const pendingCount = useGraphStore((s) => s.pendingApprovals.length);
-  const [statusBarHeight, setStatusBarHeight] = useState(0);
+  const inspectorOpen = useGraphStore((s) => s.inspectorOpen);
   const [newNodeModalVisible, setNewNodeModalVisible] = useState(false);
-
-  const handleStatusBarLayout = useCallback((event: LayoutChangeEvent) => {
-    setStatusBarHeight(event.nativeEvent.layout.height);
-  }, []);
 
   const handleOpenNewNodeModal = useCallback(() => {
     console.log('[RunScreen] Opening new node modal');
@@ -33,6 +31,15 @@ export default function RunScreen() {
     console.log('[RunScreen] Closing new node modal');
     setNewNodeModalVisible(false);
   }, []);
+
+  const fabStyle = useAnimatedStyle(() => {
+    return {
+      opacity: withTiming(inspectorOpen ? 0 : 1, { duration: 200 }),
+      transform: [
+        { scale: withTiming(inspectorOpen ? 0.9 : 1, { duration: 200 }) }
+      ],
+    };
+  });
 
   if (loading) {
     return (
@@ -62,14 +69,19 @@ export default function RunScreen() {
       <ApprovalQueue />
 
       {/* Floating action button for new node */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={handleOpenNewNodeModal}
-        activeOpacity={0.8}
+      <Animated.View 
+        style={[styles.fabContainer, fabStyle]}
+        pointerEvents={inspectorOpen ? 'none' : 'auto'}
       >
-        <Plus width={18} height={18} color={colors.bgPrimary} strokeWidth={2.5} />
-        <Text style={styles.fabLabel}>New Node</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={handleOpenNewNodeModal}
+          activeOpacity={0.8}
+        >
+          <Plus width={18} height={18} color={colors.bgPrimary} strokeWidth={2.5} />
+          <Text style={styles.fabLabel}>New Node</Text>
+        </TouchableOpacity>
+      </Animated.View>
 
       {/* New node modal */}
       <NewNodeModal
@@ -79,10 +91,10 @@ export default function RunScreen() {
       />
 
       {/* Bottom inspector sheet */}
-      <NodeInspector bottomOverlayHeight={statusBarHeight} />
+      <NodeInspector />
 
       {/* Status bar */}
-      <View style={styles.statusBar} onLayout={handleStatusBarLayout}>
+      <View style={styles.statusBar}>
         <View style={styles.statusRow}>
           <View style={[styles.statusDot, connected ? styles.connected : styles.disconnected]} />
           <Text style={styles.statusText}>
@@ -115,10 +127,13 @@ const styles = StyleSheet.create({
     fontSize: fontSize.lg,
     textAlign: 'center',
   },
-  fab: {
+  fabContainer: {
     position: 'absolute',
     bottom: 80,
     right: spacing.xl,
+    zIndex: 10,
+  },
+  fab: {
     backgroundColor: colors.accent,
     borderRadius: radius.lg,
     paddingHorizontal: spacing.xl,

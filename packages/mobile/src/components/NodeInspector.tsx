@@ -6,41 +6,151 @@ import {
   ScrollView,
   TextInput,
   Pressable,
-  Platform,
   useWindowDimensions,
+  Keyboard,
+  ActionSheetIOS,
+  Alert,
+  Platform,
+  type KeyboardEvent,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
+  Easing,
   useSharedValue,
   useAnimatedStyle,
+  useDerivedValue,
   withSpring,
+  withTiming,
   runOnJS,
   useAnimatedKeyboard,
+  type EasingFunction,
+  type EasingFunctionFactory,
 } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Plus, Clock, ArrowUp } from 'iconoir-react-native';
 import {
   useGraphStore,
   type ChatMessage,
   type ToolEvent,
   type TurnStatusEvent,
 } from '@/stores/graph-store';
+import type { Envelope } from '@vuhlp/contracts';
 import { api } from '@/lib/api';
 import { useChatAutoScroll } from '@/lib/useChatAutoScroll';
 import { ThinkingSpinner } from '@vuhlp/spinners/native';
 import { MarkdownMessage } from '@/components/MarkdownMessage';
+import { MediaPickerDrawer } from '@/components/MediaPickerDrawer';
 import { colors, getStatusColor, fontFamily } from '@/lib/theme';
 import { createLocalId } from '@/lib/ids';
+import {
+  buildTimeline,
+  buildTimelineUpdateKey,
+  formatClockTime,
+  formatTurnSummary,
+  type TimelineItem,
+} from '@vuhlp/shared';
 
 const MIN_HEIGHT = 120;
 const SNAP_THRESHOLD = 50;
+const DEFAULT_KEYBOARD_DURATION_MS = 250;
 
-interface NodeInspectorProps {
-  bottomOverlayHeight?: number;
-}
+type KeyboardEasingName = 'linear' | 'easeIn' | 'easeOut' | 'easeInEaseOut' | 'keyboard';
 
-export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
+const normalizeKeyboardEasing = (easing?: string): KeyboardEasingName => {
+  switch (easing) {
+    case 'linear':
+      return 'linear';
+    case 'easeIn':
+      return 'easeIn';
+    case 'easeOut':
+      return 'easeOut';
+    case 'easeInEaseOut':
+      return 'easeInEaseOut';
+    case 'keyboard':
+      return 'keyboard';
+    default:
+      return 'keyboard';
+  }
+};
+
+const resolveKeyboardEasing = (easing: KeyboardEasingName): EasingFunction | EasingFunctionFactory => {
+  'worklet';
+  switch (easing) {
+    case 'linear':
+      return Easing.linear;
+    case 'easeIn':
+      return Easing.in(Easing.ease);
+    case 'easeOut':
+      return Easing.out(Easing.ease);
+    case 'easeInEaseOut':
+      return Easing.inOut(Easing.ease);
+    case 'keyboard':
+    default:
+      return Easing.bezier(0.25, 0.1, 0.25, 1);
+  }
+};
+
+const isHandoffToolName = (name: string): boolean =>
+  name === 'send_handoff' || name === 'receive_handoff';
+
+const isHandoffToolEvent = (event: ToolEvent): boolean => isHandoffToolName(event.tool.name);
+
+const buildReceiveHandoffToolEvent = (handoff: Envelope): ToolEvent => {
+  const toolId = `handoff-${handoff.id}`;
+  const payload = handoff.payload;
+  const args: {
+    envelopeId: string;
+    from: string;
+    to: string;
+    message: string;
+    structured?: Envelope['payload']['structured'];
+    artifacts?: Envelope['payload']['artifacts'];
+    status?: Envelope['payload']['status'];
+    response?: Envelope['payload']['response'];
+    contextRef?: string;
+  } = {
+    envelopeId: handoff.id,
+    from: handoff.fromNodeId,
+    to: handoff.toNodeId,
+    message: payload.message,
+  };
+
+  if (payload.structured) {
+    args.structured = payload.structured;
+  }
+  if (payload.artifacts) {
+    args.artifacts = payload.artifacts;
+  }
+  if (payload.status) {
+    args.status = payload.status;
+  }
+  if (payload.response) {
+    args.response = payload.response;
+  }
+  if (handoff.contextRef) {
+    args.contextRef = handoff.contextRef;
+  }
+
+  return {
+    id: toolId,
+    nodeId: handoff.toNodeId,
+    tool: {
+      id: toolId,
+      name: 'receive_handoff',
+      args,
+    },
+    status: 'completed',
+    timestamp: handoff.createdAt,
+  };
+};
+
+export function NodeInspector() {
   const { height: screenHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const [restingInset, setRestingInset] = useState(insets.bottom);
   const maxHeight = screenHeight * 0.7;
-  const keyboard = useAnimatedKeyboard();
+  const baseInset = restingInset;
+  const isIOS = Platform.OS === 'ios';
 
   // Calculate offsets
   // Expanded: offset 0 (visible height = maxHeight)
@@ -56,6 +166,7 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
   const chatMessages = useGraphStore((s) => s.chatMessages);
   const toolEvents = useGraphStore((s) => s.toolEvents);
   const turnStatusEvents = useGraphStore((s) => s.turnStatusEvents);
+  const recentHandoffs = useGraphStore((s) => s.recentHandoffs);
   const setInspectorOpen = useGraphStore((s) => s.setInspectorOpen);
   const addChatMessage = useGraphStore((s) => s.addChatMessage);
   const updateChatMessageStatus = useGraphStore((s) => s.updateChatMessageStatus);
@@ -64,28 +175,83 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
   const [messageText, setMessageText] = useState('');
   const [messageError, setMessageError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'chat' | 'details'>('chat');
+  const [mediaPickerVisible, setMediaPickerVisible] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
+  const sendLongPressRef = useRef(false);
+  const keyboardConfigWarnedRef = useRef(false);
 
-  const selectedNode = nodes.find((n) => n.id === selectedNodeId);
-  const nodeMessages = selectedNodeId ? chatMessages[selectedNodeId] ?? [] : [];
+  const [displayNode, setDisplayNode] = useState(nodes.find((n) => n.selected) || null);
+
+  // Preserve the resting safe-area inset so it doesn't collapse during keyboard transitions.
+  useEffect(() => {
+    setRestingInset((current) => (insets.bottom > current ? insets.bottom : current));
+  }, [insets.bottom]);
+
+  // Sync display node with selection, but keep old one while closing
+  useEffect(() => {
+    const current = nodes.find((n) => n.id === selectedNodeId);
+    if (current) {
+      setDisplayNode(current);
+    }
+  }, [nodes, selectedNodeId]);
+
+  const selectedNode = displayNode;
+  const nodeMessages = selectedNode?.id ? chatMessages[selectedNode.id] ?? [] : [];
   const nodeToolEvents = useMemo(() => {
-    if (!selectedNodeId) return [];
-    return toolEvents.filter((event) => event.nodeId === selectedNodeId);
-  }, [toolEvents, selectedNodeId]);
-  const nodeStatusEvents = useMemo(() => {
-    if (!selectedNodeId) return [];
-    return turnStatusEvents.filter((event) => event.nodeId === selectedNodeId);
-  }, [turnStatusEvents, selectedNodeId]);
-  const timeline = useMemo(
-    () => buildNodeTimeline(nodeMessages, nodeToolEvents, nodeStatusEvents),
-    [nodeMessages, nodeToolEvents, nodeStatusEvents]
+    if (!selectedNode?.id) return [];
+    return toolEvents.filter((event) => event.nodeId === selectedNode.id);
+  }, [toolEvents, selectedNode?.id]);
+  const incomingHandoffs = useMemo(
+    () => recentHandoffs.filter((handoff) => handoff.toNodeId === selectedNode?.id),
+    [recentHandoffs, selectedNode?.id]
   );
-  const autoScrollKey = useMemo(() => buildTimelineUpdateKey(timeline), [timeline]);
+  const incomingHandoffTools = useMemo(
+    () => incomingHandoffs.map((handoff) => buildReceiveHandoffToolEvent(handoff)),
+    [incomingHandoffs]
+  );
+  const combinedToolEvents = useMemo(
+    () => {
+      const combined = [...nodeToolEvents, ...incomingHandoffTools];
+      // Debug duplication
+      const counts: Record<string, number> = {};
+      for (const e of combined) {
+        const k = `${e.tool.name}-${e.timestamp}`;
+        counts[k] = (counts[k] || 0) + 1;
+        if (counts[k] > 1 && e.tool.name === 'send_handoff') {
+          console.warn('[inspector] duplicate send_handoff detected', e);
+        }
+      }
+      return combined;
+    },
+    [nodeToolEvents, incomingHandoffTools]
+  );
+  const nodeStatusEvents = useMemo(() => {
+    if (!selectedNode?.id) return [];
+    return turnStatusEvents.filter((event) => event.nodeId === selectedNode.id);
+  }, [turnStatusEvents, selectedNode?.id]);
+  const timeline = useMemo(
+    () => buildTimeline(nodeMessages, combinedToolEvents, nodeStatusEvents),
+    [nodeMessages, combinedToolEvents, nodeStatusEvents]
+  );
+  const isRunning = selectedNode?.status === 'running';
+  const isStreaming = useMemo(() => {
+    const lastMessage = [...timeline].reverse().find((item) => item.type === 'message');
+    return Boolean(
+      lastMessage?.type === 'message' &&
+        (lastMessage.data.streaming || lastMessage.data.thinkingStreaming)
+    );
+  }, [timeline]);
+
+  // Include running/streaming state so scroll triggers when loading spinner appears
+  const autoScrollKey = useMemo(
+    () => `${buildTimelineUpdateKey(timeline)}-${isRunning}-${isStreaming}`,
+    [timeline, isRunning, isStreaming]
+  );
   const { handleScroll } = useChatAutoScroll({
     scrollRef: scrollViewRef,
     enabled: activeTab === 'chat',
     updateKey: autoScrollKey,
-    resetKey: selectedNodeId ?? '',
+    resetKey: selectedNode?.id ?? '',
   });
 
   // Animation values
@@ -95,22 +261,24 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
   const previousSelectedNodeId = useRef<string | null>(null);
   const previousInspectorOpen = useRef(inspectorOpen);
 
-  const finalizeClose = useCallback((closingId: string) => {
-    const state = useGraphStore.getState();
+  const selectNode = useGraphStore((s) => s.selectNode);
+
+  const finalizeClose = useCallback(() => {
     isClosingRef.current = false;
-    if (state.selectedNodeId === closingId) {
-      state.selectNode(null);
+    // Clear display node only after animation finishes
+    if (!inspectorOpen) {
+      setDisplayNode(null);
     }
-  }, []);
+  }, [inspectorOpen]);
 
   // Reset to collapsed state when node changes or opens.
   useEffect(() => {
     const wasOpen = previousInspectorOpen.current;
-    const nodeChanged = previousSelectedNodeId.current !== selectedNodeId;
+    const nodeChanged = previousSelectedNodeId.current !== selectedNode?.id;
     previousInspectorOpen.current = inspectorOpen;
-    previousSelectedNodeId.current = selectedNodeId;
+    previousSelectedNodeId.current = selectedNode?.id ?? null;
 
-    if (!selectedNodeId) {
+    if (!selectedNode) {
       return;
     }
 
@@ -118,37 +286,118 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
       isClosingRef.current = false;
       translateY.value = maxTranslateY;
     }
-  }, [inspectorOpen, selectedNodeId, maxTranslateY]);
+  }, [inspectorOpen, selectedNode, maxTranslateY]);
 
   useEffect(() => {
-    if (!selectedNodeId || inspectorOpen || isClosingRef.current) {
+    // If not open and no closing animation pending, do nothing
+    // If it *was* open and now isn't, animate close
+    if (inspectorOpen || isClosingRef.current || !displayNode) {
       return;
     }
 
     isClosingRef.current = true;
-    const closingId = selectedNodeId;
     translateY.value = withSpring(
       closedTranslateY,
       { damping: 50, stiffness: 200 },
       (finished) => {
         if (finished) {
-          runOnJS(finalizeClose)(closingId);
+          runOnJS(finalizeClose)();
         }
       }
     );
-  }, [closedTranslateY, finalizeClose, inspectorOpen, selectedNodeId]);
+  }, [closedTranslateY, finalizeClose, inspectorOpen, displayNode]);
 
   useEffect(() => {
     setMessageText('');
     setMessageError(null);
-  }, [selectedNodeId]);
+  }, [selectedNode?.id]);
+
+  const keyboard = useAnimatedKeyboard();
+  const keyboardTarget = useSharedValue(0);
+  const keyboardDuration = useSharedValue(DEFAULT_KEYBOARD_DURATION_MS);
+  const keyboardEasing = useSharedValue<KeyboardEasingName>('keyboard');
+
+  useEffect(() => {
+    if (!isIOS) {
+      return;
+    }
+
+    const updateKeyboardConfig = (event: KeyboardEvent, targetHeight: number, source: string) => {
+      if (!Number.isFinite(targetHeight)) {
+        console.error('[inspector] keyboard event missing height', { source });
+        return;
+      }
+
+      keyboardTarget.value = targetHeight;
+
+      const duration =
+        typeof event.duration === 'number' && event.duration > 0
+          ? event.duration
+          : DEFAULT_KEYBOARD_DURATION_MS;
+
+      if ((!event.duration || !event.easing) && !keyboardConfigWarnedRef.current) {
+        console.warn('[inspector] keyboard animation config missing, using defaults');
+        keyboardConfigWarnedRef.current = true;
+      }
+
+      keyboardDuration.value = duration;
+      keyboardEasing.value = normalizeKeyboardEasing(event.easing);
+    };
+
+    const showSub = Keyboard.addListener('keyboardWillShow', (event) => {
+      updateKeyboardConfig(event, event.endCoordinates.height, 'show');
+    });
+    const hideSub = Keyboard.addListener('keyboardWillHide', (event) => {
+      updateKeyboardConfig(event, 0, 'hide');
+    });
+    const changeSub = Keyboard.addListener('keyboardWillChangeFrame', (event) => {
+      updateKeyboardConfig(event, event.endCoordinates.height, 'change');
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+      changeSub.remove();
+    };
+  }, [isIOS, keyboardDuration, keyboardEasing, keyboardTarget]);
+
+  const keyboardAnimatedHeight = useDerivedValue(() => {
+    if (isIOS) {
+      const duration =
+        keyboardDuration.value > 0 ? keyboardDuration.value : DEFAULT_KEYBOARD_DURATION_MS;
+      const easing = resolveKeyboardEasing(keyboardEasing.value);
+      return withTiming(keyboardTarget.value, { duration, easing });
+    }
+
+    return withSpring(keyboard.height.value, {
+      dampingRatio: 0.9,
+      overshootClamping: true,
+    });
+  }, [isIOS]);
+  const safeInset = useDerivedValue(() => baseInset, [baseInset]);
+  const keyboardBottom = useDerivedValue(() => {
+    return Math.max(keyboardAnimatedHeight.value - safeInset.value, 0);
+  });
+  const bottomSpacerStyle = useAnimatedStyle(() => {
+    return {
+      height: safeInset.value,
+    };
+  });
+
+  useEffect(() => {
+    if (!inspectorOpen) {
+      Keyboard.dismiss();
+    }
+  }, [inspectorOpen]);
 
   const handleClose = useCallback(() => {
     if (!inspectorOpen) {
       return;
     }
-    setInspectorOpen(false);
-  }, [inspectorOpen, setInspectorOpen]);
+    Keyboard.dismiss();
+    // Clear selection immediately when manually closing
+    selectNode(null);
+  }, [inspectorOpen, selectNode]);
 
   // Gestures
   const dragGesture = Gesture.Pan()
@@ -193,24 +442,23 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
     });
 
   const animatedStyle = useAnimatedStyle(() => {
-    const keyboardShift =
-      Platform.OS === 'ios'
-        ? Math.max(0, keyboard.height.value - bottomOverlayHeight)
-        : 0;
     return {
       height: maxHeight, // Fixed layout height
-      transform: [{ translateY: translateY.value - keyboardShift }],
+      bottom: keyboardBottom.value,
+      transform: [
+        { translateY: translateY.value },
+      ],
     };
-  });
+  }, [maxHeight]);
 
   const sendMessage = useCallback(
     async (messageId: string, content: string, interrupt: boolean) => {
-      if (!run || !selectedNodeId) {
+      if (!run || !selectedNode) {
         const errorText = 'Start a run to send messages.';
         console.warn('[inspector] cannot send message without active run');
         setMessageError(errorText);
-        if (selectedNodeId) {
-          updateChatMessageStatus(selectedNodeId, messageId, {
+        if (selectedNode) {
+          updateChatMessageStatus(selectedNode.id, messageId, {
             pending: false,
             sendError: errorText,
           });
@@ -219,24 +467,24 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
       }
 
       try {
-        await api.sendMessage(run.id, selectedNodeId, content, interrupt);
-        updateChatMessageStatus(selectedNodeId, messageId, { pending: false });
+        await api.sendMessage(run.id, selectedNode.id, content, interrupt);
+        updateChatMessageStatus(selectedNode.id, messageId, { pending: false });
       } catch (err) {
         const errorText =
           err instanceof Error ? err.message : 'Failed to send message.';
         console.error('[inspector] failed to send message:', err);
-        updateChatMessageStatus(selectedNodeId, messageId, {
+        updateChatMessageStatus(selectedNode.id, messageId, {
           pending: false,
           sendError: errorText,
         });
       }
     },
-    [run, selectedNodeId, updateChatMessageStatus]
+    [run, selectedNode, updateChatMessageStatus] // selectedNodeId -> selectedNode
   );
 
   const handleResetContext = useCallback(() => {
-    if (!selectedNodeId) return;
-    clearNodeMessages(selectedNodeId);
+    if (!selectedNode?.id) return;
+    clearNodeMessages(selectedNode.id);
     setMessageText('');
     setMessageError(null);
     if (!run) {
@@ -245,16 +493,40 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
       setMessageError(errorText);
       return;
     }
-    api.resetNode(run.id, selectedNodeId).catch((err) => {
+    api.resetNode(run.id, selectedNode.id).catch((err) => {
       console.error('[inspector] failed to reset context:', err);
       setMessageError('Failed to reset context.');
     });
-  }, [clearNodeMessages, run, selectedNodeId]);
+  }, [clearNodeMessages, run, selectedNode]);
+
+  const handleOpenMediaPicker = useCallback(() => {
+    Keyboard.dismiss();
+    setMediaPickerVisible(true);
+  }, []);
+
+  const handleCloseMediaPicker = useCallback(() => {
+    setMediaPickerVisible(false);
+  }, []);
+
+  const handleSelectCamera = useCallback(() => {
+    // TODO: Implement camera capture
+    console.log('[inspector] camera selected - implementation pending');
+  }, []);
+
+  const handleSelectPhotos = useCallback(() => {
+    // TODO: Implement photo library picker
+    console.log('[inspector] photos selected - implementation pending');
+  }, []);
+
+  const handleSelectFiles = useCallback(() => {
+    // TODO: Implement file picker
+    console.log('[inspector] files selected - implementation pending');
+  }, []);
 
   const handleSendMessage = useCallback(
     (interrupt: boolean) => {
       const content = (messageText || '').trim();
-      if (!content || !selectedNodeId) return;
+      if (!content || !selectedNode?.id) return;
 
       const resetCommands = selectedNode?.session?.resetCommands ?? ['/new', '/clear'];
       const normalized = content.toLowerCase();
@@ -273,7 +545,7 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
       const messageId = createLocalId();
       const message: ChatMessage = {
         id: messageId,
-        nodeId: selectedNodeId,
+        nodeId: selectedNode.id,
         role: 'user',
         content,
         createdAt: new Date().toISOString(),
@@ -286,44 +558,85 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
       setMessageError(null);
       void sendMessage(messageId, content, interrupt);
     },
-    [messageText, selectedNodeId, selectedNode, run, addChatMessage, sendMessage, handleResetContext]
+    [messageText, selectedNode, run, addChatMessage, sendMessage, handleResetContext]
   );
+
+  const canSend = Boolean((messageText || '').trim());
+
+  const handlePrimaryPress = useCallback(() => {
+    if (sendLongPressRef.current) {
+      sendLongPressRef.current = false;
+      return;
+    }
+    handleSendMessage(Boolean(isRunning));
+  }, [handleSendMessage, isRunning]);
+
+  const handleQueueLongPress = useCallback(() => {
+    if (!canSend || !isRunning) {
+      return;
+    }
+
+    sendLongPressRef.current = true;
+
+    const queueMessage = () => {
+      sendLongPressRef.current = false;
+      console.log('[inspector] queueing message');
+      handleSendMessage(false);
+    };
+    const cancelQueue = () => {
+      sendLongPressRef.current = false;
+    };
+
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: 'Send options',
+          options: ['Queue', 'Cancel'],
+          cancelButtonIndex: 1,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 0) {
+            queueMessage();
+          } else {
+            cancelQueue();
+          }
+        }
+      );
+      return;
+    }
+
+    Alert.alert('Send options', 'Choose how to deliver this message.', [
+      { text: 'Queue', onPress: queueMessage },
+      { text: 'Cancel', style: 'cancel', onPress: cancelQueue },
+    ]);
+  }, [canSend, handleSendMessage, isRunning]);
 
   const handleRetry = useCallback(
     (message: ChatMessage) => {
-      if (!selectedNodeId) return;
-      updateChatMessageStatus(selectedNodeId, message.id, {
+      if (!selectedNode?.id) return;
+      updateChatMessageStatus(selectedNode.id, message.id, {
         pending: true,
         sendError: undefined,
       });
       setMessageError(null);
       void sendMessage(message.id, message.content, message.interrupt ?? true);
     },
-    [selectedNodeId, updateChatMessageStatus, sendMessage]
+    [selectedNode, updateChatMessageStatus, sendMessage]
   );
-
-  const isStreaming = useMemo(() => {
-    const lastMessage = [...timeline].reverse().find((item) => item.type === 'message');
-    return Boolean(
-      lastMessage?.type === 'message' &&
-        (lastMessage.data.streaming || lastMessage.data.thinkingStreaming)
-    );
-  }, [timeline]);
 
   if (!selectedNode) {
     return null;
   }
 
   return (
+    <>
     <Animated.View
-      pointerEvents="box-none"
-      style={[styles.keyboardAvoid, { bottom: bottomOverlayHeight }]}
+      pointerEvents={inspectorOpen ? 'auto' : 'none'}
+      style={[styles.container, animatedStyle]}
     >
+      {/* Draggable handle and header area */}
       <GestureDetector gesture={dragGesture}>
-        <Animated.View
-          pointerEvents={inspectorOpen ? 'auto' : 'none'}
-          style={[styles.container, animatedStyle]}
-        >
+        <Animated.View>
           {/* Handle */}
           <View style={styles.handleContainer}>
             <View style={styles.handle} />
@@ -366,51 +679,80 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
               </Text>
             </Pressable>
           </View>
+        </Animated.View>
+      </GestureDetector>
 
-          {/* Content */}
-          {activeTab === 'chat' ? (
-            <View style={styles.chatContainer}>
-              <ScrollView
-                ref={scrollViewRef}
-                style={styles.messagesContainer}
-                contentContainerStyle={styles.messagesContent}
-                onScroll={handleScroll}
-                scrollEventThrottle={16}
-              >
-                {timeline.length === 0 && selectedNode.status !== 'running' ? (
-                  <Text style={styles.emptyText}>
-                    Start a conversation with {selectedNode.label}
-                  </Text>
-                ) : (
-                  <>
-                    {timeline.map((item) => (
-                      <TimelineItem
-                        key={`${item.type}-${item.data.id}`}
-                        item={item}
-                        onRetry={handleRetry}
-                      />
-                    ))}
-                    {selectedNode.status === 'running' && !isStreaming && (
-                      <View style={styles.thinkingPlaceholder}>
-                        <View style={styles.thinkingHeader}>
-                          <Text style={styles.thinkingRole}>assistant</Text>
-                          <View style={styles.metaItem}>
-                            <ThinkingSpinner size="sm" variant="assemble" color="#4de6a8" />
-                            <Text style={styles.metaTextThinking}>thinking</Text>
-                          </View>
-                        </View>
-                        <View style={styles.thinkingBody}>
-                          <ThinkingSpinner size="lg" variant="assemble" color="#4de6a8" />
-                        </View>
+      {/* Content - outside gesture detector for text selection */}
+      {activeTab === 'chat' ? (
+        <View style={styles.chatContainer}>
+          <ScrollView
+            ref={scrollViewRef}
+            style={styles.messagesContainer}
+            contentContainerStyle={styles.messagesContent}
+            onScroll={handleScroll}
+            scrollEventThrottle={16}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+          >
+            {timeline.length === 0 && selectedNode.status !== 'running' ? (
+              <Text style={styles.emptyText}>
+                Start a conversation with {selectedNode.label}
+              </Text>
+            ) : (
+              <>
+                {timeline.map((item) => (
+                  <TimelineItem
+                    key={`${item.type}-${item.data.id}`}
+                    item={item}
+                    onRetry={handleRetry}
+                  />
+                ))}
+                {isRunning && !isStreaming && (
+                  <View style={styles.thinkingPlaceholder}>
+                    <View style={styles.thinkingHeader}>
+                      <Text style={styles.thinkingRole}>assistant</Text>
+                      <View style={styles.metaItem}>
+                        <ThinkingSpinner size="sm" variant="assemble" color="#4de6a8" />
+                        <Text style={styles.metaTextThinking}>thinking</Text>
                       </View>
-                    )}
-                  </>
+                    </View>
+                    <View style={styles.thinkingBody}>
+                      <ThinkingSpinner size="lg" variant="assemble" color="#4de6a8" />
+                    </View>
+                  </View>
                 )}
-              </ScrollView>
+              </>
+            )}
+          </ScrollView>
 
-              <View style={styles.inputContainer}>
+          <Animated.View style={styles.composerContainer}>
+            <View style={styles.composerRow}>
+              {/* Add attachment button */}
+              <Pressable
+                onPress={handleOpenMediaPicker}
+                style={styles.composerIconButton}
+                accessibilityRole="button"
+                accessibilityLabel="Add attachment"
+                hitSlop={10}
+              >
+                <Plus width={18} height={18} color={colors.textSecondary} strokeWidth={2} />
+              </Pressable>
+
+              {/* History/Reset context button */}
+              <Pressable
+                onPress={handleResetContext}
+                style={styles.composerIconButton}
+                accessibilityRole="button"
+                accessibilityLabel="Reset context"
+                hitSlop={10}
+              >
+                <Clock width={18} height={18} color={colors.textSecondary} strokeWidth={1.5} />
+              </Pressable>
+
+              {/* Text input */}
+              <View style={styles.composerInputContainer}>
                 <TextInput
-                  style={styles.input}
+                  style={styles.composerInput}
                   value={messageText}
                   onChangeText={(value) => {
                     setMessageText(value);
@@ -418,152 +760,81 @@ export function NodeInspector({ bottomOverlayHeight = 0 }: NodeInspectorProps) {
                       setMessageError(null);
                     }
                   }}
-                  placeholder="Send message to node..."
-                  placeholderTextColor="#555"
+                  placeholder={`Chat with ${selectedNode.label}`}
+                  placeholderTextColor={colors.textMuted}
                   multiline
                   maxLength={4000}
+                  textAlignVertical="center"
                 />
-                {messageError && <Text style={styles.errorText}>{messageError}</Text>}
-                <View style={styles.inputActions}>
-                  {selectedNode.status === 'running' ? (
-                    <>
-                      <Pressable
-                        style={[
-                          styles.actionButton,
-                          !(messageText || '').trim() && styles.actionButtonDisabled,
-                        ]}
-                        onPress={() => handleSendMessage(false)}
-                        disabled={!(messageText || '').trim()}
-                      >
-                        <Text style={styles.actionText}>Queue</Text>
-                      </Pressable>
-                      <Pressable
-                        style={[
-                          styles.actionButton,
-                          styles.actionButtonPrimary,
-                          !(messageText || '').trim() && styles.actionButtonDisabled,
-                        ]}
-                        onPress={() => handleSendMessage(true)}
-                        disabled={!(messageText || '').trim()}
-                      >
-                        <Text style={styles.actionTextPrimary}>Interrupt</Text>
-                      </Pressable>
-                    </>
-                  ) : (
-                    <>
-                      <Pressable
-                        style={[
-                          styles.actionButton,
-                          styles.actionButtonDisabled,
-                        ]}
-                        disabled
-                      >
-                        <Text style={styles.actionText}>Queue</Text>
-                      </Pressable>
-                      <Pressable
-                        style={[
-                          styles.actionButton,
-                          styles.actionButtonPrimary,
-                          !(messageText || '').trim() && styles.actionButtonDisabled,
-                        ]}
-                        onPress={() => handleSendMessage(false)}
-                        disabled={!(messageText || '').trim()}
-                      >
-                        <Text style={styles.actionTextPrimary}>Send</Text>
-                      </Pressable>
-                    </>
-                  )}
-                </View>
               </View>
+
+              {/* Send button */}
+              <Pressable
+                style={[
+                  styles.composerSendButton,
+                  canSend && styles.composerSendButtonActive,
+                ]}
+                onPress={handlePrimaryPress}
+                onLongPress={handleQueueLongPress}
+                delayLongPress={250}
+                disabled={!canSend}
+                accessibilityRole="button"
+                accessibilityLabel={isRunning ? 'Interrupt message' : 'Send message'}
+                accessibilityHint={isRunning ? 'Long press to queue instead' : undefined}
+              >
+                <ArrowUp
+                  width={20}
+                  height={20}
+                  color={canSend ? colors.bgPrimary : colors.textMuted}
+                  strokeWidth={2.5}
+                />
+              </Pressable>
             </View>
-          ) : (
-            <ScrollView style={styles.detailsContainer}>
-              <DetailRow label="ID" value={selectedNode.id.slice(0, 8)} mono />
-              <DetailRow label="Status" value={selectedNode.status} />
-              <DetailRow label="Provider" value={selectedNode.provider} />
-              <DetailRow label="Role" value={selectedNode.roleTemplate} />
-              <DetailRow label="Summary" value={selectedNode.summary || 'No activity'} />
-              {selectedNode.inboxCount !== undefined && (
-                <DetailRow label="Inbox" value={`${selectedNode.inboxCount} messages`} />
-              )}
-              <View style={styles.capabilitiesSection}>
-                <Text style={styles.sectionTitle}>Capabilities</Text>
-                <View style={styles.capabilities}>
-                  {selectedNode.capabilities?.spawnNodes && <Badge label="Spawn" />}
-                  {selectedNode.capabilities?.writeCode && <Badge label="Code" />}
-                  {selectedNode.capabilities?.writeDocs && <Badge label="Docs" />}
-                  {selectedNode.capabilities?.runCommands && <Badge label="Commands" />}
-                  {selectedNode.capabilities?.delegateOnly && <Badge label="Delegate" />}
-                </View>
-              </View>
-            </ScrollView>
+
+            {messageError && <Text style={styles.errorText}>{messageError}</Text>}
+          </Animated.View>
+          <Animated.View style={bottomSpacerStyle} pointerEvents="none" />
+        </View>
+      ) : (
+        <ScrollView style={styles.detailsContainer}>
+          <DetailRow label="ID" value={selectedNode.id.slice(0, 8)} mono />
+          <DetailRow label="Status" value={selectedNode.status} />
+          <DetailRow label="Provider" value={selectedNode.provider} />
+          <DetailRow label="Role" value={selectedNode.roleTemplate} />
+          <DetailRow label="Summary" value={selectedNode.summary || 'No activity'} />
+          {selectedNode.inboxCount !== undefined && (
+            <DetailRow label="Inbox" value={`${selectedNode.inboxCount} messages`} />
           )}
-        </Animated.View>
-      </GestureDetector>
+          <View style={styles.capabilitiesSection}>
+            <Text style={styles.sectionTitle}>Capabilities</Text>
+            <View style={styles.capabilities}>
+              {selectedNode.capabilities?.edgeManagement && (
+                <Badge
+                  label={`Edges: ${selectedNode.capabilities.edgeManagement}`}
+                />
+              )}
+              {selectedNode.capabilities?.writeCode && <Badge label="Code" />}
+              {selectedNode.capabilities?.writeDocs && <Badge label="Docs" />}
+              {selectedNode.capabilities?.runCommands && <Badge label="Commands" />}
+              {selectedNode.capabilities?.delegateOnly && <Badge label="Delegate" />}
+            </View>
+          </View>
+        </ScrollView>
+      )}
     </Animated.View>
+
+    <MediaPickerDrawer
+      visible={mediaPickerVisible}
+      onClose={handleCloseMediaPicker}
+      onSelectCamera={handleSelectCamera}
+      onSelectPhotos={handleSelectPhotos}
+      onSelectFiles={handleSelectFiles}
+    />
+    </>
   );
 }
 
-type TimelineEvent =
-  | { type: 'message'; data: ChatMessage }
-  | { type: 'tool'; data: ToolEvent }
-  | { type: 'status'; data: TurnStatusEvent };
-
-function buildNodeTimeline(
-  messages: ChatMessage[],
-  tools: ToolEvent[],
-  statuses: TurnStatusEvent[]
-): TimelineEvent[] {
-  const timeline: TimelineEvent[] = [
-    ...messages.map((message) => ({ type: 'message' as const, data: message })),
-    ...tools.map((tool) => ({ type: 'tool' as const, data: tool })),
-    ...statuses.map((status) => ({ type: 'status' as const, data: status })),
-  ];
-
-  return timeline.sort((a, b) => {
-    const timeA = new Date(a.type === 'message' ? a.data.createdAt : a.data.timestamp).getTime();
-    const timeB = new Date(b.type === 'message' ? b.data.createdAt : b.data.timestamp).getTime();
-    return timeA - timeB;
-  });
-}
-
-function buildTimelineUpdateKey(timeline: TimelineEvent[]): string {
-  const lastItem = timeline[timeline.length - 1];
-  if (!lastItem) return '';
-  if (lastItem.type === 'message') {
-    const thinkingLength = lastItem.data.thinking?.length ?? 0;
-    return `${lastItem.data.id}-${lastItem.data.createdAt}-${lastItem.data.content.length}-${thinkingLength}`;
-  }
-  return `${lastItem.data.id}-${lastItem.data.timestamp}`;
-}
-
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString('en-US', { hour12: false });
-}
-
-function formatTurnSummary(status: TurnStatusEvent['status'], detail?: string): string {
-  if (detail && detail.trim().length > 0) {
-    return detail;
-  }
-  switch (status) {
-    case 'turn.started':
-      return 'turn started';
-    case 'waiting_for_model':
-      return 'waiting for model';
-    case 'tool.pending':
-      return 'tool pending';
-    case 'awaiting_approval':
-      return 'awaiting approval';
-    case 'turn.completed':
-      return 'turn completed';
-    case 'turn.interrupted':
-      return 'turn interrupted';
-    case 'turn.failed':
-      return 'turn failed';
-    default:
-      return 'turn update';
-  }
-}
+type TimelineEvent = TimelineItem<ChatMessage, ToolEvent, TurnStatusEvent>;
 
 function TimelineItem({
   item,
@@ -631,7 +902,7 @@ function MessageItem({
           {message.status === 'interrupted' && (
             <Text style={styles.interruptedText}>interrupted</Text>
           )}
-          <Text style={styles.messageTime}>{formatTime(message.createdAt)}</Text>
+          <Text style={styles.messageTime}>{formatClockTime(message.createdAt)}</Text>
         </View>
       </View>
 
@@ -655,7 +926,9 @@ function MessageItem({
             {message.thinkingStreaming && <View style={styles.thinkingDot} />}
           </Pressable>
           {thinkingExpanded && (
-            <Text style={styles.thinkingContent}>{message.thinking ?? ''}</Text>
+            <Text style={styles.thinkingContent} selectable>
+              {message.thinking ?? ''}
+            </Text>
           )}
         </View>
       )}
@@ -684,7 +957,7 @@ function StatusItem({ event }: { event: TurnStatusEvent }) {
   return (
     <View style={styles.statusRow}>
       <Text style={styles.statusLabel}>{formatTurnSummary(event.status, event.detail)}</Text>
-      <Text style={styles.statusTime}>{formatTime(event.timestamp)}</Text>
+      <Text style={styles.statusTime}>{formatClockTime(event.timestamp)}</Text>
     </View>
   );
 }
@@ -716,18 +989,20 @@ function ToolItem({ event }: { event: ToolEvent }) {
             {event.status}
           </Text>
         </View>
-        <Text style={styles.toolTime}>{formatTime(event.timestamp)}</Text>
+        <Text style={styles.toolTime}>{formatClockTime(event.timestamp)}</Text>
       </Pressable>
 
       {expanded && (
         <View style={styles.toolBody}>
           <Text style={styles.toolSectionLabel}>Arguments</Text>
-          <Text style={[styles.toolCode, styles.mono]}>{argsText}</Text>
+          <Text style={[styles.toolCode, styles.mono]} selectable>
+            {argsText}
+          </Text>
 
           {hasError && event.error?.message && (
             <>
               <Text style={[styles.toolSectionLabel, styles.toolErrorLabel]}>Error</Text>
-              <Text style={[styles.toolCode, styles.toolErrorText, styles.mono]}>
+              <Text style={[styles.toolCode, styles.toolErrorText, styles.mono]} selectable>
                 {event.error.message}
               </Text>
             </>
@@ -736,7 +1011,9 @@ function ToolItem({ event }: { event: ToolEvent }) {
           {isCompleted && resultText && (
             <>
               <Text style={styles.toolSectionLabel}>Result</Text>
-              <Text style={[styles.toolCode, styles.mono]}>{resultText}</Text>
+              <Text style={[styles.toolCode, styles.mono]} selectable>
+                {resultText}
+              </Text>
             </>
           )}
         </View>
@@ -749,7 +1026,9 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
   return (
     <View style={styles.detailRow}>
       <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={[styles.detailValue, mono && styles.mono]}>{value}</Text>
+      <Text style={[styles.detailValue, mono && styles.mono]} selectable>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -763,19 +1042,19 @@ function Badge({ label }: { label: string }) {
 }
 
 const styles = StyleSheet.create({
-  keyboardAvoid: {
+  container: {
     position: 'absolute',
-    bottom: 0,
     left: 0,
     right: 0,
-  },
-  container: {
+    bottom: 0,
+    width: '100%',
     backgroundColor: colors.bgSurface,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     borderTopWidth: 1,
     borderColor: colors.border,
     overflow: 'hidden',
+    zIndex: 30,
   },
   handleContainer: {
     alignItems: 'center',
@@ -872,17 +1151,16 @@ const styles = StyleSheet.create({
   messageAssistant: {
     alignSelf: 'stretch',
     backgroundColor: 'transparent',
-    paddingHorizontal: 0,
+    paddingRight: 0,
+    paddingLeft: 10,
+    borderLeftWidth: 2,
+    borderLeftColor: 'transparent',
   },
   messageStreaming: {
-    borderLeftWidth: 2,
     borderLeftColor: colors.streamingBlue,
-    paddingLeft: 10,
   },
   messageThinking: {
-    borderLeftWidth: 2,
     borderLeftColor: colors.thinkingGreen,
-    paddingLeft: 10,
   },
   messagePending: {
     opacity: 0.7,
@@ -1132,59 +1410,63 @@ const styles = StyleSheet.create({
   thinkingBody: {
     paddingVertical: 6,
   },
-  inputContainer: {
-    padding: 12,
+  composerContainer: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     gap: 8,
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
-  input: {
-    backgroundColor: colors.bgHover,
+  composerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  composerIconButton: {
+    width: 32,
+    height: 32,
     borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  composerInputContainer: {
+    flex: 1,
+    backgroundColor: colors.bgElevated,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    minHeight: 40,
+    justifyContent: 'center',
+  },
+  composerInput: {
     color: colors.textPrimary,
-    fontSize: 14,
-    maxHeight: 120,
+    fontSize: 15,
+    lineHeight: 20,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    margin: 0,
+    minHeight: 20,
+    maxHeight: 100,
+  },
+  composerSendButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.bgElevated,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  composerSendButtonActive: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
   },
   errorText: {
     color: colors.statusFailed,
     fontSize: 12,
-  },
-  inputActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  actionButton: {
-    flex: 1,
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    borderRadius: 6,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 44,
-  },
-  actionButtonPrimary: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
-  },
-  actionButtonDisabled: {
-    opacity: 0.4,
-  },
-  actionText: {
-    color: colors.textSecondary,
-    fontSize: 14,
-    fontFamily: fontFamily.semibold,
-    letterSpacing: 0.3,
-  },
-  actionTextPrimary: {
-    color: colors.bgPrimary,
-    fontSize: 14,
-    fontFamily: fontFamily.semibold,
-    letterSpacing: 0.3,
   },
   detailsContainer: {
     flex: 1,
