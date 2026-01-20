@@ -99,12 +99,16 @@ function canWritePath(options: ToolExecutionOptions, target: string): string | n
   return null;
 }
 
-function canSpawn(options: ToolExecutionOptions): string | null {
+function guardEdgeManagement(options: ToolExecutionOptions, toolName: string): string | null {
   if (!options.capabilities) {
     return null;
   }
-  if (!options.capabilities.spawnNodes) {
-    return "spawnNodes capability is disabled";
+  const scope = options.capabilities.edgeManagement;
+  if (toolName === "spawn_node") {
+    return scope === "all" ? null : "edgeManagement=all required to spawn nodes";
+  }
+  if (toolName === "create_edge") {
+    return scope === "none" ? "edgeManagement capability is disabled" : null;
   }
   return null;
 }
@@ -391,7 +395,7 @@ export async function executeToolCall(
     }
 
     case "spawn_node": {
-      const guard = canSpawn(options);
+      const guard = guardEdgeManagement(options, "spawn_node");
       if (guard) {
         return { ok: false, output: "", error: guard };
       }
@@ -417,7 +421,7 @@ export async function executeToolCall(
     }
 
     case "create_edge": {
-      const guard = canSpawn(options);
+      const guard = guardEdgeManagement(options, "create_edge");
       if (guard) {
         return { ok: false, output: "", error: guard };
       }

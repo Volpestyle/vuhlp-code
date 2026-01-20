@@ -17,13 +17,41 @@ export type ParsedCliEvent =
     provider: ProviderName;
     model: string;
     usage: UsageTotals;
-  };
+  }
+  | { type: "message.user"; message: ParsedUserMessage };
+
+export interface ParsedUserMessage {
+  role: "user";
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "tool_result"; toolUseId: string; content: string; isError?: boolean }
+    | { type: "image"; source: { type: "base64"; mediaType: string; data: string } }
+  >;
+}
+
+/**
+ * Marker type indicating an event was recognized but intentionally ignored.
+ * Distinguished from `null` which means truly unrecognized.
+ */
+export type IgnoredCliEvent = { type: "ignored"; eventType: string };
+
+/**
+ * Result of parsing a CLI event line:
+ * - ParsedCliEvent: successfully parsed event to emit
+ * - IgnoredCliEvent: recognized event type but intentionally not emitted
+ * - null: unrecognized event type
+ */
+export type ParsedCliEventResult = ParsedCliEvent | IgnoredCliEvent | null;
+
+export function isIgnoredEvent(result: ParsedCliEventResult): result is IgnoredCliEvent {
+  return result !== null && result.type === "ignored";
+}
 
 function isResolutionStatus(value: string): value is ApprovalResolution["status"] {
   return value === "approved" || value === "denied" || value === "modified";
 }
 
-export function parseCliEventLine(line: string): ParsedCliEvent | null {
+export function parseCliEventLine(line: string): ParsedCliEventResult {
   const trimmed = line.trim();
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
     return null;
@@ -64,7 +92,11 @@ export function parseCliStreamEndLine(line: string): boolean {
   return type === "message_stop" || type === "message_end" || type === "result";
 }
 
-function parseCliEventObject(obj: JsonObject): ParsedCliEvent | null {
+function ignored(eventType: string): IgnoredCliEvent {
+  return { type: "ignored", eventType };
+}
+
+function parseCliEventObject(obj: JsonObject): ParsedCliEventResult {
   const type = getString(obj.type);
 
   // Handle Gemini CLI format: {"parts": [{"thought": true, "text": "..."}, ...]}
@@ -86,50 +118,64 @@ function parseCliEventObject(obj: JsonObject): ParsedCliEvent | null {
       return parseCliEventObject(eventObj);
     }
 
-    // Anthropic Native Events
+    // Claude Code CLI init event: {"type":"system","subtype":"init",...}
+    case "system": {
+      return ignored("system");
+    }
+    // Gemini CLI stream-json init event
+    case "init": {
+      return ignored("init");
+    }
+
+    // Anthropic Native Events (recognized but not emitted)
     case "message_start": {
-      // Ignored for now, but valid
-      return null;
+      return ignored("message_start");
     }
     case "message_delta": {
-      // Ignored for now, but valid
-      return null;
+      return ignored("message_delta");
     }
     case "message_stop": {
-      // Ignored for now, but valid
-      return null;
+      return ignored("message_stop");
     }
     case "content_block_start": {
       const contentBlock = asJsonObject(obj.content_block ?? null);
       if (!contentBlock) return null;
-      const type = getString(contentBlock.type);
-      if (type === "text") {
+      const blockType = getString(contentBlock.type);
+      if (blockType === "text") {
         const text = getString(contentBlock.text);
-        return text ? { type: "message.assistant.delta", delta: text } : null;
+        // Empty text is normal - content comes in deltas
+        return text ? { type: "message.assistant.delta", delta: text } : ignored("content_block_start:text");
       }
-      if (type === "thinking") {
+      if (blockType === "thinking") {
         const thinking = getString(contentBlock.thinking);
-        return thinking ? { type: "message.assistant.thinking.delta", delta: thinking } : null;
+        return thinking ? { type: "message.assistant.thinking.delta", delta: thinking } : ignored("content_block_start:thinking");
+      }
+      if (blockType === "tool_use") {
+        // Tool use blocks are handled by captureStreamToolUse
+        return ignored("content_block_start:tool_use");
       }
       return null;
     }
     case "content_block_delta": {
       const delta = asJsonObject(obj.delta ?? null);
       if (!delta) return null;
-      const type = getString(delta.type);
-      if (type === "text_delta") {
+      const deltaType = getString(delta.type);
+      if (deltaType === "text_delta") {
         const text = getString(delta.text);
-        return text ? { type: "message.assistant.delta", delta: text } : null;
+        return text ? { type: "message.assistant.delta", delta: text } : ignored("content_block_delta:text");
       }
-      if (type === "thinking_delta") {
+      if (deltaType === "thinking_delta") {
         const thinking = getString(delta.thinking);
-        return thinking ? { type: "message.assistant.thinking.delta", delta: thinking } : null;
+        return thinking ? { type: "message.assistant.thinking.delta", delta: thinking } : ignored("content_block_delta:thinking");
+      }
+      if (deltaType === "input_json_delta") {
+        // Tool input deltas are handled by captureStreamToolUse
+        return ignored("content_block_delta:input_json");
       }
       return null;
     }
     case "content_block_stop": {
-      // Ignored for now
-      return null;
+      return ignored("content_block_stop");
     }
 
     // Claude Code CLI stream-json final: {"type":"assistant","message":{"content":[...]} }
@@ -153,7 +199,17 @@ function parseCliEventObject(obj: JsonObject): ParsedCliEvent | null {
           text += content;
         }
       }
-      return text ? { type: "message.assistant.final", content: text } : null;
+      return { type: "message.assistant.final", content: text };
+    }
+
+    // Claude Code CLI user message echo
+    case "user": {
+      const message = asJsonObject(obj.message ?? null);
+      if (!message) {
+        return null;
+      }
+      const record = parseUserMessageRecord(message);
+      return record ? { type: "message.user", message: record } : ignored("user_parse_failed");
     }
 
     case "message.assistant.delta": {
@@ -178,7 +234,10 @@ function parseCliEventObject(obj: JsonObject): ParsedCliEvent | null {
     case "message": {
       const role = getString(obj.role);
       const content = getString(obj.content);
-      if (role !== "assistant" || !content) {
+      if (role !== "assistant") {
+        return role ? ignored(`message:${role}`) : ignored("message");
+      }
+      if (!content) {
         return null;
       }
       const delta = getBoolean(obj.delta);
@@ -186,63 +245,6 @@ function parseCliEventObject(obj: JsonObject): ParsedCliEvent | null {
         return { type: "message.assistant.final", content };
       }
       return { type: "message.assistant.delta", delta: content };
-    }
-
-    // Codex CLI: {"type": "item.reasoning", "content": "..."}
-    case "item.reasoning": {
-      const content = getString(obj.content);
-      if (content) {
-        return { type: "message.assistant.thinking.delta", delta: content };
-      }
-      // Also check for text field
-      const text = getString(obj.text);
-      return text ? { type: "message.assistant.thinking.delta", delta: text } : null;
-    }
-
-    // Codex CLI: {"type": "item.message", "content": "..."}
-    case "item.message": {
-      const content = getString(obj.content);
-      if (content) {
-        return { type: "message.assistant.delta", delta: content };
-      }
-      const text = getString(obj.text);
-      return text ? { type: "message.assistant.delta", delta: text } : null;
-    }
-
-    // Claude Code CLI: {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "..."}}
-    case "content_block_delta": {
-      const delta = asJsonObject(obj.delta);
-      if (!delta) {
-        return null;
-      }
-      const deltaType = getString(delta.type);
-      if (deltaType === "thinking_delta") {
-        const thinking = getString(delta.thinking);
-        return thinking ? { type: "message.assistant.thinking.delta", delta: thinking } : null;
-      }
-      if (deltaType === "text_delta") {
-        const text = getString(delta.text);
-        return text ? { type: "message.assistant.delta", delta: text } : null;
-      }
-      return null;
-    }
-
-    // Claude Code CLI: {"type": "content_block_start", "content_block": {"type": "thinking", ...}}
-    case "content_block_start": {
-      const contentBlock = asJsonObject(obj.content_block);
-      if (!contentBlock) {
-        return null;
-      }
-      const blockType = getString(contentBlock.type);
-      if (blockType === "thinking") {
-        const thinking = getString(contentBlock.thinking);
-        return thinking ? { type: "message.assistant.thinking.delta", delta: thinking } : null;
-      }
-      if (blockType === "text") {
-        const text = getString(contentBlock.text);
-        return text ? { type: "message.assistant.delta", delta: text } : null;
-      }
-      return null;
     }
 
     // Gemini CLI stream-json: {"type":"tool_use","tool_name":"...","tool_id":"...","parameters":{...}}
@@ -435,4 +437,58 @@ function parseUsage(
     return null;
   }
   return { promptTokens, completionTokens, totalTokens };
+}
+
+
+function parseUserMessageRecord(value: JsonValue): ParsedUserMessage | null {
+  const obj = asJsonObject(value);
+  if (!obj) {
+    return null;
+  }
+  const content = obj.content;
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const parsedContent: ParsedUserMessage["content"] = [];
+  for (const item of content) {
+    const itemObj = asJsonObject(item as JsonValue);
+    if (!itemObj) continue;
+    const type = getString(itemObj.type);
+    if (type === "text") {
+      const text = getString(itemObj.text);
+      if (text) {
+        parsedContent.push({ type: "text", text });
+      }
+    } else if (type === "tool_result") {
+      const toolUseId = getString(itemObj.tool_use_id);
+      const contentStr = getString(itemObj.content);
+      const isError = getBoolean(itemObj.is_error);
+      if (toolUseId && contentStr) {
+        parsedContent.push({
+          type: "tool_result",
+          toolUseId,
+          content: contentStr,
+          ...(isError ? { isError } : {})
+        });
+      }
+    } else if (type === "image") {
+      const source = asJsonObject(itemObj.source ?? null);
+      if (source && getString(source.type) === "base64") {
+        const mediaType = getString(source.media_type);
+        const data = getString(source.data);
+        if (mediaType && data) {
+          parsedContent.push({ type: "image", source: { type: "base64", mediaType, data } });
+        }
+      }
+    }
+  }
+
+  if (parsedContent.length === 0) {
+    return null;
+  }
+
+  return {
+    role: "user",
+    content: parsedContent
+  };
 }

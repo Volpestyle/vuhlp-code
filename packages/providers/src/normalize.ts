@@ -10,7 +10,8 @@ import type {
   ToolCompletedEvent,
   ToolProposedEvent,
   ToolStartedEvent,
-  UUID
+  UUID,
+  MessageUserEvent
 } from "@vuhlp/contracts";
 import type { ParsedCliEvent } from "./cli-protocol.js";
 
@@ -137,6 +138,24 @@ export function normalizeCliEvent(context: EventContext, event: ParsedCliEvent):
         provider: event.provider,
         model: event.model,
         usage: event.usage
+      };
+      return envelope;
+    }
+    case "message.user": {
+      const envelope: MessageUserEvent = {
+        id: context.makeId(),
+        runId: context.runId,
+        ts: context.now(),
+        type: event.type,
+        nodeId: context.nodeId,
+        message: {
+          id: context.makeId(),
+          runId: context.runId,
+          nodeId: context.nodeId,
+          role: "user",
+          content: JSON.stringify(event.message.content),
+          createdAt: context.now()
+        }
       };
       return envelope;
     }

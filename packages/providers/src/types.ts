@@ -86,6 +86,8 @@ export interface SendHandoffResult {
 
 export type SendHandoffHandler = (request: SendHandoffRequest) => Promise<SendHandoffResult>;
 
+export type NativeToolHandling = "vuhlp" | "provider";
+
 interface ProviderConfigBase {
   runId: UUID;
   nodeId: UUID;
@@ -101,6 +103,7 @@ interface ProviderConfigBase {
   resetCommands: string[];
   capabilities?: NodeCapabilities;
   globalMode?: GlobalMode;
+  nativeToolHandling?: NativeToolHandling;
 }
 
 export interface CliProviderConfig extends ProviderConfigBase {

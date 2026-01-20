@@ -12,7 +12,7 @@ import type {
   UUID
 } from "@vuhlp/contracts";
 import { asJsonObject, getNumber, getString, parseJsonValue, type JsonObject } from "./json.js";
-import { parseCliEventLine, parseCliStreamEndLine, type ParsedCliEvent } from "./cli-protocol.js";
+import { parseCliEventLine, parseCliStreamEndLine, isIgnoredEvent, type ParsedCliEvent, type ParsedCliEventResult } from "./cli-protocol.js";
 import { ConsoleLogger, type Logger } from "./logger.js";
 import { normalizeCliEvent } from "./normalize.js";
 import type {
@@ -67,6 +67,8 @@ export class CliProviderAdapter implements ProviderAdapter {
   >();
   private nextSyntheticToolIndex = -1;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private loggedStreamJsonEof = false;
+  private loggedStreamJsonInput = false;
 
   constructor(config: CliProviderConfig, logger: Logger = new ConsoleLogger()) {
     this.config = config;
@@ -94,6 +96,20 @@ export class CliProviderAdapter implements ProviderAdapter {
   async send(input: ProviderTurnInput): Promise<void> {
     await this.ensureProcess();
     const closeAfterPrompt = this.shouldCloseAfterPrompt();
+    if (this.shouldUseStreamJsonInput() && !this.loggedStreamJsonInput) {
+      this.logger.info("stream-json input enabled; keeping stdin open between turns", {
+        nodeId: this.config.nodeId,
+        provider: this.config.provider
+      });
+      this.loggedStreamJsonInput = true;
+    }
+    if (closeAfterPrompt && this.config.protocol === "stream-json" && !this.loggedStreamJsonEof) {
+      this.logger.info("stream-json prompts require stdin EOF; closing input after prompt", {
+        nodeId: this.config.nodeId,
+        provider: this.config.provider
+      });
+      this.loggedStreamJsonEof = true;
+    }
     this.shouldCloseAfterTurn = !this.config.resume || closeAfterPrompt;
     this.awaitingTurn = true;
     this.sawTurnOutput = false;
@@ -177,7 +193,8 @@ export class CliProviderAdapter implements ProviderAdapter {
       command: this.config.command,
       args: this.config.args ?? [],
       protocol: this.config.protocol,
-      resume: this.config.resume
+      resume: this.config.resume,
+      nativeToolHandling: this.config.nativeToolHandling ?? "vuhlp"
     });
 
     const env = this.config.env ? { ...process.env, ...this.config.env } : process.env;
@@ -188,7 +205,7 @@ export class CliProviderAdapter implements ProviderAdapter {
     });
 
     this.process = child;
-    this.emitConnectionPatch("connected");
+    this.emitConnectionPatch("idle");
 
     child.on("error", (error: Error) => {
       this.hadProcessError = true;
@@ -214,7 +231,11 @@ export class CliProviderAdapter implements ProviderAdapter {
         this.emitRawFinal(content);
         this.awaitingTurn = false;
         this.sawTurnOutput = false;
-      } else if (this.config.protocol === "stream-json" && this.awaitingTurn && !this.hadProcessError) {
+      } else if (
+        (this.config.protocol === "stream-json" || this.config.protocol === "jsonl") &&
+        this.awaitingTurn &&
+        !this.hadProcessError
+      ) {
         void this.handleStreamEnd();
       }
       this.emitConnectionPatch("disconnected");
@@ -246,19 +267,23 @@ export class CliProviderAdapter implements ProviderAdapter {
     const capturedToolUse = usesStructuredOutput && looksLikeJson
       ? this.captureStreamToolUse(trimmed)
       : false;
-    const parsed = usesStructuredOutput && !capturedToolUse ? parseCliEventLine(line) : null;
+    const parseResult: ParsedCliEventResult = usesStructuredOutput && !capturedToolUse ? parseCliEventLine(line) : null;
     let handledStructured = capturedToolUse;
 
-    if (parsed) {
+    if (parseResult && !isIgnoredEvent(parseResult)) {
       handledStructured = true;
-      await this.handleParsedEvent(parsed);
+      await this.handleParsedEvent(parseResult);
+    } else if (isIgnoredEvent(parseResult)) {
+      // Recognized event type but intentionally not emitted (e.g., message_start, content_block_stop)
+      handledStructured = true;
     } else if (usesStructuredOutput && parseCliStreamEndLine(line)) {
       handledStructured = true;
       await this.handleStreamEnd();
     } else if (usesStructuredOutput && looksLikeJson && !handledStructured) {
+      // Truly unrecognized JSON event - log for debugging
       const excerpt =
         this.debugCli || trimmed.length <= 200 ? trimmed : `${trimmed.slice(0, 200)}...`;
-      this.logger.debug("unrecognized structured event line", {
+      this.logger.debug("unrecognized JSON event type", {
         nodeId: this.config.nodeId,
         line: excerpt
       });
@@ -267,6 +292,10 @@ export class CliProviderAdapter implements ProviderAdapter {
     const shouldLog = source === "stderr" || this.config.protocol === "raw" || !handledStructured;
     if (shouldLog) {
       this.emitNodeLog(source, line);
+    }
+
+    if (this.config.protocol !== "raw" && source === "stderr") {
+      return;
     }
 
     if (usesStructuredOutput && handledStructured) {
@@ -445,6 +474,9 @@ export class CliProviderAdapter implements ProviderAdapter {
     if (this.config.protocol === "raw") {
       return false;
     }
+    if (this.config.provider === "gemini") {
+      return false;
+    }
     const parsed = parseJsonValue(line);
     if (!parsed) {
       return false;
@@ -585,7 +617,21 @@ export class CliProviderAdapter implements ProviderAdapter {
   }
 
   private mapToolUse(name: string, args: JsonObject): { name: string; args: JsonObject } | null {
-    const normalized = name.trim().toLowerCase();
+    const trimmedName = name.trim();
+    const normalized = trimmedName.toLowerCase();
+    if (!trimmedName) {
+      return null;
+    }
+    if (this.config.nativeToolHandling === "provider") {
+      return {
+        name: "provider_tool",
+        args: {
+          name: trimmedName,
+          input: args,
+          providerHandled: true
+        }
+      };
+    }
     if (normalized === "task") {
       return { name: "spawn_node", args: this.mapTaskArgs(args) };
     }
@@ -595,9 +641,6 @@ export class CliProviderAdapter implements ProviderAdapter {
         return null;
       }
       return { name: "command", args: { cmd } };
-    }
-    if (!normalized) {
-      return null;
     }
     return { name: "provider_tool", args: { name: normalized, input: args } };
   }
@@ -750,13 +793,21 @@ export class CliProviderAdapter implements ProviderAdapter {
     if (this.config.protocol === "raw") {
       return false;
     }
+    if (this.config.protocol === "stream-json") {
+      return !this.shouldUseStreamJsonInput();
+    }
     const args = this.config.args ?? [];
-    return args.includes("--print");
+    return args.includes("--print") && !this.config.resume;
   }
 
   private serializePrompt(input: ProviderTurnInput): string {
-    if (this.config.protocol === "raw" || this.config.protocol === "stream-json") {
+    if (this.config.protocol === "raw") {
       return input.prompt;
+    }
+    if (this.config.protocol === "stream-json") {
+      return this.shouldUseStreamJsonInput()
+        ? this.serializeStreamJsonInput(input)
+        : input.prompt;
     }
     return JSON.stringify({
       kind: "prompt",
@@ -764,6 +815,64 @@ export class CliProviderAdapter implements ProviderAdapter {
       promptKind: input.promptKind,
       turnId: input.turnId ?? null
     });
+  }
+
+  private shouldUseStreamJsonInput(): boolean {
+    if (this.config.protocol !== "stream-json") {
+      return false;
+    }
+    if (this.config.provider === "claude") {
+      return true;
+    }
+    if (this.config.provider === "codex") {
+      return true;
+    }
+    if (this.config.provider === "gemini") {
+      const args = this.config.args ?? [];
+      const inputFormat = this.getCliOptionValue(args, "--input-format");
+      return inputFormat === "stream-json";
+    }
+    return false;
+  }
+
+  private serializeStreamJsonInput(input: ProviderTurnInput): string {
+    if (this.config.provider === "gemini") {
+      const payload: { type: "message"; role: "user"; content: string; turn_id?: string } = {
+        type: "message",
+        role: "user",
+        content: input.prompt
+      };
+      if (input.turnId) {
+        payload.turn_id = input.turnId;
+      }
+      return JSON.stringify(payload);
+    }
+    const payload = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: input.prompt
+          }
+        ]
+      }
+    };
+    return JSON.stringify(payload);
+  }
+
+  private getCliOptionValue(args: string[], option: string): string | null {
+    for (let i = 0; i < args.length; i += 1) {
+      const value = args[i];
+      if (value === option) {
+        return args[i + 1] ?? null;
+      }
+      if (value.startsWith(`${option}=`)) {
+        return value.slice(option.length + 1);
+      }
+    }
+    return null;
   }
 
   private async sendApprovalResolution(
@@ -777,8 +886,8 @@ export class CliProviderAdapter implements ProviderAdapter {
     this.resolvedApprovals.add(approvalId);
     this.pendingApprovals.delete(approvalId);
 
-    if (this.config.protocol !== "jsonl") {
-      this.logger.error("approval resolution not supported for non-jsonl protocol", {
+    if (this.config.protocol !== "stream-json") {
+      this.logger.error("approval resolution not supported for non-stream-json protocol", {
         nodeId: this.config.nodeId,
         protocol: this.config.protocol
       });
@@ -786,7 +895,7 @@ export class CliProviderAdapter implements ProviderAdapter {
     }
 
     const payload = JSON.stringify({
-      kind: "approval.resolved",
+      type: "approval.resolved",
       approvalId,
       resolution
     });
