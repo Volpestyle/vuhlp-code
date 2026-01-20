@@ -19,7 +19,7 @@
     "@vuhlp/contracts": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^20.12.7",
-    "typescript": "^5.6.3"
+    "@types/node": "^25.0.9",
+    "typescript": "^5.9.3"
   }
 }

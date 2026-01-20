@@ -15,19 +15,19 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
     "@vuhlp/contracts": "workspace:*",
-    "@vuhlp/providers": "workspace:^",
+    "@vuhlp/providers": "workspace:*",
+    "@vuhlp/shared": "workspace:*",
     "@vuhlp/spinners": "workspace:*",
     "framer-motion": "^12.27.0",
     "iconoir-react": "^7.11.0",
     "pixi.js": "^8.0.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "react-json-view-lite": "^2.5.0",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.0",
     "remark-gfm": "^4.0.1",
     "three": "^0.182.0",
-    "zustand": "^5.0.3"
+    "zustand": "^5.0.10"
   },
   "devDependencies": {
     "@types/node": "^25.0.9",
@@ -36,7 +36,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/three": "^0.182.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "typescript": "^5.7.3",
+    "typescript": "^5.9.3",
     "vite": "^6.0.7"
   }
 }

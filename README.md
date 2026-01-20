@@ -15,7 +15,7 @@ Vuhlp is a monorepo platform designed to orchestrate multiple coding agents (lik
 ## Quickstart
 
 ### Prerequisites
-- **Node.js**: (LTS recommended)
+- **Node.js**: 25
 - **pnpm**: Version 9.x (see `package.json`)
 
 ### Installation

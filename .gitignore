@@ -5,5 +5,7 @@ coverage
 .env
 .env.local
 *.log
+*.tsbuildinfo
 /data
 packages/daemon/data
+typecheck_output.txt

@@ -2,14 +2,24 @@
   "name": "vuhlp",
   "private": true,
   "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=25.0.0"
+  },
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "dev": "pnpm --filter @vuhlp/daemon dev",
     "dev:ui": "pnpm --parallel --filter @vuhlp/spinners --filter @vuhlp/ui dev",
-    "build": "pnpm -r build",
+    "build": "pnpm -r build && pnpm build:clis",
+    "build:clis": "pnpm build:codex-cli && pnpm build:gemini-cli",
+    "build:codex-cli": "cargo build -p codex-cli --manifest-path packages/providers/codex/codex-rs/Cargo.toml --target-dir packages/providers/codex/target --release",
+    "build:gemini-cli": "pnpm -C packages/providers/gemini-cli run bundle",
     "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "^8.0.0",
+    "typescript": "^5.9.3"
   },
   "pnpm": {
     "overrides": {
