@@ -129,6 +129,18 @@ export interface ResetNodeResponse {
   ok: true;
 }
 
+export interface StartNodeProcessResponse {
+  ok: true;
+}
+
+export interface StopNodeProcessResponse {
+  ok: true;
+}
+
+export interface InterruptNodeProcessResponse {
+  ok: true;
+}
+
 export interface GetArtifactResponse {
   artifact: Artifact;
   content: string;

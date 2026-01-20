@@ -54,9 +54,9 @@ export const nodeStateSchema = {
     usage: usageTotalsSchema,
     capabilities: {
       type: "object",
-      required: ["spawnNodes", "writeCode", "writeDocs", "runCommands", "delegateOnly"],
+      required: ["edgeManagement", "writeCode", "writeDocs", "runCommands", "delegateOnly"],
       properties: {
-        spawnNodes: { type: "boolean" },
+        edgeManagement: { type: "string", enum: ["none", "self", "all"] },
         writeCode: { type: "boolean" },
         writeDocs: { type: "boolean" },
         runCommands: { type: "boolean" },

@@ -15,6 +15,8 @@ export type EdgeType = "handoff" | "report";
 
 export type ArtifactKind = "diff" | "prompt" | "log" | "transcript" | "contextpack" | "report";
 
+export type EdgeManagementScope = "none" | "self" | "all";
+
 export interface UsageTotals {
   promptTokens: number;
   completionTokens: number;
@@ -37,7 +39,7 @@ export interface RunState {
 }
 
 export interface NodeCapabilities {
-  spawnNodes: boolean;
+  edgeManagement: EdgeManagementScope;
   writeCode: boolean;
   writeDocs: boolean;
   runCommands: boolean;
