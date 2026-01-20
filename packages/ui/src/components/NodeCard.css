@@ -22,7 +22,8 @@
   box-shadow: 0 16px 28px rgba(0, 0, 0, 0.28);
 }
 
-.node-card--selected {
+.node-card--selected,
+.node-card--selected:hover {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 1px var(--color-accent), 0 16px 28px rgba(0, 0, 0, 0.32);
 }
@@ -104,19 +105,43 @@
   letter-spacing: 0.08em;
 }
 
-/* Streaming indicator */
-.node-card__streaming {
+/* Connection indicator */
+.node-card__connection {
   position: absolute;
   top: var(--space-2);
   right: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
-.node-card__streaming-dot {
+.node-card__connection-inline {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+}
+
+.node-card__connection-dot {
   display: block;
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  background: var(--color-text-muted);
+}
+
+.node-card__connection--connected .node-card__connection-dot {
   background: var(--color-status-running);
+}
+
+.node-card__connection--idle .node-card__connection-dot {
+  background: var(--color-text-muted);
+}
+
+.node-card__connection--disconnected .node-card__connection-dot {
+  background: var(--color-status-failed);
+}
+
+.node-card__connection--streaming .node-card__connection-dot {
   animation: pulse 1s ease-in-out infinite;
 }
 

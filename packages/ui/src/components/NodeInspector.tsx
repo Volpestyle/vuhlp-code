@@ -8,7 +8,7 @@
  * - Artifacts list with preview
  * - Tool usage events
  * - Connection properties
- * - Controls: interrupt, queue message, reset context
+ * - Controls: start/stop process, pause running turn, interrupt/queue message, reset context
  */
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject } from 'react';
@@ -23,7 +23,17 @@ import type {
   GetRoleTemplateResponse,
   UsageTotals
 } from '@vuhlp/contracts';
-import { useRunStore, type ChatMessage, type ToolEvent, type TurnStatusEvent, type NodeLogEntry, type TimelineEvent } from '../stores/runStore';
+import {
+  buildTimeline,
+  formatClockTime,
+  EDGE_MANAGEMENT_OPTIONS,
+  parsePermissionsMode,
+  parseEdgeManagement,
+  parseProviderName,
+  PERMISSIONS_MODE_OPTIONS,
+  PROVIDER_OPTIONS,
+} from '@vuhlp/shared';
+import { useRunStore, type ChatMessage, type ToolEvent, type NodeLogEntry, type TimelineEvent } from '../stores/runStore';
 import { useChatAutoScroll } from '../hooks/useChatAutoScroll';
 import { TimelineItem } from './TimelineItem';
 import {
@@ -32,8 +42,11 @@ import {
   deleteNode,
   getArtifactContent,
   getRoleTemplate,
+  interruptNodeProcess,
   postChat,
   resetNode,
+  startNodeProcess,
+  stopNodeProcess,
   updateNode
 } from '../lib/api';
 import { StatusBadge } from './StatusBadge';
@@ -46,13 +59,76 @@ interface NodeInspectorProps {
   node: NodeState;
 }
 
-type InspectorTab = 'overview' | 'chat' | 'handoffs' | 'prompts' | 'transcripts' | 'diffs' | 'artifacts' | 'tools';
-const PROVIDER_OPTIONS: ProviderName[] = ['claude', 'codex', 'gemini', 'custom'];
-const PERMISSIONS_MODE_OPTIONS: Array<NodePermissions['cliPermissionsMode']> = ['skip', 'gated'];
+type InspectorTab = 'overview' | 'chat' | 'prompts' | 'transcripts' | 'diffs' | 'artifacts' | 'tools';
+type ChatFilter = 'all' | 'handoffs';
 const ROLE_TEMPLATE_OPTIONS = ['orchestrator', 'planner', 'implementer', 'reviewer', 'investigator'];
 const TEMPLATE_PREVIEW_HEIGHT_STORAGE_KEY = 'vuhlp-template-preview-height';
 const DEFAULT_TEMPLATE_PREVIEW_HEIGHT = 160;
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
+type BooleanCapability = Exclude<keyof NodeCapabilities, 'edgeManagement'>;
+const BOOLEAN_CAPABILITIES: BooleanCapability[] = [
+  'writeCode',
+  'writeDocs',
+  'runCommands',
+  'delegateOnly',
+];
+
+const isHandoffToolName = (name: string): boolean =>
+  name === 'send_handoff' || name === 'receive_handoff';
+
+const isHandoffToolEvent = (event: ToolEvent): boolean => isHandoffToolName(event.tool.name);
+
+const isHandoffTimelineItem = (item: TimelineEvent): boolean =>
+  item.type === 'tool' && isHandoffToolEvent(item.data);
+
+const buildReceiveHandoffToolEvent = (handoff: Envelope): ToolEvent => {
+  const toolId = `handoff-${handoff.id}`;
+  const payload = handoff.payload;
+  const args: {
+    envelopeId: string;
+    from: string;
+    to: string;
+    message: string;
+    structured?: Envelope['payload']['structured'];
+    artifacts?: Envelope['payload']['artifacts'];
+    status?: Envelope['payload']['status'];
+    response?: Envelope['payload']['response'];
+    contextRef?: string;
+  } = {
+    envelopeId: handoff.id,
+    from: handoff.fromNodeId,
+    to: handoff.toNodeId,
+    message: payload.message,
+  };
+
+  if (payload.structured) {
+    args.structured = payload.structured;
+  }
+  if (payload.artifacts) {
+    args.artifacts = payload.artifacts;
+  }
+  if (payload.status) {
+    args.status = payload.status;
+  }
+  if (payload.response) {
+    args.response = payload.response;
+  }
+  if (handoff.contextRef) {
+    args.contextRef = handoff.contextRef;
+  }
+
+  return {
+    id: toolId,
+    nodeId: handoff.toNodeId,
+    tool: {
+      id: toolId,
+      name: 'receive_handoff',
+      args,
+    },
+    status: 'completed',
+    timestamp: handoff.createdAt,
+  };
+};
 
 
 type NodeConfigDraft = {
@@ -64,34 +140,23 @@ type NodeConfigDraft = {
 };
 
 const areCapabilitiesEqual = (a: NodeCapabilities, b: NodeCapabilities) =>
-  (Object.keys(a) as Array<keyof NodeCapabilities>).every((key) => a[key] === b[key]);
+  a.edgeManagement === b.edgeManagement &&
+  a.writeCode === b.writeCode &&
+  a.writeDocs === b.writeDocs &&
+  a.runCommands === b.runCommands &&
+  a.delegateOnly === b.delegateOnly;
 
 const arePermissionsEqual = (a: NodePermissions, b: NodePermissions) =>
   a.cliPermissionsMode === b.cliPermissionsMode &&
   a.agentManagementRequiresApproval === b.agentManagementRequiresApproval;
 
-const buildNodeTimeline = (
-  messages: ChatMessage[],
-  tools: ToolEvent[],
-  statuses: TurnStatusEvent[]
-): TimelineEvent[] => {
-  const timeline: TimelineEvent[] = [
-    ...messages.map((message) => ({ type: 'message' as const, data: message })),
-    ...tools.map((tool) => ({ type: 'tool' as const, data: tool })),
-    ...statuses.map((status) => ({ type: 'status' as const, data: status })),
-  ];
-
-  return timeline.sort((a, b) => {
-    const timeA = new Date(a.type === 'message' ? a.data.createdAt : a.data.timestamp).getTime();
-    const timeB = new Date(b.type === 'message' ? b.data.createdAt : b.data.timestamp).getTime();
-    return timeA - timeB;
-  });
-};
-
 export function NodeInspector({ node }: NodeInspectorProps) {
   const [activeTab, setActiveTab] = useState<InspectorTab>('overview');
+  const [chatFilter, setChatFilter] = useState<ChatFilter>('all');
   const [messageInput, setMessageInput] = useState('');
   const [messageError, setMessageError] = useState<string | null>(null);
+  const [processError, setProcessError] = useState<string | null>(null);
+  const [processPending, setProcessPending] = useState<'start' | 'stop' | 'interrupt' | null>(null);
   const [providerValue, setProviderValue] = useState<ProviderName>(node.provider);
   const [providerSaving, setProviderSaving] = useState(false);
   const [promptOverrideMode, setPromptOverrideMode] = useState<'template' | 'custom'>(
@@ -119,7 +184,7 @@ export function NodeInspector({ node }: NodeInspectorProps) {
   const [loadingArtifactId, setLoadingArtifactId] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const templatePreviewRef = useRef<HTMLPreElement | null>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const getNodeArtifacts = useRunStore((s) => s.getNodeArtifacts);
   const getNodeEdges = useRunStore((s) => s.getNodeEdges);
 
@@ -148,17 +213,37 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     [nodeLogs, node.id]
   );
   const safeMessages = messages ?? EMPTY_CHAT_MESSAGES;
+  const incomingHandoffs = useMemo(
+    () => recentHandoffs.filter((handoff) => handoff.toNodeId === node.id),
+    [recentHandoffs, node.id]
+  );
+  const incomingHandoffTools = useMemo(
+    () => incomingHandoffs.map((handoff) => buildReceiveHandoffToolEvent(handoff)),
+    [incomingHandoffs]
+  );
+  const combinedToolEvents = useMemo(
+    () => [...nodeToolEvents, ...incomingHandoffTools],
+    [nodeToolEvents, incomingHandoffTools]
+  );
   const timeline = useMemo(
-    () => buildNodeTimeline(safeMessages, nodeToolEvents, nodeStatusEvents),
-    [safeMessages, nodeToolEvents, nodeStatusEvents]
+    () => buildTimeline(safeMessages, combinedToolEvents, nodeStatusEvents),
+    [safeMessages, combinedToolEvents, nodeStatusEvents]
+  );
+  const isStreaming = useMemo(() => {
+    const lastMessage = [...timeline].reverse().find((item) => item.type === 'message');
+    return Boolean(
+      lastMessage?.type === 'message' && (lastMessage.data.streaming || lastMessage.data.thinkingStreaming)
+    );
+  }, [timeline]);
+  const handoffCount = useMemo(() => timeline.filter(isHandoffTimelineItem).length, [timeline]);
+  const filteredTimeline = useMemo(
+    () => (chatFilter === 'handoffs' ? timeline.filter(isHandoffTimelineItem) : timeline),
+    [chatFilter, timeline]
   );
 
   const artifacts = getNodeArtifacts(node.id);
   const edges = getNodeEdges(node.id);
 
-  const nodeHandoffs = recentHandoffs.filter(
-    (h) => h.fromNodeId === node.id || h.toNodeId === node.id
-  );
   const diffs = artifacts.filter((a) => a.kind === 'diff');
   const prompts = artifacts
     .filter((a) => a.kind === 'prompt')
@@ -183,6 +268,8 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     setConfigError(null);
     setMessageInput('');
     setMessageError(null);
+    setProcessError(null);
+    setProcessPending(null);
   }, [
     node.id,
     node.label,
@@ -284,6 +371,10 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     promptOverrideMode !== 'custom' || configDraft.customSystemPrompt.trim().length > 0;
   const canSaveConfig =
     Boolean(runId) && !configSaving && configDirty && labelValid && roleValid && customPromptValid;
+  const connectionStatus = node.connection?.status ?? 'disconnected';
+  const canStartProcess = Boolean(runId) && connectionStatus === 'disconnected' && !processPending;
+  const canStopProcess = Boolean(runId) && connectionStatus !== 'disconnected' && !processPending;
+  const canInterruptProcess = Boolean(runId) && node.status === 'running' && !processPending;
 
   const loadArtifact = async (artifactId: string) => {
     if (!runId) {
@@ -344,7 +435,12 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     });
   };
 
-  const handleProviderChange = (nextProvider: ProviderName) => {
+  const handleProviderChange = (value: string) => {
+    const nextProvider = parseProviderName(value);
+    if (!nextProvider) {
+      console.warn('[inspector] unknown provider option', value);
+      return;
+    }
     if (nextProvider === node.provider) {
       setProviderValue(nextProvider);
       return;
@@ -373,14 +469,35 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     setConfigDraft((prev) => ({ ...prev, ...patch }));
   };
 
-  const handleCapabilityToggle = (key: keyof NodeCapabilities) => {
+  const handleBooleanCapabilityToggle = (key: BooleanCapability) => {
     setConfigDraft((prev) => ({
       ...prev,
       capabilities: { ...prev.capabilities, [key]: !prev.capabilities[key] },
     }));
   };
 
-  const handlePermissionsModeChange = (mode: NodePermissions['cliPermissionsMode']) => {
+  const handleEdgeManagementChange = (value: string) => {
+    const nextValue = parseEdgeManagement(value);
+    if (!nextValue) {
+      console.warn('[inspector] unknown edge management', value);
+      setConfigError('Unsupported edge management selected.');
+      return;
+    }
+    setConfigError(null);
+    setConfigDraft((prev) => ({
+      ...prev,
+      capabilities: { ...prev.capabilities, edgeManagement: nextValue },
+    }));
+  };
+
+  const handlePermissionsModeChange = (value: string) => {
+    const mode = parsePermissionsMode(value);
+    if (!mode) {
+      console.warn('[inspector] unknown permissions mode', value);
+      setConfigError('Unsupported permissions mode selected.');
+      return;
+    }
+    setConfigError(null);
     setConfigDraft((prev) => ({
       ...prev,
       permissions: { ...prev.permissions, cliPermissionsMode: mode },
@@ -444,6 +561,54 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     });
   };
 
+  const handleStartProcess = () => {
+    if (!runId) {
+      setProcessError('Start a run to manage the process.');
+      console.warn('[inspector] cannot start process without active run');
+      return;
+    }
+    setProcessPending('start');
+    setProcessError(null);
+    void startNodeProcess(runId, node.id)
+      .catch((error) => {
+        console.error('[inspector] failed to start process', error);
+        setProcessError('Failed to start process.');
+      })
+      .finally(() => setProcessPending(null));
+  };
+
+  const handleStopProcess = () => {
+    if (!runId) {
+      setProcessError('Start a run to manage the process.');
+      console.warn('[inspector] cannot stop process without active run');
+      return;
+    }
+    setProcessPending('stop');
+    setProcessError(null);
+    void stopNodeProcess(runId, node.id)
+      .catch((error) => {
+        console.error('[inspector] failed to stop process', error);
+        setProcessError('Failed to stop process.');
+      })
+      .finally(() => setProcessPending(null));
+  };
+
+  const handleInterruptProcess = () => {
+    if (!runId) {
+      setProcessError('Start a run to manage the process.');
+      console.warn('[inspector] cannot interrupt process without active run');
+      return;
+    }
+    setProcessPending('interrupt');
+    setProcessError(null);
+    void interruptNodeProcess(runId, node.id)
+      .catch((error) => {
+        console.error('[inspector] failed to interrupt process', error);
+        setProcessError('Failed to pause process.');
+      })
+      .finally(() => setProcessPending(null));
+  };
+
   const handleDeleteNode = () => {
     if (!runId) {
       console.warn('[inspector] cannot delete node without active run');
@@ -502,7 +667,6 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     { id: 'overview', label: 'Overview' },
 
     { id: 'chat', label: 'Chat' },
-    { id: 'handoffs', label: 'Handoffs', count: nodeHandoffs.length },
     { id: 'prompts', label: 'Prompts', count: prompts.length },
     { id: 'transcripts', label: 'Transcripts', count: transcripts.length },
     { id: 'diffs', label: 'Diffs', count: diffs.length },
@@ -550,7 +714,7 @@ export function NodeInspector({ node }: NodeInspectorProps) {
               <select
                 className="inspector__provider-select"
                 value={providerValue}
-                onChange={(event) => handleProviderChange(event.target.value as ProviderName)}
+                onChange={(event) => handleProviderChange(event.target.value)}
                 disabled={providerSaving || !runId}
                 title="Switching providers restarts the session"
               >
@@ -611,26 +775,37 @@ export function NodeInspector({ node }: NodeInspectorProps) {
             templatePreviewRef={templatePreviewRef}
             templatePreviewHeight={templatePreviewHeight}
             onPromptOverrideModeChange={setPromptOverrideMode}
-            onCapabilityToggle={handleCapabilityToggle}
+            onBooleanCapabilityToggle={handleBooleanCapabilityToggle}
+            onEdgeManagementChange={handleEdgeManagementChange}
             onPermissionsModeChange={handlePermissionsModeChange}
             onAgentManagementApprovalToggle={handleAgentManagementApprovalToggle}
             onSaveConfig={handleSaveConfig}
             onDeleteEdge={handleDeleteEdge}
             onSaveEdgeLabel={handleSaveEdgeLabel}
             runUsage={runUsage}
+            onStartProcess={handleStartProcess}
+            onStopProcess={handleStopProcess}
+            onInterruptProcess={handleInterruptProcess}
+            canStartProcess={canStartProcess}
+            canStopProcess={canStopProcess}
+            canInterruptProcess={canInterruptProcess}
+            processPending={processPending}
+            processError={processError}
           />
         )}
         {activeTab === 'chat' && (
           <ChatTab
-            timeline={timeline}
+            timeline={filteredTimeline}
             nodeLabel={node.label}
             nodeStatus={node.status}
             nodeId={node.id}
             scrollRef={contentRef}
+            filter={chatFilter}
+            allCount={timeline.length}
+            handoffCount={handoffCount}
+            isStreaming={isStreaming}
+            onFilterChange={setChatFilter}
           />
-        )}
-        {activeTab === 'handoffs' && (
-          <HandoffsTab handoffs={nodeHandoffs} nodeId={node.id} />
         )}
         {activeTab === 'prompts' && (
           <TextArtifactsTab
@@ -724,53 +899,88 @@ function ChatTab({
   nodeStatus,
   nodeId,
   scrollRef,
+  filter,
+  allCount,
+  handoffCount,
+  isStreaming,
+  onFilterChange,
 }: {
   timeline: TimelineEvent[];
   nodeLabel: string;
   nodeStatus?: string;
   nodeId: string;
-  scrollRef: RefObject<HTMLDivElement>;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  filter: ChatFilter;
+  allCount: number;
+  handoffCount: number;
+  isStreaming: boolean;
+  onFilterChange: (filter: ChatFilter) => void;
 }) {
-  const isStreaming = useMemo(() => {
-    const lastMessage = [...timeline].reverse().find((item) => item.type === 'message');
-    return Boolean(
-      lastMessage?.type === 'message' && (lastMessage.data.streaming || lastMessage.data.thinkingStreaming)
-    );
-  }, [timeline]);
   const autoScrollKey = useMemo(
-    () => `${nodeStatus ?? ''}-${isStreaming ? '1' : '0'}`,
-    [nodeStatus, isStreaming]
+    () => `${nodeStatus ?? ''}-${isStreaming ? '1' : '0'}-${filter}`,
+    [nodeStatus, isStreaming, filter]
   );
   useChatAutoScroll({ scrollRef, timeline, updateKey: autoScrollKey, resetKey: nodeId });
 
-  if (timeline.length === 0 && nodeStatus !== 'running') {
-    return (
+  if (allCount === 0 && nodeStatus !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true') {
+     return (
       <div className="inspector__empty">
         <span className="inspector__empty-text">Start a conversation with {nodeLabel}</span>
       </div>
     );
   }
 
+  const showEmpty = timeline.length === 0 && nodeStatus !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true';
+
   return (
     <div className="inspector__section inspector__chat">
-      {timeline.map((item) => (
-        <TimelineItem key={`${item.type}-${item.data.id}`} item={item} />
-      ))}
-      {nodeStatus === 'running' && !isStreaming && (
-        <div className="timeline-message timeline-message--assistant timeline-message--thinking">
-          <div className="timeline-message__header">
-            <span className="timeline-message__role">assistant</span>
-            <div className="timeline-message__meta">
-              <span className="timeline-message__streaming timeline-message__streaming--thinking">
-                <ThinkingSpinner size="sm" variant="assemble" color="#7aedc4" />
-                thinking
-              </span>
-            </div>
-          </div>
-          <div className="timeline-message__content">
-            <ThinkingSpinner size="lg" variant="assemble" color="#7aedc4" />
-          </div>
+      <div className="inspector__chat-controls">
+        <div className="inspector__chat-filter">
+          <button
+            className={`inspector__chat-filter-button ${filter === 'all' ? 'inspector__chat-filter-button--active' : ''}`}
+            type="button"
+            onClick={() => onFilterChange('all')}
+          >
+            All
+            <span className="inspector__chat-filter-count">{allCount}</span>
+          </button>
+          <button
+            className={`inspector__chat-filter-button ${filter === 'handoffs' ? 'inspector__chat-filter-button--active' : ''}`}
+            type="button"
+            onClick={() => onFilterChange('handoffs')}
+          >
+            Handoffs
+            <span className="inspector__chat-filter-count">{handoffCount}</span>
+          </button>
         </div>
+      </div>
+      
+      {showEmpty ? (
+        <div className="inspector__empty">
+            <span className="inspector__empty-text">{filter === 'handoffs' ? 'No handoffs yet' : `Start a conversation with ${nodeLabel}`}</span>
+        </div>
+      ) : (
+        <>
+          {timeline.map((item) => (
+            <TimelineItem key={`${item.type}-${item.data.id}`} item={item} />
+          ))}
+          {(nodeStatus === 'running' && !isStreaming) || import.meta.env.VITE_TEST_CUBE_SPINNER === 'true' ? (
+            <div className="timeline-message timeline-message--assistant timeline-message--thinking">
+              <div className="timeline-message__header">
+                <span className="timeline-message__role">assistant</span>
+                <div className="timeline-message__meta">
+                  <span className="timeline-message__streaming timeline-message__streaming--thinking">
+                    <ThinkingSpinner size="sm" variant="assemble" color="#7aedc4" />
+                    thinking
+                  </span>
+                </div>
+              </div>
+              <div className="timeline-message__content">
+                <ThinkingSpinner size="lg" variant="assemble" color="#7aedc4" />
+              </div>
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   );
@@ -796,13 +1006,22 @@ function OverviewTab({
   templatePreviewRef,
   templatePreviewHeight,
   onPromptOverrideModeChange,
-  onCapabilityToggle,
+  onBooleanCapabilityToggle,
+  onEdgeManagementChange,
   onPermissionsModeChange,
   onAgentManagementApprovalToggle,
   onSaveConfig,
   onDeleteEdge,
   onSaveEdgeLabel,
-  runUsage
+  runUsage,
+  onStartProcess,
+  onStopProcess,
+  onInterruptProcess,
+  canStartProcess,
+  canStopProcess,
+  canInterruptProcess,
+  processPending,
+  processError
 }: {
   node: NodeState;
   edges: EdgeState[];
@@ -820,21 +1039,26 @@ function OverviewTab({
   templatePreview: GetRoleTemplateResponse | null;
   templateLoading: boolean;
   templateError: string | null;
-  templatePreviewRef: RefObject<HTMLPreElement>;
+  templatePreviewRef: RefObject<HTMLPreElement | null>;
   templatePreviewHeight: number;
   onPromptOverrideModeChange: (mode: 'template' | 'custom') => void;
-  onCapabilityToggle: (key: keyof NodeCapabilities) => void;
-  onPermissionsModeChange: (mode: NodePermissions['cliPermissionsMode']) => void;
+  onBooleanCapabilityToggle: (key: BooleanCapability) => void;
+  onEdgeManagementChange: (value: string) => void;
+  onPermissionsModeChange: (mode: string) => void;
   onAgentManagementApprovalToggle: () => void;
   onSaveConfig: () => void;
   onDeleteEdge: (edgeId: string) => void;
   onSaveEdgeLabel: (edgeId: string, label: string) => void;
   runUsage?: UsageTotals;
+  onStartProcess: () => void;
+  onStopProcess: () => void;
+  onInterruptProcess: () => void;
+  canStartProcess: boolean;
+  canStopProcess: boolean;
+  canInterruptProcess: boolean;
+  processPending: 'start' | 'stop' | 'interrupt' | null;
+  processError: string | null;
 }) {
-  const formatTime = (iso: string) => {
-    const date = new Date(iso);
-    return date.toLocaleTimeString('en-US', { hour12: false });
-  };
   const formatTokens = (value?: number) => {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       return '—';
@@ -979,7 +1203,7 @@ function OverviewTab({
               <select
                 className="inspector__select"
                 value={configDraft.permissions.cliPermissionsMode}
-                onChange={(event) => onPermissionsModeChange(event.target.value as NodePermissions['cliPermissionsMode'])}
+                onChange={(event) => onPermissionsModeChange(event.target.value)}
                 disabled={configDisabled}
               >
                 {PERMISSIONS_MODE_OPTIONS.map((mode) => (
@@ -992,12 +1216,27 @@ function OverviewTab({
           </div>
           <div className="inspector__config-column">
             <span className="inspector__field-label">Capabilities</span>
-            {Object.entries(configDraft.capabilities).map(([key, value]) => (
+            <label className="inspector__field">
+              <span className="inspector__field-label">Edge Management</span>
+              <select
+                className="inspector__select"
+                value={configDraft.capabilities.edgeManagement}
+                onChange={(event) => onEdgeManagementChange(event.target.value)}
+                disabled={configDisabled}
+              >
+                {EDGE_MANAGEMENT_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {BOOLEAN_CAPABILITIES.map((key) => (
               <label key={key} className="inspector__toggle">
                 <input
                   type="checkbox"
-                  checked={value}
-                  onChange={() => onCapabilityToggle(key as keyof NodeCapabilities)}
+                  checked={configDraft.capabilities[key]}
+                  onChange={() => onBooleanCapabilityToggle(key)}
                   disabled={configDisabled}
                 />
                 <span>{key.replace(/([A-Z])/g, ' $1').trim()}</span>
@@ -1043,13 +1282,13 @@ function OverviewTab({
           {node.connection?.lastHeartbeatAt && (
             <div className="inspector__kv">
               <span className="inspector__kv-key">Last Heartbeat</span>
-              <span className="inspector__kv-value">{formatTime(node.connection.lastHeartbeatAt)}</span>
+              <span className="inspector__kv-value">{formatClockTime(node.connection.lastHeartbeatAt)}</span>
             </div>
           )}
           {node.connection?.lastOutputAt && (
             <div className="inspector__kv">
               <span className="inspector__kv-key">Last Output</span>
-              <span className="inspector__kv-value">{formatTime(node.connection.lastOutputAt)}</span>
+              <span className="inspector__kv-value">{formatClockTime(node.connection.lastOutputAt)}</span>
             </div>
           )}
           <div className="inspector__kv">
@@ -1060,7 +1299,7 @@ function OverviewTab({
           </div>
           <div className="inspector__kv">
             <span className="inspector__kv-key">Last Activity</span>
-            <span className="inspector__kv-value">{formatTime(node.lastActivityAt)}</span>
+            <span className="inspector__kv-value">{formatClockTime(node.lastActivityAt)}</span>
           </div>
           {node.inboxCount !== undefined && node.inboxCount > 0 && (
             <div className="inspector__kv">
@@ -1071,6 +1310,40 @@ function OverviewTab({
             </div>
           )}
         </div>
+        <div className="inspector__process-controls">
+          <button
+            className="inspector__btn inspector__btn--primary"
+            type="button"
+            onClick={onStartProcess}
+            disabled={!canStartProcess}
+            title="Start node process"
+          >
+            {processPending === 'start' ? 'Starting...' : 'Start'}
+          </button>
+          <button
+            className="inspector__btn inspector__btn--secondary"
+            type="button"
+            onClick={onInterruptProcess}
+            disabled={!canInterruptProcess}
+            title="Pause running turn"
+          >
+            {processPending === 'interrupt' ? 'Pausing...' : 'Pause'}
+          </button>
+          <button
+            className="inspector__btn inspector__btn--danger"
+            type="button"
+            onClick={onStopProcess}
+            disabled={!canStopProcess}
+            title="Stop node process"
+          >
+            {processPending === 'stop' ? 'Stopping...' : 'Stop'}
+          </button>
+        </div>
+        {processError && (
+          <span className="inspector__field-hint inspector__field-hint--error">
+            {processError}
+          </span>
+        )}
       </div>
 
       {nodeLogs.length > 0 && (
@@ -1082,7 +1355,7 @@ function OverviewTab({
                 <span className={`inspector__log-source inspector__log-source--${entry.source}`}>
                   {entry.source}
                 </span>
-                <span className="inspector__log-time">{formatTime(entry.timestamp)}</span>
+                <span className="inspector__log-time">{formatClockTime(entry.timestamp)}</span>
                 <span className="inspector__log-text">{entry.line}</span>
               </div>
             ))}
@@ -1207,48 +1480,6 @@ function EditableEdgeLabel({ edgeId, label, onSave }: { edgeId: string; label: s
     >
       {label}
     </span>
-  );
-}
-
-function HandoffsTab({ handoffs, nodeId }: { handoffs: Envelope[]; nodeId: string }) {
-  if (handoffs.length === 0) {
-    return (
-      <div className="inspector__empty">
-        <span className="inspector__empty-text">No handoffs yet</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="inspector__section">
-      {handoffs.map((handoff) => (
-        <div
-          key={handoff.id}
-          className={`inspector__handoff ${handoff.fromNodeId === nodeId ? 'inspector__handoff--outgoing' : 'inspector__handoff--incoming'}`}
-        >
-          <div className="inspector__handoff-header">
-            <span className="inspector__handoff-direction">
-              {handoff.fromNodeId === nodeId ? 'Outgoing' : 'Incoming'}
-            </span>
-            <span className="inspector__handoff-time">
-              {new Date(handoff.createdAt).toLocaleTimeString('en-US', { hour12: false })}
-            </span>
-          </div>
-          <p className="inspector__handoff-message">{handoff.payload.message}</p>
-          {handoff.payload.response && (
-            <div className="inspector__handoff-response">
-              Response: {handoff.payload.response.expectation}
-              {handoff.payload.response.replyTo ? ` (replyTo ${handoff.payload.response.replyTo})` : ''}
-            </div>
-          )}
-          {handoff.payload.status && (
-            <div className={`inspector__handoff-status ${handoff.payload.status.ok ? 'inspector__handoff-status--ok' : 'inspector__handoff-status--fail'}`}>
-              {handoff.payload.status.ok ? '\u2713' : '\u2717'} {handoff.payload.status.reason || 'No reason'}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
   );
 }
 

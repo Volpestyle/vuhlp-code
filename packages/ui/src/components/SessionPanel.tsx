@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { RunState } from '@vuhlp/contracts';
+import { formatClockTime } from '@vuhlp/shared';
 import { deleteRun, getRun, listRuns } from '../lib/api';
 import { useRunStore } from '../stores/runStore';
 import { RefreshDouble, Plus, Check, Xmark, EditPencil, Trash, SidebarCollapse, SidebarExpand } from 'iconoir-react';
@@ -11,11 +12,6 @@ const RUN_NAMES_KEY = 'vuhlp-run-names';
 
 const sortRuns = (runs: RunState[]) =>
   [...runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-
-function formatTime(iso: string): string {
-  const date = new Date(iso);
-  return date.toLocaleTimeString('en-US', { hour12: false });
-}
 
 function loadRunNames(): Record<string, string> {
   if (typeof window === 'undefined') return {};
@@ -346,7 +342,7 @@ export function SessionPanel({ collapsed = false }: SessionPanelProps) {
                         <div className="session-panel__item-meta">
                           <span>{nodeCount} nodes</span>
                           <span>{edgeCount} edges</span>
-                          <span>{formatTime(run.updatedAt)}</span>
+                          <span>{formatClockTime(run.updatedAt)}</span>
                         </div>
                         {run.cwd && (
                           <div className="session-panel__item-cwd" title={run.cwd}>
@@ -370,7 +366,7 @@ export function SessionPanel({ collapsed = false }: SessionPanelProps) {
                         <div className="session-panel__item-meta">
                           <span>{nodeCount} nodes</span>
                           <span>{edgeCount} edges</span>
-                          <span>{formatTime(run.updatedAt)}</span>
+                          <span>{formatClockTime(run.updatedAt)}</span>
                         </div>
                         {run.cwd && (
                           <div className="session-panel__item-cwd" title={run.cwd}>

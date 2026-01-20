@@ -359,102 +359,50 @@
   min-height: 100%;
 }
 
-.inspector__chat-message {
+.inspector__chat-controls {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  border-radius: var(--radius-md);
+  justify-content: flex-end;
+}
+
+.inspector__chat-filter {
+  display: inline-flex;
+  gap: var(--space-2);
+  padding: var(--space-1);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--color-border-subtle);
   background: var(--color-bg-elevated);
-  max-width: 92%;
 }
 
-.inspector__chat-message--user {
-  align-self: flex-end;
-  border-color: var(--color-border-strong);
-  background: var(--color-bg-surface);
-}
-
-.inspector__chat-message--assistant {
-  border-color: var(--color-accent-dim);
-  background: rgba(0, 212, 255, 0.08);
-}
-
-.inspector__chat-message--system {
-  border-color: rgba(255, 170, 0, 0.35);
-  background: rgba(255, 170, 0, 0.12);
-}
-
-.inspector__chat-message--streaming {
-  box-shadow: 0 0 0 1px rgba(0, 255, 136, 0.2);
-}
-
-.inspector__chat-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.inspector__chat-role {
-  font-size: var(--font-size-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  color: var(--color-text-muted);
-  font-family: var(--font-display);
-}
-
-.inspector__chat-message--assistant .inspector__chat-role {
-  color: var(--color-accent);
-}
-
-.inspector__chat-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.inspector__chat-streaming {
+.inspector__chat-filter-button {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
   font-size: var(--font-size-xs);
-  color: var(--color-status-running);
+  font-family: var(--font-display);
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  font-family: var(--font-display);
+  cursor: pointer;
 }
 
-.inspector__chat-streaming-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-status-running);
-  animation: pulse 1s ease-in-out infinite;
+.inspector__chat-filter-button:hover {
+  color: var(--color-text-primary);
 }
 
-.inspector__chat-status {
-  font-size: var(--font-size-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-family: var(--font-display);
+.inspector__chat-filter-button--active {
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
 }
 
-.inspector__chat-status--interrupted {
-  color: var(--color-status-blocked);
-}
-
-.inspector__chat-time {
+.inspector__chat-filter-count {
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
-}
-
-.inspector__chat-content {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-primary);
-  line-height: 1.6;
-  white-space: pre-wrap;
 }
 
 /* Key-Value List */
@@ -498,6 +446,13 @@
 
 .inspector__kv-value--accent {
   color: var(--color-accent);
+}
+
+.inspector__process-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .inspector__kv-value--connected {
@@ -653,7 +608,7 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-weight: 600;
-  color: var(--color-text-dim);
+  color: var(--color-text-muted);
 }
 
 .inspector__log-source--stderr {
@@ -666,7 +621,7 @@
 }
 
 .inspector__log-text {
-  color: var(--color-text);
+  color: var(--color-text-primary);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -690,66 +645,6 @@
 .inspector__empty-text {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
-}
-
-/* Handoffs */
-.inspector__handoff {
-  padding: var(--space-3);
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-subtle);
-  border-left: 3px solid var(--color-border);
-  border-radius: var(--radius-sm);
-}
-
-.inspector__handoff--outgoing {
-  border-left-color: var(--color-accent);
-}
-
-.inspector__handoff--incoming {
-  border-left-color: var(--color-status-running);
-}
-
-.inspector__handoff-header {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: var(--space-2);
-}
-
-.inspector__handoff-direction {
-  font-family: var(--font-display);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-}
-
-.inspector__handoff-time {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-}
-
-.inspector__handoff-message {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-secondary);
-  margin: 0;
-  line-height: 1.5;
-}
-
-.inspector__handoff-status {
-  margin-top: var(--space-2);
-  font-size: var(--font-size-xs);
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-sm);
-}
-
-.inspector__handoff-status--ok {
-  background: rgba(0, 255, 136, 0.1);
-  color: var(--color-status-running);
-}
-
-.inspector__handoff-status--fail {
-  background: rgba(255, 68, 102, 0.1);
-  color: var(--color-status-failed);
 }
 
 /* Artifacts */

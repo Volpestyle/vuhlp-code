@@ -4,8 +4,9 @@
  */
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import type { NodeState } from '@vuhlp/contracts';
-import { useRunStore, type ChatMessage, type ToolEvent, type TurnStatusEvent, type TimelineEvent } from '../stores/runStore';
+import type { Envelope, NodeState } from '@vuhlp/contracts';
+import { buildTimeline } from '@vuhlp/shared';
+import { useRunStore, type ChatMessage, type ToolEvent, type TimelineEvent } from '../stores/runStore';
 import { postChat } from '../lib/api';
 import { StatusBadge } from './StatusBadge';
 import { ProviderBadge } from './ProviderBadge';
@@ -16,24 +17,67 @@ import { useChatAutoScroll } from '../hooks/useChatAutoScroll';
 import './FullscreenChat.css';
 
 type ChatVariant = 'full' | 'mid';
+type ChatFilter = 'all' | 'handoffs';
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
 
-const buildNodeTimeline = (
-  messages: ChatMessage[],
-  tools: ToolEvent[],
-  statuses: TurnStatusEvent[]
-): TimelineEvent[] => {
-  const timeline: TimelineEvent[] = [
-    ...messages.map((message) => ({ type: 'message' as const, data: message })),
-    ...tools.map((tool) => ({ type: 'tool' as const, data: tool })),
-    ...statuses.map((status) => ({ type: 'status' as const, data: status })),
-  ];
+const isHandoffToolName = (name: string): boolean =>
+  name === 'send_handoff' || name === 'receive_handoff';
 
-  return timeline.sort((a, b) => {
-    const timeA = new Date(a.type === 'message' ? a.data.createdAt : a.data.timestamp).getTime();
-    const timeB = new Date(b.type === 'message' ? b.data.createdAt : b.data.timestamp).getTime();
-    return timeA - timeB;
-  });
+const isHandoffToolEvent = (event: ToolEvent): boolean => isHandoffToolName(event.tool.name);
+
+const isHandoffTimelineItem = (item: TimelineEvent): boolean =>
+  item.type === 'tool' && isHandoffToolEvent(item.data);
+
+const isToolTimelineItem = (item: TimelineEvent): item is { type: 'tool'; data: ToolEvent } =>
+  item.type === 'tool';
+
+const buildReceiveHandoffToolEvent = (handoff: Envelope): ToolEvent => {
+  const toolId = `handoff-${handoff.id}`;
+  const payload = handoff.payload;
+  const args: {
+    envelopeId: string;
+    from: string;
+    to: string;
+    message: string;
+    structured?: Envelope['payload']['structured'];
+    artifacts?: Envelope['payload']['artifacts'];
+    status?: Envelope['payload']['status'];
+    response?: Envelope['payload']['response'];
+    contextRef?: string;
+  } = {
+    envelopeId: handoff.id,
+    from: handoff.fromNodeId,
+    to: handoff.toNodeId,
+    message: payload.message,
+  };
+
+  if (payload.structured) {
+    args.structured = payload.structured;
+  }
+  if (payload.artifacts) {
+    args.artifacts = payload.artifacts;
+  }
+  if (payload.status) {
+    args.status = payload.status;
+  }
+  if (payload.response) {
+    args.response = payload.response;
+  }
+  if (handoff.contextRef) {
+    args.contextRef = handoff.contextRef;
+  }
+
+  return {
+    id: toolId,
+    nodeId: handoff.toNodeId,
+    tool: {
+      id: toolId,
+      name: 'receive_handoff',
+      args,
+    },
+    status: 'completed',
+    timestamp: handoff.createdAt,
+  };
 };
 
 interface FullscreenChatProps {
@@ -49,11 +93,13 @@ export function FullscreenChat({
 }: FullscreenChatProps) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [chatFilter, setChatFilter] = useState<ChatFilter>('all');
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const runId = useRunStore((s) => s.run?.id);
   const addChatMessage = useRunStore((s) => s.addChatMessage);
   const updateChatMessageStatus = useRunStore((s) => s.updateChatMessageStatus);
   const messages = useRunStore((s) => s.chatMessages[node.id]);
+  const recentHandoffs = useRunStore((s) => s.recentHandoffs);
   const toolEvents = useRunStore((s) => s.toolEvents);
   const turnStatusEvents = useRunStore((s) => s.turnStatusEvents);
   const wsConnectionStatus = useRunStore((s) => s.ui.wsConnectionStatus);
@@ -66,18 +112,70 @@ export function FullscreenChat({
     [turnStatusEvents, node.id]
   );
   const safeMessages = messages ?? EMPTY_CHAT_MESSAGES;
+  const incomingHandoffs = useMemo(
+    () => recentHandoffs.filter((handoff) => handoff.toNodeId === node.id),
+    [recentHandoffs, node.id]
+  );
+  const incomingHandoffTools = useMemo(
+    () => incomingHandoffs.map((handoff) => buildReceiveHandoffToolEvent(handoff)),
+    [incomingHandoffs]
+  );
+  const combinedToolEvents = useMemo(
+    () => [...nodeToolEvents, ...incomingHandoffTools],
+    [nodeToolEvents, incomingHandoffTools]
+  );
   const timeline = useMemo(
-    () => buildNodeTimeline(safeMessages, nodeToolEvents, nodeStatusEvents),
-    [safeMessages, nodeToolEvents, nodeStatusEvents]
+    () => buildTimeline(safeMessages, combinedToolEvents, nodeStatusEvents),
+    [safeMessages, combinedToolEvents, nodeStatusEvents]
+  );
+  const handoffCount = useMemo(() => timeline.filter(isHandoffTimelineItem).length, [timeline]);
+  const filteredTimeline = useMemo(
+    () => (chatFilter === 'handoffs' ? timeline.filter(isHandoffTimelineItem) : timeline),
+    [chatFilter, timeline]
+  );
+  const toolTimelineItems = useMemo(
+    () => filteredTimeline.filter(isToolTimelineItem),
+    [filteredTimeline]
+  );
+  const showToolFallback = chatFilter === 'all' && toolTimelineItems.length === 0 && combinedToolEvents.length > 0;
+  const fallbackToolEvents = useMemo(() => {
+    if (!showToolFallback) {
+      return [];
+    }
+    return [...combinedToolEvents].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+  }, [combinedToolEvents, showToolFallback]);
+
+  const isStreamingMessage = useMemo(() => {
+    const lastMessage = [...timeline].reverse().find((item) => item.type === 'message');
+    return Boolean(
+      lastMessage?.type === 'message' && (lastMessage.data.streaming || lastMessage.data.thinkingStreaming)
+    );
+  }, [timeline]);
+  const autoScrollKey = useMemo(
+    () => `${node.status}-${chatFilter}-${isStreamingMessage ? '1' : '0'}`,
+    [node.status, chatFilter, isStreamingMessage]
   );
   const showInput = interactive && variant === 'full';
 
-  useChatAutoScroll({ scrollRef: messagesScrollRef, timeline, resetKey: node.id });
+  useChatAutoScroll({ scrollRef: messagesScrollRef, timeline: filteredTimeline, resetKey: node.id, updateKey: autoScrollKey });
 
   // Simulated streaming indicator based on node connection state
   useEffect(() => {
     setIsStreaming(node.connection?.streaming ?? false);
   }, [node.connection?.streaming]);
+
+  useEffect(() => {
+    if (!showToolFallback) {
+      return;
+    }
+    console.warn('[fullscreen-chat] tool events missing from timeline', {
+      nodeId: node.id,
+      toolEventCount: combinedToolEvents.length,
+      timelineCount: filteredTimeline.length,
+    });
+  }, [combinedToolEvents.length, filteredTimeline.length, node.id, showToolFallback]);
 
   const sendMessage = useCallback(
     async (messageId: string, content: string) => {
@@ -184,10 +282,30 @@ export function FullscreenChat({
 
       {/* Messages */}
       <div className="fullscreen-chat__messages" ref={messagesScrollRef}>
-        {timeline.length === 0 && node.status !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true' ? (
+        {timeline.length > 0 && (
+          <div className="fullscreen-chat__filters">
+            <button
+              className={`fullscreen-chat__filter-button ${chatFilter === 'all' ? 'fullscreen-chat__filter-button--active' : ''}`}
+              type="button"
+              onClick={() => setChatFilter('all')}
+            >
+              All
+              <span className="fullscreen-chat__filter-count">{timeline.length}</span>
+            </button>
+            <button
+              className={`fullscreen-chat__filter-button ${chatFilter === 'handoffs' ? 'fullscreen-chat__filter-button--active' : ''}`}
+              type="button"
+              onClick={() => setChatFilter('handoffs')}
+            >
+              Handoffs
+              <span className="fullscreen-chat__filter-count">{handoffCount}</span>
+            </button>
+          </div>
+        )}
+        {filteredTimeline.length === 0 && node.status !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true' ? (
           <div className="fullscreen-chat__empty">
             <p className="fullscreen-chat__empty-text">
-              Start a conversation with {node.label}
+              {chatFilter === 'handoffs' ? 'No handoffs yet' : `Start a conversation with ${node.label}`}
             </p>
             <p className="fullscreen-chat__empty-hint">
               Messages will appear here in real-time
@@ -195,7 +313,7 @@ export function FullscreenChat({
           </div>
         ) : (
           <>
-            {timeline.map((item) => (
+            {filteredTimeline.map((item) => (
               <TimelineItem
                 key={`${item.type}-${item.data.id}`}
                 item={item}
@@ -203,9 +321,6 @@ export function FullscreenChat({
               />
             ))}
             {(() => {
-              const lastItem = timeline[timeline.length - 1];
-              const isStreamingMessage = lastItem?.type === 'message' && (lastItem.data.streaming || lastItem.data.thinkingStreaming);
-
               if ((node.status === 'running' && !isStreamingMessage) || import.meta.env.VITE_TEST_CUBE_SPINNER === 'true') {
                 return (
                   <div className="timeline-message timeline-message--assistant timeline-message--thinking">
@@ -227,6 +342,14 @@ export function FullscreenChat({
               return null;
             })()}
           </>
+        )}
+        {showToolFallback && (
+          <div className="fullscreen-chat__tool-fallback">
+            <span className="fullscreen-chat__tool-fallback-label">Tools</span>
+            {fallbackToolEvents.map((event) => (
+              <TimelineItem key={`tool-fallback-${event.id}`} item={{ type: 'tool', data: event }} />
+            ))}
+          </div>
         )}
       </div>
 

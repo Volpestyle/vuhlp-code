@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from 'react';
-import type { GlobalMode, OrchestrationMode } from '@vuhlp/contracts';
+import type { GlobalMode, OrchestrationMode, CreateRunResponse } from '@vuhlp/contracts';
 import { createRun } from '../lib/api';
 import { useRunStore } from '../stores/runStore';
 import { Code, Network, Folder, Plus } from 'iconoir-react';
@@ -9,7 +9,7 @@ import './NewRunModal.css';
 interface NewRunModalProps {
   open: boolean;
   onClose: () => void;
-  onSuccess: (run: any) => void;
+  onSuccess: (run: CreateRunResponse['run']) => void;
 }
 
 export function NewRunModal({ open, onClose, onSuccess }: NewRunModalProps) {

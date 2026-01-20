@@ -39,10 +39,12 @@ export function Header({ minimal = false }: HeaderProps) {
       Object.values(run.nodes).map((node) => node.permissions.cliPermissionsMode)
     );
     if (modes.size === 1) {
-      return modes.values().next().value;
+      const [onlyMode] = modes;
+      return onlyMode ?? 'mixed';
     }
     return 'mixed';
   }, [run]);
+  const runCwd = run?.cwd;
 
   const updateRunState = async (patch: { status?: 'running' | 'paused' | 'stopped'; mode?: 'AUTO' | 'INTERACTIVE'; globalMode?: 'PLANNING' | 'IMPLEMENTATION' }) => {
     if (!run) return;
@@ -89,7 +91,10 @@ export function Header({ minimal = false }: HeaderProps) {
   useEffect(() => {
     if (!settingsOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
       if (settingsRef.current && !settingsRef.current.contains(target)) {
         setSettingsOpen(false);
       }
@@ -211,11 +216,14 @@ export function Header({ minimal = false }: HeaderProps) {
                 <select
                   className="header__menu-select"
                   value={cliModeValue}
-                  onChange={(event) =>
-                    handleCliPermissionsChange(
-                      event.target.value as NodePermissions['cliPermissionsMode']
-                    )
-                  }
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (value === 'skip' || value === 'gated') {
+                      void handleCliPermissionsChange(value);
+                    } else {
+                      console.warn('[header] ignored unsupported CLI mode', { value });
+                    }
+                  }}
                   disabled={!run || cliModeSaving}
                 >
                   <option value="mixed" disabled>
@@ -228,11 +236,11 @@ export function Header({ minimal = false }: HeaderProps) {
               <p className="header__menu-note">
                 Applies to all nodes. You can still override per node.
               </p>
-              {run.cwd && (
+              {runCwd && (
                 <div className="header__menu-row header__menu-row--meta">
                   <span className="header__menu-label">Working Directory</span>
-                  <span className="header__menu-value" title={run.cwd}>
-                    {run.cwd}
+                  <span className="header__menu-value" title={runCwd}>
+                    {runCwd}
                   </span>
                 </div>
               )}

@@ -1,6 +1,6 @@
 
 import { useState } from 'react';
-import type { ChatMessage, ToolEvent, TurnStatusEvent } from '../stores/runStore';
+import { useRunStore, type ChatMessage, type ToolEvent, type TurnStatusEvent } from '../stores/runStore';
 import { NavArrowDown, NavArrowRight, Wrench, Brain, Refresh, InfoCircle } from 'iconoir-react';
 import { MarkdownContent } from './MarkdownContent';
 import { JsonView } from './JsonView';
@@ -163,6 +163,8 @@ function MessageItem({ message, onRetry }: MessageItemProps) {
 
 function ToolItem({ event }: { event: ToolEvent }) {
   const [expanded, setExpanded] = useState(false);
+  const run = useRunStore((s) => s.run);
+  const node = run?.nodes[event.nodeId];
   const isCompleted = event.status === 'completed' || event.status === 'failed';
   const hasError = event.status === 'failed' || event.error;
 
@@ -182,7 +184,8 @@ function ToolItem({ event }: { event: ToolEvent }) {
           <span className="timeline-tool__icon">
             <Wrench width={14} height={14} />
           </span>
-          <span className="timeline-tool__name">{event.tool.name}</span>
+          {node && <span className="timeline-tool__node-label">{node.label}</span>}
+          <span className="timeline-tool__name ms-1">{event.tool.name}</span>
           <span className={`timeline-tool__status timeline-tool__status--${event.status}`}>
             {event.status}
           </span>

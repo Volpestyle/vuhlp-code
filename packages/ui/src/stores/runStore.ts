@@ -21,60 +21,7 @@ import type {
   ISO8601,
 } from '@vuhlp/contracts';
 import { getInitialTheme, type ThemeMode } from '../lib/theme';
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const isToolCallLine = (line: string): boolean => {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    return false;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return false;
-  }
-  if (!isRecord(parsed)) {
-    return false;
-  }
-  const container = isRecord(parsed.tool_call)
-    ? parsed.tool_call
-    : isRecord(parsed.toolCall)
-      ? parsed.toolCall
-      : null;
-  if (container) {
-    const name = typeof container.name === 'string' ? container.name.trim() : '';
-    const args = isRecord(container.args)
-      ? container.args
-      : isRecord(container.params)
-        ? container.params
-        : null;
-    return Boolean(name && args);
-  }
-  const directName =
-    typeof parsed.tool === 'string'
-      ? parsed.tool.trim()
-      : typeof parsed.name === 'string'
-        ? parsed.name.trim()
-        : '';
-  const directArgs = isRecord(parsed.args)
-    ? parsed.args
-    : isRecord(parsed.params)
-      ? parsed.params
-      : null;
-  return Boolean(directName && directArgs);
-};
-
-const stripToolCallLines = (content: string): string => {
-  if (!content) {
-    return content;
-  }
-  const lines = content.split('\n');
-  const kept = lines.filter((line) => !isToolCallLine(line));
-  return kept.join('\n');
-};
+import { buildTimeline, stripToolCallLines, type TimelineItem } from '@vuhlp/shared';
 
 export type ViewMode = 'graph' | 'fullscreen' | 'collapsed';
 
@@ -152,6 +99,7 @@ interface StallState {
 interface RunStore {
   // Run state
   run: RunState | null;
+  pendingEdges: Record<UUID, EdgeState>;
   pendingApprovals: ApprovalRequest[];
   recentHandoffs: Envelope[];
   chatMessages: Record<UUID, ChatMessage[]>;
@@ -211,6 +159,7 @@ interface RunStore {
   appendAssistantThinkingDelta: (nodeId: string, delta: string, timestamp: ISO8601) => void;
   finalizeAssistantThinking: (nodeId: string, content: string, timestamp: ISO8601) => void;
   clearNodeMessages: (nodeId: string) => void;
+  finalizeNodeMessages: (nodeId: string, timestamp: ISO8601) => void;
 
   // Actions - Tool Events
   addToolEvent: (event: ToolEvent) => void;
@@ -285,6 +234,7 @@ const initialUIState: UIState = {
 export const useRunStore = create<RunStore>()(
   subscribeWithSelector((set, get) => ({
     run: null,
+    pendingEdges: {},
     pendingApprovals: [],
     recentHandoffs: [],
     chatMessages: {},
@@ -295,14 +245,35 @@ export const useRunStore = create<RunStore>()(
     ui: initialUIState,
 
     // Run actions
-    setRun: (run) => set({ run }),
+    setRun: (run) =>
+      set((state) => {
+        const pendingEdges = state.pendingEdges;
+        const pendingCount = Object.keys(pendingEdges).length;
+        if (pendingCount > 0) {
+          console.info('[store] merging pending edges into run:', { count: pendingCount, runId: run.id });
+        }
+        return {
+          run: pendingCount > 0 ? { ...run, edges: { ...pendingEdges, ...run.edges } } : run,
+          pendingEdges: {},
+        };
+      }),
     applyRunPatch: (patch) =>
       set((state) => {
         if (!state.run) {
           if (!patch.id) {
             return state;
           }
-          return { run: patch as RunState };
+          const pendingEdges = state.pendingEdges;
+          const pendingCount = Object.keys(pendingEdges).length;
+          if (pendingCount > 0) {
+            console.info('[store] merging pending edges into run patch:', { count: pendingCount, runId: patch.id });
+          }
+          return {
+            run: pendingCount > 0
+              ? { ...(patch as RunState), edges: { ...pendingEdges, ...(patch.edges ?? {}) } }
+              : (patch as RunState),
+            pendingEdges: {},
+          };
         }
         return {
           run: {
@@ -448,14 +419,18 @@ export const useRunStore = create<RunStore>()(
           ...edge,
           bidirectional: edge.bidirectional ?? true,
         };
+        if (!state.run) {
+          console.warn('[store] queued edge before run loaded', { edgeId: edge.id });
+          return {
+            pendingEdges: { ...state.pendingEdges, [edge.id]: normalizedEdge },
+          };
+        }
         return {
-          run: state.run
-            ? {
-              ...state.run,
-              edges: { ...state.run.edges, [edge.id]: normalizedEdge },
-              updatedAt: new Date().toISOString(),
-            }
-            : null,
+          run: {
+            ...state.run,
+            edges: { ...state.run.edges, [edge.id]: normalizedEdge },
+            updatedAt: new Date().toISOString(),
+          },
         };
       }),
 
@@ -796,6 +771,36 @@ export const useRunStore = create<RunStore>()(
         };
       }),
 
+    finalizeNodeMessages: (nodeId, timestamp) =>
+      set((state) => {
+        const messages = state.chatMessages[nodeId];
+        if (!messages) return state;
+
+        const needsFinalization = messages.some(
+          (m) => m.streaming || m.thinkingStreaming
+        );
+        if (!needsFinalization) return state;
+
+        const next = messages.map((m) => {
+          if (!m.streaming && !m.thinkingStreaming) return m;
+
+          return {
+            ...m,
+            streaming: false,
+            thinkingStreaming: false,
+            status: m.status ?? 'interrupted',
+            createdAt: timestamp,
+          };
+        });
+
+        return {
+          chatMessages: {
+            ...state.chatMessages,
+            [nodeId]: next,
+          },
+        };
+      }),
+
     clearNodeMessages: (nodeId) =>
       set((state) => {
         if (!state.chatMessages[nodeId]) {
@@ -843,6 +848,7 @@ export const useRunStore = create<RunStore>()(
 
     resetEventState: () =>
       set(() => ({
+        pendingEdges: {},
         pendingApprovals: [],
         recentHandoffs: [],
         chatMessages: {},
@@ -941,25 +947,12 @@ export const selectSelectedEdge = (state: RunStore) =>
     ? state.run.edges[state.ui.selectedEdgeId]
     : null;
 
-export type TimelineEvent =
-  | { type: 'message'; data: ChatMessage }
-  | { type: 'tool'; data: ToolEvent }
-  | { type: 'status'; data: TurnStatusEvent };
+export type TimelineEvent = TimelineItem<ChatMessage, ToolEvent, TurnStatusEvent>;
 
 export const selectNodeTimeline = (state: RunStore, nodeId: string): TimelineEvent[] => {
   const messages = state.chatMessages[nodeId] ?? EMPTY_CHAT_MESSAGES;
   const tools = state.toolEvents.filter((e) => e.nodeId === nodeId);
   const statuses = state.turnStatusEvents.filter((e) => e.nodeId === nodeId);
 
-  const timeline: TimelineEvent[] = [
-    ...messages.map((m) => ({ type: 'message' as const, data: m })),
-    ...tools.map((t) => ({ type: 'tool' as const, data: t })),
-    ...statuses.map((s) => ({ type: 'status' as const, data: s })),
-  ];
-
-  return timeline.sort((a, b) => {
-    const timeA = new Date(a.type === 'message' ? a.data.createdAt : a.data.timestamp).getTime();
-    const timeB = new Date(b.type === 'message' ? b.data.createdAt : b.data.timestamp).getTime();
-    return timeA - timeB;
-  });
+  return buildTimeline(messages, tools, statuses);
 };

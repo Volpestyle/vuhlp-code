@@ -1,4 +1,5 @@
 import type { EventEnvelope, UsageTotals, NodeState } from '@vuhlp/contracts';
+import { formatTurnSummary } from '@vuhlp/shared';
 import { useRunStore, type ToolEvent, type TurnStatusEvent, type NodeLogEntry } from '../stores/runStore';
 
 export type EventHandlingMode = 'live' | 'replay';
@@ -33,30 +34,6 @@ const addUsage = (current: UsageTotals | undefined, delta: UsageTotals): UsageTo
   completionTokens: (current?.completionTokens ?? 0) + delta.completionTokens,
   totalTokens: (current?.totalTokens ?? 0) + delta.totalTokens,
 });
-
-const formatTurnSummary = (status: TurnStatusEvent['status'], detail?: string) => {
-  if (detail && detail.trim().length > 0) {
-    return detail;
-  }
-  switch (status) {
-    case 'turn.started':
-      return 'turn started';
-    case 'waiting_for_model':
-      return 'waiting for model';
-    case 'tool.pending':
-      return 'tool pending';
-    case 'awaiting_approval':
-      return 'awaiting approval';
-    case 'turn.completed':
-      return 'turn completed';
-    case 'turn.interrupted':
-      return 'turn interrupted';
-    case 'turn.failed':
-      return 'turn failed';
-    default:
-      return 'turn update';
-  }
-};
 
 const hasNodeCoreFields = (patch: Partial<NodeState>): patch is Partial<NodeState> & {
   label: string;
@@ -127,6 +104,9 @@ export function applyEventToStore(event: EventEnvelope, options?: ApplyEventOpti
         } else {
           store.updateNode(event.nodeId, event.patch);
         }
+        if (event.patch.status && event.patch.status !== 'running') {
+          store.finalizeNodeMessages(event.nodeId, event.ts);
+        }
       }
       return true;
 
@@ -173,6 +153,9 @@ export function applyEventToStore(event: EventEnvelope, options?: ApplyEventOpti
           summary: event.summary,
           lastActivityAt: event.ts,
         });
+        if (event.status !== 'running') {
+          store.finalizeNodeMessages(event.nodeId, event.ts);
+        }
       }
       return true;
 
@@ -196,15 +179,17 @@ export function applyEventToStore(event: EventEnvelope, options?: ApplyEventOpti
     }
 
     case 'edge.created':
-      if (isLive) {
-        store.addEdge(event.edge);
+      if (!store.run) {
+        console.warn('[ws] edge created before run loaded', { eventId: event.id, edgeId: event.edge.id });
       }
+      store.addEdge(event.edge);
       return true;
 
     case 'edge.deleted':
-      if (isLive) {
-        store.removeEdge(event.edgeId);
+      if (!store.run) {
+        console.warn('[ws] edge deleted before run loaded', { eventId: event.id, edgeId: event.edgeId });
       }
+      store.removeEdge(event.edgeId);
       return true;
 
     case 'handoff.sent': {

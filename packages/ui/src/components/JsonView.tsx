@@ -1,38 +1,32 @@
-import { JsonView as JsonViewLite, allExpanded, collapseAllNested } from 'react-json-view-lite';
-import 'react-json-view-lite/dist/index.css';
+import type { ToolCall, ToolCompletedEvent } from '@vuhlp/contracts';
 import './JsonView.css';
 
 interface JsonViewProps {
-  data: object | unknown[];
-  shouldExpandNode?: (level: number, value: unknown, field: string | number | undefined) => boolean;
+  data: ToolCall['args'] | ToolCompletedEvent['result'];
 }
 
-const defaultShouldExpand = (level: number): boolean => level < 2;
+const formatJson = (data: ToolCall['args'] | ToolCompletedEvent['result']): { content: string; error?: string } => {
+  try {
+    const serialized = JSON.stringify(data, null, 2);
+    if (typeof serialized === 'string') {
+      return { content: serialized };
+    }
+    return { content: 'null' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to format JSON';
+    return { content: 'null', error: message };
+  }
+};
 
-export function JsonView({ data, shouldExpandNode = defaultShouldExpand }: JsonViewProps) {
+export function JsonView({ data }: JsonViewProps) {
+  const { content, error } = formatJson(data);
+  if (error) {
+    console.error('[json-view] failed to format JSON', { error, data });
+  }
   return (
-    <div className="json-view">
-      <JsonViewLite
-        data={data}
-        shouldExpandNode={shouldExpandNode}
-        style={{
-          container: 'json-view__container',
-          basicChildStyle: 'json-view__child',
-          label: 'json-view__label',
-          nullValue: 'json-view__null',
-          undefinedValue: 'json-view__undefined',
-          stringValue: 'json-view__string',
-          booleanValue: 'json-view__boolean',
-          numberValue: 'json-view__number',
-          otherValue: 'json-view__other',
-          punctuation: 'json-view__punctuation',
-          expandIcon: 'json-view__expand-icon',
-          collapseIcon: 'json-view__collapse-icon',
-          collapsedContent: 'json-view__collapsed-content',
-        }}
-      />
+    <div className={`json-view ${error ? 'json-view--error' : ''}`}>
+      {error && <span className="json-view__error">Unable to format JSON. See console for details.</span>}
+      <pre className="json-view__code">{content}</pre>
     </div>
   );
 }
-
-export { allExpanded, collapseAllNested };

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useMemo } from 'react';
 import { VisualNode, VisualEdge } from '../../types/graph';
 import * as PIXI from 'pixi.js';
 import { useRunStore } from '../../stores/runStore';
@@ -34,8 +34,6 @@ const getDistance = (p1: {x:number, y:number}, p2: {x:number, y:number}) => {
 };
 
 export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNode, onSelect, onContextMenu }) => {
-  const [labelPos, setLabelPos] = useState({ x: 0, y: 0 });
-
   const handlePointerDown = useCallback(
     (event: PIXI.FederatedPointerEvent) => {
       event.stopPropagation();
@@ -52,24 +50,9 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
   const lastHandoff = useRunStore((s) => s.ui.lastHandoffs?.[edge.id]);
   const [animationProgress, setAnimationProgress] = useState<number | null>(null);
 
-  PIXI.Ticker.shared.add((_ticker) => {
-    if (!lastHandoff) {
-      if (animationProgress !== null) setAnimationProgress(null);
-      return;
-    }
-    const now = Date.now();
-    const elapsed = now - lastHandoff.timestamp;
-    const duration = 2000; // 2 seconds
-    
-    if (elapsed < duration) {
-      setAnimationProgress(elapsed / duration);
-    } else if (animationProgress !== null) {
-      setAnimationProgress(null);
-    }
-  });
-
-  const draw = useCallback((g: PIXI.Graphics) => {
-    if (!sourceNode || !targetNode) return;
+  // Calculate geometry synchronously to ensure label position is frame-perfect
+  const geometry = useMemo(() => {
+    if (!sourceNode || !targetNode) return null;
 
     const sourcePorts = getPorts(sourceNode);
     const targetPorts = getPorts(targetNode);
@@ -106,21 +89,37 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
 
     // Calculate midpoint for label (Bezier at t=0.5)
     const t = 0.5;
-    const midX = Math.pow(1 - t, 3) * start.x + 
+    const labelX = Math.pow(1 - t, 3) * start.x + 
                  3 * Math.pow(1 - t, 2) * t * cp1.x + 
                  3 * (1 - t) * Math.pow(t, 2) * cp2.x + 
                  Math.pow(t, 3) * end.x;
-    const midY = Math.pow(1 - t, 3) * start.y + 
+    const labelY = Math.pow(1 - t, 3) * start.y + 
                  3 * Math.pow(1 - t, 2) * t * cp1.y + 
                  3 * (1 - t) * Math.pow(t, 2) * cp2.y + 
-                 3 * Math.pow(t, 3) * end.y; // Fix: last term is t^3 * end.y 
-                 // Note: formula in original code was correct, just checking.
-                 // Correct formula: (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t)t^2 P2 + t^3 P3
-                 // Original: Math.pow(t, 3) * end.y. OK.
-    
-    if (Math.abs(midX - labelPos.x) > 1 || Math.abs(midY - labelPos.y) > 1) {
-       setLabelPos({ x: midX, y: midY });
+                 3 * Math.pow(t, 3) * end.y;
+
+    return { start, end, cp1, cp2, labelX, labelY };
+  }, [sourceNode, targetNode]);
+
+  PIXI.Ticker.shared.add((_ticker) => {
+    if (!lastHandoff) {
+      if (animationProgress !== null) setAnimationProgress(null);
+      return;
     }
+    const now = Date.now();
+    const elapsed = now - lastHandoff.timestamp;
+    const duration = 2000; // 2 seconds
+    
+    if (elapsed < duration) {
+      setAnimationProgress(elapsed / duration);
+    } else if (animationProgress !== null) {
+      setAnimationProgress(null);
+    }
+  });
+
+  const draw = useCallback((g: PIXI.Graphics) => {
+    if (!geometry) return;
+    const { start, end, cp1, cp2 } = geometry;
 
     g.clear();
     
@@ -176,7 +175,7 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
     }
 
     // Handoff Animation
-    if (animationProgress !== null && lastHandoff) {
+    if (animationProgress !== null && lastHandoff && targetNode) {
       // Determine direction: if sender is my targetNode, we reverse
       const isReverse = lastHandoff.fromNodeId === targetNode.id;
       const t = isReverse ? 1 - animationProgress : animationProgress;
@@ -188,7 +187,7 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
       const packetY = Math.pow(1 - t, 3) * start.y + 
                    3 * Math.pow(1 - t, 2) * t * cp1.y + 
                    3 * (1 - t) * Math.pow(t, 2) * cp2.y + 
-                   Math.pow(t, 3) * end.y;
+                   3 * Math.pow(t, 3) * end.y;
 
       // Glow (Outer)
       g.circle(packetX, packetY, 8);
@@ -210,25 +209,30 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
       maxX - minX + hitPadding * 2,
       maxY - minY + hitPadding * 2
     );
-  }, [sourceNode, targetNode, edge.bidirectional, edge.selected, labelPos.x, labelPos.y, animationProgress, lastHandoff]);
+  }, [geometry, edge, animationProgress, lastHandoff, targetNode]);
+
+  if (!geometry) return null;
 
   return (
-    <container>
-      <graphics draw={draw} eventMode="static" cursor="pointer" onPointerDown={handlePointerDown} />
+    <pixiContainer>
+      <pixiGraphics draw={draw} eventMode="static" cursor="pointer" onPointerDown={handlePointerDown} />
       <pixiText
         text={edge.label}
-        x={labelPos.x}
-        y={labelPos.y}
+        x={geometry.labelX}
+        y={geometry.labelY}
         anchor={0.5}
+        resolution={Math.max(2, window.devicePixelRatio)}
         style={new PIXI.TextStyle({
-          fontFamily: 'Arial',
-          fontSize: 10,
-          fill: edge.selected ? 0x007bff : 0x666666,
+          fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif',
+          fontSize: 12,
+          fontWeight: '500',
+          fill: edge.selected ? 0x007bff : 0xaaaaaa,
           align: 'center',
-          stroke: { color: 0xffffff, width: 2 }
+          stroke: { color: 0x1a1a1a, width: 3 },
+          letterSpacing: 0.3
         })}
         eventMode="none"
       />
-    </container>
+    </pixiContainer>
   );
 };

@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Application, extend } from '@pixi/react';
-import { Container, Graphics, Text } from 'pixi.js';
 import * as PIXI from 'pixi.js';
 import { Plus, Minus } from 'iconoir-react';
 import { useGraphStore } from '../../stores/graph-store';
@@ -14,13 +13,31 @@ import { NodeFocusOverlay } from './NodeFocusOverlay';
 import { GraphMinimap } from './GraphMinimap';
 import './GraphCanvas.css';
 
-// Register PixiJS components
-extend({ Container, Graphics, PixiText: Text });
+const pixiComponentsReady = {
+  container: Boolean(PIXI.Container),
+  graphics: Boolean(PIXI.Graphics),
+  text: Boolean(PIXI.Text),
+};
+
+if (!pixiComponentsReady.container || !pixiComponentsReady.graphics || !pixiComponentsReady.text) {
+  console.error('[graph] missing Pixi components for @pixi/react', pixiComponentsReady);
+} else {
+  extend({
+    Container: PIXI.Container,
+    Graphics: PIXI.Graphics,
+    Text: PIXI.Text,
+  });
+}
 
 type EdgePreview = {
   fromNodeId: string;
   fromPortIndex: number;
   to: { x: number; y: number };
+};
+
+type ClosestPort = {
+  nodeId: string;
+  portIndex: number;
 };
 
 interface GraphCanvasProps {
@@ -41,10 +58,10 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
   const edgeDragRef = useRef<{ fromNodeId: string; fromPortIndex: number } | null>(null);
   const offsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [dimensions, setDimensions] = useState({ width: window.innerWidth, height: window.innerHeight });
-  const canvasRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef(viewport);
-  const nodesRef = useRef(nodes);
-  const edgesRef = useRef(edges);
+  const nodesRef = useRef<VisualNode[]>(nodes);
+  const edgesRef = useRef<VisualEdge[]>(edges);
   const previousViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
   const animationRef = useRef<number | null>(null);
   const lastFocusStateRef = useRef<{ viewMode: string; nodeId: string | null; width: number; height: number } | null>(null);
@@ -206,21 +223,22 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
   );
 
   const findClosestPort = useCallback(
-    (point: { x: number; y: number }, ignorePort?: { nodeId: string; index: number }) => {
-      let closest: { nodeId: string; portIndex: number; distance: number } | null = null;
+    (point: { x: number; y: number }, ignorePort?: { nodeId: string; index: number }): ClosestPort | null => {
+      let closest: ClosestPort | null = null;
+      let closestDistance = Number.POSITIVE_INFINITY;
       nodesRef.current.forEach((node) => {
         for (const port of getNodePorts(node)) {
           if (ignorePort && node.id === ignorePort.nodeId && port.index === ignorePort.index) continue;
           const dx = point.x - port.x;
           const dy = point.y - port.y;
           const distance = Math.hypot(dx, dy);
-          if (!closest || distance < closest.distance) {
-            closest = { nodeId: node.id, portIndex: port.index, distance };
+          if (distance < closestDistance) {
+            closestDistance = distance;
+            closest = { nodeId: node.id, portIndex: port.index };
           }
         }
       });
-      if (!closest) return null;
-      if (closest.distance > EDGE_SNAP_RADIUS) return null;
+      if (!closest || closestDistance > EDGE_SNAP_RADIUS) return null;
       return closest;
     },
     [getNodePorts, EDGE_SNAP_RADIUS]
@@ -462,9 +480,10 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     const handleWheel = (e: WheelEvent) => {
       if (!canvasRef.current) return;
       if (viewMode === 'fullscreen') return;
-      const target = e.target as Element | null;
-      if (target?.closest('[data-graph-zoom-block]')) return;
-      if (target && !canvasRef.current.contains(target)) return;
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('[data-graph-zoom-block]')) return;
+      if (!canvasRef.current.contains(target)) return;
       const point = getCanvasPoint(e);
       if (!point) return;
       e.preventDefault();
@@ -477,7 +496,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       const newX = point.x - (point.x - viewportRef.current.x) * (newZoom / viewportRef.current.zoom);
       const newY = point.y - (point.y - viewportRef.current.y) * (newZoom / viewportRef.current.zoom);
 
-      setViewport({ x: newX, y: newY, zoom: newZoom }, viewMode !== 'fullscreen');
+      setViewport({ x: newX, y: newY, zoom: newZoom }, true);
     };
 
     window.addEventListener('wheel', handleWheel, { passive: false });
@@ -568,15 +587,15 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
         antialias={true}
         eventMode="static"
       >
-        <graphics
+        <pixiGraphics
           draw={drawBackground}
           eventMode="static"
           onPointerDown={onCanvasPointerDown}
         />
-        <container 
+        <pixiContainer 
           x={viewport.x} 
           y={viewport.y} 
-          scale={viewport.zoom} // V8 scale can take single number? Only if it accepts it. Usually {x, y}
+          scale={{ x: viewport.zoom, y: viewport.zoom }}
         >
           {/* Draw Edges first */}
           {edges.map(edge => {
@@ -597,10 +616,10 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
             return null;
           })}
 
-          {edgePreview && <graphics draw={drawEdgePreview} eventMode="none" />}
+          {edgePreview && <pixiGraphics draw={drawEdgePreview} eventMode="none" />}
 
           {/* Nodes are rendered in the DOM layer for richer interaction */}
-        </container>
+        </pixiContainer>
       </Application>
       <GraphDomNodes
         nodes={nodes}

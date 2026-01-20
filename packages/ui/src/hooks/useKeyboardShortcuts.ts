@@ -11,7 +11,7 @@
 
 import { useEffect, useCallback } from 'react';
 import { useRunStore } from '../stores/runStore';
-import { createNode, deleteEdge, deleteNode, updateNode } from '../lib/api';
+import { createNode, deleteEdge, deleteNode, startNodeProcess, stopNodeProcess } from '../lib/api';
 
 export function useKeyboardShortcuts() {
   const viewMode = useRunStore((s) => s.ui.viewMode);
@@ -69,7 +69,7 @@ export function useKeyboardShortcuts() {
           roleTemplate: 'implementer',
           provider: 'claude',
           capabilities: {
-            spawnNodes: false,
+            edgeManagement: 'none',
             writeCode: true,
             writeDocs: true,
             runCommands: true,
@@ -158,9 +158,11 @@ export function useKeyboardShortcuts() {
       if (key === 'enter' && selectedNodeId) {
         const node = run?.nodes[selectedNodeId];
         if (run && node) {
-          const nextStatus = node.status === 'blocked' ? 'idle' : 'blocked';
-          void updateNode(run.id, selectedNodeId, { status: nextStatus, summary: nextStatus }).catch((error) => {
-            console.error('[shortcuts] failed to toggle node status', error);
+          const connectionStatus = node.connection?.status ?? 'disconnected';
+          const action =
+            connectionStatus === 'disconnected' ? startNodeProcess : stopNodeProcess;
+          void action(run.id, selectedNodeId).catch((error) => {
+            console.error('[shortcuts] failed to toggle node process', error);
           });
         } else {
           toggleNodeRunning(selectedNodeId);

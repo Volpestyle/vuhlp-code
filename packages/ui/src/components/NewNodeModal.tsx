@@ -1,40 +1,34 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { ProviderName, NodeCapabilities, NodePermissions } from '@vuhlp/contracts';
+import {
+  DEFAULT_CAPABILITIES,
+  DEFAULT_PERMISSIONS,
+  EDGE_MANAGEMENT_OPTIONS,
+  PERMISSIONS_MODE_OPTIONS,
+  PROVIDER_OPTIONS,
+  getEdgeManagementDefaults,
+  parseEdgeManagement,
+  parsePermissionsMode,
+  parseProviderName,
+} from '@vuhlp/shared';
 import { useRunStore } from '../stores/runStore';
 import { createNode } from '../lib/api';
 import { Plus } from 'iconoir-react';
 import './NewNodeModal.css';
 
-const PROVIDER_OPTIONS: ProviderName[] = ['claude', 'codex', 'gemini', 'custom'];
-const PERMISSIONS_MODE_OPTIONS: Array<NodePermissions['cliPermissionsMode']> = ['skip', 'gated'];
-const ORCHESTRATOR_ROLE = 'orchestrator';
-
-const DEFAULT_CAPABILITIES: NodeCapabilities = {
-  spawnNodes: false,
-  writeCode: true,
-  writeDocs: true,
-  runCommands: true,
-  delegateOnly: false,
-};
-
-const DEFAULT_PERMISSIONS: NodePermissions = {
-  cliPermissionsMode: 'skip',
-  agentManagementRequiresApproval: true,
-};
-
-const getSpawnDefaults = (roleTemplate: string) => {
-  const isOrchestrator = roleTemplate.trim().toLowerCase() === ORCHESTRATOR_ROLE;
-  return {
-    spawnNodes: isOrchestrator,
-    agentManagementRequiresApproval: !isOrchestrator,
-  };
-};
-
 interface NewNodeModalProps {
   open: boolean;
   onClose: () => void;
 }
+
+type BooleanCapability = Exclude<keyof NodeCapabilities, 'edgeManagement'>;
+const BOOLEAN_CAPABILITIES: BooleanCapability[] = [
+  'writeCode',
+  'writeDocs',
+  'runCommands',
+  'delegateOnly',
+];
 
 export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
   const run = useRunStore((s) => s.run);
@@ -46,7 +40,7 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
   const [provider, setProvider] = useState<ProviderName>('claude');
   const [capabilities, setCapabilities] = useState<NodeCapabilities>(DEFAULT_CAPABILITIES);
   const [permissions, setPermissions] = useState<NodePermissions>(DEFAULT_PERMISSIONS);
-  const [spawnNodesTouched, setSpawnNodesTouched] = useState(false);
+  const [edgeManagementTouched, setEdgeManagementTouched] = useState(false);
   const [agentManagementApprovalTouched, setAgentManagementApprovalTouched] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,16 +52,16 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
     setProvider('claude');
     setCapabilities(DEFAULT_CAPABILITIES);
     setPermissions(DEFAULT_PERMISSIONS);
-    setSpawnNodesTouched(false);
+    setEdgeManagementTouched(false);
     setAgentManagementApprovalTouched(false);
     setError(null);
   }, [open, nodeCount]);
 
   useEffect(() => {
     if (!open) return;
-    const defaults = getSpawnDefaults(roleTemplate);
-    if (!spawnNodesTouched) {
-      setCapabilities((prev) => ({ ...prev, spawnNodes: defaults.spawnNodes }));
+    const defaults = getEdgeManagementDefaults(roleTemplate);
+    if (!edgeManagementTouched) {
+      setCapabilities((prev) => ({ ...prev, edgeManagement: defaults.edgeManagement }));
     }
     if (!agentManagementApprovalTouched) {
       setPermissions((prev) => ({
@@ -75,7 +69,7 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
         agentManagementRequiresApproval: defaults.agentManagementRequiresApproval,
       }));
     }
-  }, [open, roleTemplate, spawnNodesTouched, agentManagementApprovalTouched]);
+  }, [open, roleTemplate, edgeManagementTouched, agentManagementApprovalTouched]);
 
   if (!open) return null;
 
@@ -151,7 +145,15 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
             <select
               className="form-select"
               value={provider}
-              onChange={(event) => setProvider(event.target.value as ProviderName)}
+              onChange={(event) => {
+                const nextProvider = parseProviderName(event.target.value);
+                if (!nextProvider) {
+                  console.warn('[NewNodeModal] unsupported provider', event.target.value);
+                  setError('Unsupported provider selected.');
+                  return;
+                }
+                setProvider(nextProvider);
+              }}
             >
               {PROVIDER_OPTIONS.map((option) => (
                 <option key={option} value={option}>
@@ -185,12 +187,18 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
               <select
                 className="form-select"
                 value={permissions.cliPermissionsMode}
-                onChange={(event) =>
+                onChange={(event) => {
+                  const mode = parsePermissionsMode(event.target.value);
+                  if (!mode) {
+                    console.warn('[NewNodeModal] unsupported permissions mode', event.target.value);
+                    setError('Unsupported CLI permissions mode selected.');
+                    return;
+                  }
                   setPermissions((prev) => ({
                     ...prev,
-                    cliPermissionsMode: event.target.value as NodePermissions['cliPermissionsMode'],
-                  }))
-                }
+                    cliPermissionsMode: mode,
+                  }));
+                }}
                 disabled={isSubmitting}
               >
                 {PERMISSIONS_MODE_OPTIONS.map((mode) => (
@@ -204,21 +212,40 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
 
           <div className="new-node-modal__section">
             <span className="new-node-modal__section-title">Capabilities</span>
-            {Object.entries(capabilities).map(([key, value]) => (
+            <div className="form-group">
+              <label className="form-label">Edge Management</label>
+              <select
+                className="form-select"
+                value={capabilities.edgeManagement}
+                onChange={(event) => {
+                  const nextValue = parseEdgeManagement(event.target.value);
+                  if (!nextValue) {
+                    console.warn('[NewNodeModal] unsupported edge management', event.target.value);
+                    setError('Unsupported edge management selected.');
+                    return;
+                  }
+                  setEdgeManagementTouched(true);
+                  setCapabilities((prev) => ({ ...prev, edgeManagement: nextValue }));
+                }}
+                disabled={isSubmitting}
+              >
+                {EDGE_MANAGEMENT_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {BOOLEAN_CAPABILITIES.map((key) => (
               <label key={key} className="new-node-modal__toggle">
                 <input
                   type="checkbox"
-                  checked={value}
+                  checked={capabilities[key]}
                   onChange={() =>
-                    setCapabilities((prev) => {
-                      if (key === 'spawnNodes') {
-                        setSpawnNodesTouched(true);
-                      }
-                      return {
-                        ...prev,
-                        [key]: !prev[key as keyof NodeCapabilities],
-                      };
-                    })
+                    setCapabilities((prev) => ({
+                      ...prev,
+                      [key]: !prev[key],
+                    }))
                   }
                   disabled={isSubmitting}
                 />

@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { listDirectory } from '../lib/api';
 import type { FileEntry } from '@vuhlp/contracts';
-import { Folder, NavArrowUp, Page } from 'iconoir-react';
+import { Folder, NavArrowUp } from 'iconoir-react';
 import './FolderPicker.css';
 
 interface FolderPickerProps {

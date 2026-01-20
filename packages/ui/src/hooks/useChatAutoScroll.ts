@@ -1,25 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import type { RefObject } from 'react';
 import type { TimelineEvent } from '../stores/runStore';
+import { buildTimelineUpdateKey, useAutoScrollState } from '@vuhlp/shared';
 
 interface UseChatAutoScrollOptions {
-  scrollRef: RefObject<HTMLElement>;
+  scrollRef: RefObject<HTMLElement | null>;
   timeline: TimelineEvent[];
   enabled?: boolean;
   threshold?: number;
   updateKey?: string;
   resetKey?: string;
 }
-
-const buildTimelineUpdateKey = (timeline: TimelineEvent[]): string => {
-  const lastItem = timeline[timeline.length - 1];
-  if (!lastItem) return '';
-  if (lastItem.type === 'message') {
-    const thinkingLength = lastItem.data.thinking?.length ?? 0;
-    return `${lastItem.data.id}-${lastItem.data.createdAt}-${lastItem.data.content.length}-${thinkingLength}`;
-  }
-  return `${lastItem.data.id}-${lastItem.data.timestamp}`;
-};
 
 export function useChatAutoScroll({
   scrollRef,
@@ -29,18 +20,29 @@ export function useChatAutoScroll({
   updateKey,
   resetKey,
 }: UseChatAutoScrollOptions): void {
-  const [isPinned, setIsPinned] = useState(true);
   const timelineKey = useMemo(() => buildTimelineUpdateKey(timeline), [timeline]);
   const combinedKey = useMemo(
     () => `${timelineKey}::${updateKey ?? ''}`,
     [timelineKey, updateKey]
   );
 
-  useEffect(() => {
-    if (resetKey !== undefined) {
-      setIsPinned(true);
+  const scrollToEnd = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    if (typeof element.scrollTo === 'function') {
+      element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    } else {
+      element.scrollTop = element.scrollHeight;
     }
-  }, [resetKey]);
+  }, [scrollRef]);
+
+  const { updatePinned } = useAutoScrollState({
+    enabled,
+    threshold,
+    updateKey: combinedKey,
+    resetKey,
+    scrollToEnd,
+  });
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -49,22 +51,11 @@ export function useChatAutoScroll({
     const handleScroll = () => {
       const distanceFromBottom =
         element.scrollHeight - element.scrollTop - element.clientHeight;
-      setIsPinned(distanceFromBottom <= threshold);
+      updatePinned(distanceFromBottom);
     };
 
     handleScroll();
     element.addEventListener('scroll', handleScroll, { passive: true });
     return () => element.removeEventListener('scroll', handleScroll);
-  }, [scrollRef, threshold]);
-
-  useEffect(() => {
-    if (!enabled || !isPinned) return;
-    const element = scrollRef.current;
-    if (!element) return;
-    if (typeof element.scrollTo === 'function') {
-      element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
-    } else {
-      element.scrollTop = element.scrollHeight;
-    }
-  }, [enabled, isPinned, scrollRef, combinedKey]);
+  }, [scrollRef, updatePinned]);
 }

@@ -12,6 +12,7 @@ import type { NodeState } from '@vuhlp/contracts';
 import { useRunStore } from '../stores/runStore';
 import { StatusBadge } from './StatusBadge';
 import { ProviderBadge } from './ProviderBadge';
+import { formatRelativeTime } from '@vuhlp/shared';
 import './NodeCard.css';
 
 interface NodeCardProps {
@@ -24,17 +25,8 @@ export function NodeCard({ node, collapsed = false, interactive = true }: NodeCa
   const selectNode = useRunStore((s) => s.selectNode);
   const selectedNodeId = useRunStore((s) => s.ui.selectedNodeId);
   const isSelected = selectedNodeId === node.id;
-
-  const formatTime = (iso: string) => {
-    const date = new Date(iso);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffSec = Math.floor(diffMs / 1000);
-
-    if (diffSec < 60) return `${diffSec}s ago`;
-    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-    return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-  };
+  const connectionStatus = node.connection?.status ?? 'disconnected';
+  const isStreaming = Boolean(node.connection?.streaming);
 
   const handleClick = () => {
     if (!interactive) return;
@@ -52,6 +44,14 @@ export function NodeCard({ node, collapsed = false, interactive = true }: NodeCa
         <div className="node-card__collapsed-header">
           <ProviderBadge provider={node.provider} size="sm" />
           <span className="node-card__collapsed-label">{node.label}</span>
+          <span
+            className={`node-card__connection-inline node-card__connection--${connectionStatus} ${
+              isStreaming ? 'node-card__connection--streaming' : ''
+            }`}
+            title={`Process ${connectionStatus}`}
+          >
+            <span className="node-card__connection-dot" />
+          </span>
           <StatusBadge status={node.status} size="sm" />
         </div>
       </div>
@@ -80,15 +80,18 @@ export function NodeCard({ node, collapsed = false, interactive = true }: NodeCa
       {/* Footer */}
       <div className="node-card__footer">
         <StatusBadge status={node.status} size="sm" />
-        <span className="node-card__time">{formatTime(node.lastActivityAt)}</span>
+        <span className="node-card__time">{formatRelativeTime(node.lastActivityAt)}</span>
       </div>
 
       {/* Connection indicator */}
-      {node.connection?.streaming && (
-        <div className="node-card__streaming">
-          <span className="node-card__streaming-dot" />
-        </div>
-      )}
+      <div
+        className={`node-card__connection node-card__connection--${connectionStatus} ${
+          isStreaming ? 'node-card__connection--streaming' : ''
+        }`}
+        title={`Process ${connectionStatus}`}
+      >
+        <span className="node-card__connection-dot" />
+      </div>
 
       {/* Inbox count */}
       {node.inboxCount !== undefined && node.inboxCount > 0 && (
