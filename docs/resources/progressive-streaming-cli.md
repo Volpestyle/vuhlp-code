@@ -30,13 +30,15 @@ Example:
 
 gemini -p "Say hello" --output-format stream-json
 
+Note: Upstream Gemini CLI does not accept stream-json input. vuhlp passes `--input-format stream-json` by default, so you must use a fork that supports stream-json stdin (or switch to API transport). Add `--core-tools none` if you want Gemini CLI to disable native tools; omit it to let Gemini CLI run its native tools while vuhlp observes tool_use/tool_result events.
+
 Codex CLI (OpenAI)
 
-Codex non-interactive mode is codex exec. With --json, stdout becomes a JSON Lines (JSONL) stream of events; docs list event types and show sample lines including item.completed events with item.type:"agent_message" and item.text.  ￼
+Vuhlp uses a local Codex fork with a `codex vuhlp` subcommand that accepts JSONL stdin and emits vuhlp JSONL events on stdout. This keeps stdin open for multi-turn sessions.
 
 Example:
 
-codex exec --json "Say hello"
+printf '{\"kind\":\"prompt\",\"prompt\":\"Say hello\",\"promptKind\":\"full\"}\\n' | codex vuhlp
 
 
 ⸻
@@ -129,8 +131,8 @@ function buildCliCommand(provider: string, prompt: string) {
     case "codex":
       return {
         cmd: "codex",
-        args: ["exec", "--json", "-"],
-        stdinText: prompt,
+        args: ["vuhlp"],
+        stdinText: JSON.stringify({ kind: "prompt", prompt, promptKind: "full" }) + "\\n",
       };
     default:
       throw new Error(`Unknown provider: ${provider}`);
@@ -236,12 +238,14 @@ function extractGeminiDelta(evt: any): string | null {
 }
 
 Codex CLI JSONL
-	•	Watch for item.* events; when you get an item.completed with item.type:"agent_message", the text is in item.text.  ￼
+	•	Use vuhlp events: message.assistant.delta for streaming and message.assistant.final for the final payload.
 
-function extractCodexText(evt: any): string | null {
-  if (evt?.type === "item.completed" && evt?.item?.type === "agent_message") {
-    const t = evt?.item?.text;
-    return typeof t === "string" ? t : null;
+function extractCodexDelta(evt): string | null {
+  if (evt?.type === "message.assistant.delta" && typeof evt?.delta === "string") {
+    return evt.delta;
+  }
+  if (evt?.type === "message.assistant.final" && typeof evt?.content === "string") {
+    return evt.content;
   }
   return null;
 }
@@ -295,7 +299,7 @@ function Chat() {
         const delta =
           extractClaudeDelta(evt) ??
           extractGeminiDelta(evt) ??
-          extractCodexText(evt);
+          extractCodexDelta(evt);
 
         if (delta) append(delta);
         if (evt.type === "done") setLoading(false);

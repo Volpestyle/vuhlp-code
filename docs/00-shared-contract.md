@@ -51,7 +51,7 @@ Event logs are append-only JSONL files, ordered by write time.
   "summary": "short live status",
   "lastActivityAt": "2026-01-01T00:00:00Z",
   "capabilities": {
-    "spawnNodes": false,
+    "edgeManagement": "none",
     "writeCode": true,
     "writeDocs": true,
     "runCommands": true,

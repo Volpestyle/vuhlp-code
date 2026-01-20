@@ -3,7 +3,7 @@
 This is a short recommendation for the optimal stack to build vuhlp from scratch.
 
 ## Recommended default
-**Daemon:** Node.js 20/22 + TypeScript
+**Daemon:** Node.js 25 + TypeScript
 - Best fit for CLI process spawning and streaming output parsing.
 - Fast iteration for runtime + provider adapters.
 

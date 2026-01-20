@@ -52,7 +52,7 @@ The inspector must show, per node:
 - Artifacts list with quick preview.
 - Tool usage events.
 - Connection properties (edges + labels).
-- Controls: interrupt, queue message, reset context.
+- Controls: start/stop process, pause running turn (interrupt), queue message, reset context.
 - Typing `/new` or `/clear` in chat triggers reset context (clears chat + starts a fresh session).
 
 ## Node card requirements

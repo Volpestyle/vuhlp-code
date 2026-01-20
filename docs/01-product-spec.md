@@ -60,6 +60,7 @@ Workspace / Repo <---------------- Event + Artifact Store
 ## Functional requirements (high-level)
 1) Multi-provider orchestration
 - Support multiple CLI providers with session continuity.
+- Prefer true stateful CLI sessions (long-lived process per node) for Claude Code, Codex (local fork via `codex vuhlp`), and Gemini (only when using a fork with stdin streaming) to preserve runtime state.
 - Unified event model for messages, tools, diffs, and approvals.
 
 2) Graph workflow builder

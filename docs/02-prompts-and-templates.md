@@ -107,7 +107,7 @@ Each template should include a small, structured preamble block at the top:
 [template]
 name = "orchestrator"
 version = "1"
-capabilities = ["spawn_nodes", "delegate", "review_diffs"]
+capabilities = ["edge_management_all", "delegate", "review_diffs"]
 constraints = ["log_decisions", "avoid_unlogged_edits"]
 ```
 
@@ -115,18 +115,19 @@ This allows the UI and runtime to parse intent and show capabilities clearly.
 
 ## Capability gating (opt-in)
 Spawning nodes and using high-risk tools should be opt-in per node. A node can only spawn other nodes if:
-- The template declares the capability.
+- The template declares edge-management scope (recommended: `edge_management_all` for orchestrators).
 - The node settings allow it.
 - The user approves (required for all non-orchestrator nodes; optional for orchestrator by policy).
 
 ## CLI tool protocol (native + JSON)
 CLI transports support tool calling in two ways:
-- **Native tools** (preferred when available): Claude CLI Task/Bash, Gemini/Codex tool_use events. vuhlp maps these to vuhlp tools (Task -> spawn_node, Bash -> command).
+- **Native tools** (preferred when available): Provider-native tool_use events. Claude, Codex, and Gemini always execute their own native tools; other CLIs default to vuhlp execution and can be toggled with `VUHLP_<PROVIDER>_NATIVE_TOOLS=provider|vuhlp`.
 - **tool_call JSON**: emit a single-line JSON object in your response. vuhlp parses the line, executes the tool, and emits tool events for visibility. This is supported alongside streaming (stream-json) so you can keep progressive output.
 
 Never use Bash to emit tool_call JSON. Emit the JSON directly in your assistant response.
 Bash output containing tool_call JSON is treated as an error.
-Only use spawn_node/create_edge (Task) when Task Payload shows spawnNodes=true.
+Only use spawn_node when Task Payload shows edgeManagement=all.
+Only use create_edge when Task Payload shows edgeManagement=all or edgeManagement=self (self must be one endpoint).
 
 ```
 {"tool_call":{"id":"uuid","name":"spawn_node","args":{"label":"Docs Agent","roleTemplate":"planner"}}}

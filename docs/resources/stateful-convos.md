@@ -14,9 +14,13 @@ Cons
 	•	WebSockets are usually required for multi-turn interactivity
 
 Vuhlp note:
-- stream-json CLIs are stateless by default; set `VUHLP_<PROVIDER>_STATEFUL_STREAMING=1` to keep them alive between turns.
-- This only works if the CLI accepts multiple prompts on stdin and emits `message_end`/`message_stop` per turn.
+- stream-json/jsonl CLIs are stateful by default (resume + replay); set `VUHLP_<PROVIDER>_STATEFUL_STREAMING=0` to force stateless execution (not supported for Claude or Codex CLI).
+- Claude CLI uses stream-json input by default, so stdin stays open between turns.
+- Codex CLI uses jsonl input via the local fork (`codex vuhlp`), so stdin stays open between turns.
+- stream-json stdin is closed after each prompt for other CLIs unless they support multiple prompts on stdin. This avoids hangs for CLIs that wait on EOF.
+- True long-lived stdin sessions require a CLI (or wrapper) that accepts multi-turn stdin (jsonl-compatible) and emits an explicit turn boundary (e.g., `message_end`/`message_stop` or `message.assistant.final`).
 - The `raw` protocol remains one-shot.
+- On disconnect, vuhlp forces a full prompt and (when resume args are unset) replays the last N turns (default 4, override with `VUHLP_<PROVIDER>_REPLAY_TURNS`).
 
 When to choose it: if you want the user to keep chatting for minutes/hours and the agent might run tools / browse repo / maintain working state.
 
@@ -32,14 +36,16 @@ Each user turn is a new HTTP request:
 
 Vuhlp note:
 - Use `VUHLP_<PROVIDER>_RESUME_ARGS="--continue"` (or provider-specific flags) to enable per-turn resume.
-- If `VUHLP_<PROVIDER>_RESUME_ARGS` is unset, vuhlp defaults to `--continue` for Claude and no resume args for other providers.
+- If `VUHLP_<PROVIDER>_RESUME_ARGS` is unset, vuhlp runs without resume args.
+- Claude CLI stream-json stdin mode ignores resume args (the process stays alive instead).
 - Optional fallback: set `VUHLP_<PROVIDER>_REPLAY_TURNS` to replay the last N turns into the prompt when resume args are unset.
 
 This is still stateful as long as the CLI supports resuming the same conversation thread.
 
 Codex CLI
 
-Codex explicitly supports resuming an interactive session: codex resume (by ID or “most recent”).  ￼
+Vuhlp uses the local Codex fork in `${VUHLP_APP_ROOT}/packages/providers/codex` and runs `codex vuhlp` (JSONL stdin/stdout). This keeps stdin open for true stateful sessions.
+Upstream `codex exec --json` remains one-shot and is not used by vuhlp.
 
 Claude Code
 
@@ -48,8 +54,11 @@ Caveat: there have been versions where --resume behavior was buggy/ignored, so y
 
 Gemini CLI
 
-Gemini CLI added automatic session management (Dec 2025), saving history and letting you resume later.  ￼
-(There’s also community discussion/commands around session management.)  ￼
+Upstream Gemini CLI does not expose a stream-json input format; expect one-shot turns with resume support. vuhlp passes `--input-format stream-json` by default, so you must use a fork that supports stream-json stdin (point `VUHLP_GEMINI_COMMAND` to that local binary) or switch to API transport. Add `--core-tools none` if you want Gemini CLI to disable native tools; omit it to let Gemini CLI run its native tools while vuhlp observes tool_use/tool_result events.
+
+Gemini stream-json stdin (fork)
+	•	{"type":"message","role":"user","content":"...","turn_id":"optional"}
+	•	{"type":"session.end","reason":"optional"}
 
 Pros
 	•	Much easier infra than long-lived processes

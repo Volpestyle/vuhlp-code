@@ -118,7 +118,7 @@ Context packs are compact, structured bundles to avoid bloated prompts.
 - Users can **interrupt** a node (pause current execution and inject a message).\n+- Users can **queue** a message (deliver it to the inbox for the next turn).\n+- Interrupts are explicit and should be visible in the UI and event log.
 
 ## Spawn command routing
-A spawn request is a **payload**, not an instruction to auto-create nodes. The runtime only spawns after approval and only if the node has `spawnNodes` enabled.
+A spawn request is a **payload**, not an instruction to auto-create nodes. The runtime only spawns after approval and only if the node has `edgeManagement = "all"` enabled.
 
 ## Waiting and synchronization
 There are no join nodes. Fan-in and waiting are orchestrator-managed:
