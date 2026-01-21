@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, FlatList, Pressable, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, FlatList, Pressable, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
 import type { RunState } from '@vuhlp/contracts';
 import { api } from '@/lib/api';
 import { Plus } from 'iconoir-react-native';
 import { colors, getStatusColor, fontFamily, fontSize, radius, spacing } from '@/lib/theme';
 import { NewSessionModal } from '@/components/NewSessionModal';
+import { PageLoader } from '@/components/PageLoader';
 
 export default function SessionsScreen() {
   const router = useRouter();
@@ -56,60 +57,11 @@ export default function SessionsScreen() {
   }, [router]);
 
   if (loading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={colors.textMuted} />
-      </View>
-    );
+    return <PageLoader />;
   }
 
   if (error) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.center}>
-          <Text style={styles.error}>{error}</Text>
-          <Text style={styles.hint}>Check that the daemon is running</Text>
-        </View>
-        {/* Still show FAB to create session */}
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={handleOpenNewSessionModal}
-          activeOpacity={0.8}
-        >
-          <Plus width={18} height={18} color={colors.bgPrimary} strokeWidth={2.5} />
-          <Text style={styles.fabLabel}>New Session</Text>
-        </TouchableOpacity>
-        <NewSessionModal
-          visible={newSessionModalVisible}
-          onClose={handleCloseNewSessionModal}
-          onSuccess={handleSessionCreated}
-        />
-      </View>
-    );
-  }
-
-  if (sessions.length === 0) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.center}>
-          <Text style={styles.empty}>No sessions yet</Text>
-          <Text style={styles.hint}>Create a session to get started</Text>
-        </View>
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={handleOpenNewSessionModal}
-          activeOpacity={0.8}
-        >
-          <Plus width={18} height={18} color={colors.bgPrimary} strokeWidth={2.5} />
-          <Text style={styles.fabLabel}>New Session</Text>
-        </TouchableOpacity>
-        <NewSessionModal
-          visible={newSessionModalVisible}
-          onClose={handleCloseNewSessionModal}
-          onSuccess={handleSessionCreated}
-        />
-      </View>
-    );
+    return <PageLoader error={error} onRetry={onRefresh} />;
   }
 
   return (
@@ -119,7 +71,7 @@ export default function SessionsScreen() {
         onRefresh={onRefresh}
         data={sessions}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[styles.list, sessions.length === 0 && styles.listEmpty]}
         renderItem={({ item }) => (
           <Pressable
             style={styles.card}
@@ -152,6 +104,12 @@ export default function SessionsScreen() {
             </Text>
           </Pressable>
         )}
+        ListEmptyComponent={
+          <View style={styles.center}>
+            <Text style={styles.empty}>No sessions yet</Text>
+            <Text style={styles.hint}>Create a session to get started</Text>
+          </View>
+        }
       />
 
       {/* Floating action button for new session */}
@@ -185,11 +143,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: spacing['3xl'],
   },
-  error: {
-    color: colors.statusFailed,
-    fontSize: fontSize.lg,
-    textAlign: 'center',
-  },
   empty: {
     color: colors.textSecondary,
     fontSize: fontSize['2xl'],
@@ -204,6 +157,11 @@ const styles = StyleSheet.create({
     padding: spacing.xl,
     paddingBottom: 100, // Space for FAB
     gap: spacing.lg,
+    flexGrow: 1,
+  },
+  listEmpty: {
+    flex: 1,
+    justifyContent: 'center',
   },
   card: {
     backgroundColor: colors.bgSurface,

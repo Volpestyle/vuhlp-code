@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, forwardRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { ViewMode } from '../../stores/runStore';
 import type { VisualNode } from '../../types/graph';
@@ -16,7 +16,7 @@ interface GraphDomNodesProps {
   onPortPointerDown: (id: string, portIndex: number, event: ReactPointerEvent<HTMLButtonElement>) => void;
 }
 
-export function GraphDomNodes({
+export const GraphDomNodes = forwardRef<HTMLDivElement, GraphDomNodesProps>(({
   nodes,
   viewport,
   viewMode,
@@ -24,7 +24,7 @@ export function GraphDomNodes({
   viewportSize,
   onNodePointerDown,
   onPortPointerDown,
-}: GraphDomNodesProps) {
+}, ref) => {
   const focusPhase = useMemo(() => {
     if (viewMode !== 'fullscreen' || !selectedNodeId) return null;
     if (!viewportSize.width || !viewportSize.height) return null;
@@ -37,7 +37,8 @@ export function GraphDomNodes({
   }, [nodes, selectedNodeId, viewMode, viewport.zoom, viewportSize]);
 
   return (
-    <div 
+    <div
+      ref={ref}
       className={`graph-dom-layer ${viewMode === 'fullscreen' ? 'graph-dom-layer--focused' : ''}`}
       style={{ 
         transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
@@ -97,4 +98,4 @@ export function GraphDomNodes({
       })}
     </div>
   );
-}
+});

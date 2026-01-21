@@ -112,7 +112,9 @@ function SkiaGraphCanvas() {
   useFrameCallback(() => {
     'worklet';
     const now = Date.now();
-    if (now < animationActiveUntil.value) {
+    // Run slightly longer than the target time to ensure we render one frame
+    // where elapsed > duration, which causes the packet to be removed
+    if (now < animationActiveUntil.value + 100) {
       runOnJS(setAnimationTime)(now);
     }
   });

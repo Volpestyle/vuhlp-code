@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -45,6 +45,7 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
   const nodeCount = useGraphStore((s) => s.nodes.length);
   const addNode = useGraphStore((s) => s.addNode);
   const selectNode = useGraphStore((s) => s.selectNode);
+  const scrollViewRef = useRef<ScrollView>(null);
 
   const [label, setLabel] = useState('');
   const [roleTemplate, setRoleTemplate] = useState('implementer');
@@ -67,6 +68,10 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
     setEdgeManagementTouched(false);
     setAgentManagementApprovalTouched(false);
     setError(null);
+    // Flash scroll indicator to show content is scrollable
+    setTimeout(() => {
+      scrollViewRef.current?.flashScrollIndicators();
+    }, 300);
   }, [visible, nodeCount]);
 
   // Smart defaults based on role template
@@ -185,7 +190,7 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+          <ScrollView ref={scrollViewRef} style={styles.content} showsVerticalScrollIndicator={true} indicatorStyle="white">
             {/* Error display */}
             {error && (
               <View style={styles.errorContainer}>

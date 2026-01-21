@@ -105,7 +105,7 @@ export function FullscreenChat({
   );
   const showInput = interactive && variant === 'full';
 
-  useChatAutoScroll({ scrollRef: messagesScrollRef, timeline: filteredTimeline, resetKey: node.id, updateKey: autoScrollKey });
+  const { scrollToBottom } = useChatAutoScroll({ scrollRef: messagesScrollRef, timeline: filteredTimeline, resetKey: node.id, updateKey: autoScrollKey });
 
   // Simulated streaming indicator based on node connection state
   useEffect(() => {
@@ -164,6 +164,7 @@ export function FullscreenChat({
     addChatMessage(newMessage);
     setInput('');
     void sendMessage(messageId, input);
+    scrollToBottom();
   };
 
   const handleRetry = useCallback(

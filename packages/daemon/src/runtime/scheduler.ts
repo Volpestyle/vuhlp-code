@@ -41,7 +41,7 @@ export class Scheduler {
     this.emitEvent = options.emitEvent;
     this.runner = options.runner;
     this.dataDir = options.dataDir;
-    this.stallThreshold = options.stallThreshold ?? 2;
+    this.stallThreshold = options.stallThreshold ?? 20;
     this.logger = options.logger ?? new ConsoleLogger({ scope: "scheduler" });
   }
 

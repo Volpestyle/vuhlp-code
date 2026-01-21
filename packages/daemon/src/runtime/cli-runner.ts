@@ -495,7 +495,7 @@ export class CliRunner implements NodeRunner {
       return "completed";
     }
     const firstLine = trimmed.split("\n")[0];
-    const maxLength = 140;
+    const maxLength = 300;
     if (firstLine.length <= maxLength) {
       return firstLine;
     }

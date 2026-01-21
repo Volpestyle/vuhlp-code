@@ -1553,10 +1553,13 @@ const styles = StyleSheet.create({
   detailLabel: {
     color: colors.textSecondary,
     fontSize: 14,
+    paddingRight: 16,
   },
   detailValue: {
     color: colors.textPrimary,
     fontSize: 14,
+    flex: 1,
+    textAlign: 'right',
   },
   mono: {
     fontFamily: fontFamily.mono,

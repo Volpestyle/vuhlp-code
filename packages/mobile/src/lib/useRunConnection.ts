@@ -37,7 +37,7 @@ const hasNodeCoreFields = (patch: Partial<NodeState>): patch is Partial<NodeStat
     patch.session
   );
 
-export function useRunConnection(runId: string | undefined): ConnectionState {
+export function useRunConnection(runId: string | undefined, refreshKey = 0): ConnectionState {
   const [state, setState] = useState<ConnectionState>({
     loading: true,
     error: null,
@@ -425,7 +425,7 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
     return () => {
       resetConnection('cleanup');
     };
-  }, [runId, setRun, reset, connect, resetConnection]);
+  }, [runId, refreshKey, setRun, reset, connect, resetConnection]);
 
   return state;
 }

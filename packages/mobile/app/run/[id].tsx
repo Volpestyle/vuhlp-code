@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { useGraphStore } from '@/stores/graph-store';
 import { useRunConnection } from '@/lib/useRunConnection';
@@ -9,6 +9,7 @@ import { GraphMinimap } from '@/components/GraphMinimap';
 import { NodeInspector } from '@/components/NodeInspector';
 import { ApprovalQueue } from '@/components/ApprovalQueue';
 import { NewNodeModal } from '@/components/NewNodeModal';
+import { PageLoader } from '@/components/PageLoader';
 import { Plus } from 'iconoir-react-native';
 import { colors, fontFamily, fontSize, radius, spacing } from '@/lib/theme';
 
@@ -16,8 +17,9 @@ import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated'
 
 export default function RunScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { loading, error, connected } = useRunConnection(id);
-  useLayoutPersistence(id);
+  const [retryKey, setRetryKey] = useState(0);
+  const { loading, error, connected } = useRunConnection(id, retryKey);
+  useLayoutPersistence(typeof id === 'string' ? id : undefined);
   const nodeCount = useGraphStore((s) => s.nodes.length);
   const edgeCount = useGraphStore((s) => s.edges.length);
   const pendingCount = useGraphStore((s) => s.pendingApprovals.length);
@@ -34,6 +36,11 @@ export default function RunScreen() {
     setNewNodeModalVisible(false);
   }, []);
 
+  const handleRetry = useCallback(() => {
+    console.log('[RunScreen] Retry connection requested');
+    setRetryKey((k) => k + 1);
+  }, []);
+
   const fabStyle = useAnimatedStyle(() => {
     return {
       opacity: withTiming(inspectorOpen ? 0 : 1, { duration: 200 }),
@@ -44,20 +51,11 @@ export default function RunScreen() {
   });
 
   if (loading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#666" />
-        <Text style={styles.loadingText}>Connecting to session...</Text>
-      </View>
-    );
+    return <PageLoader />;
   }
 
   if (error) {
-    return (
-      <View style={styles.center}>
-        <Text style={styles.error}>{error}</Text>
-      </View>
-    );
+    return <PageLoader error={error} onRetry={handleRetry} />;
   }
 
   return (
@@ -113,21 +111,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bgPrimary,
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: spacing['3xl'],
-  },
-  loadingText: {
-    color: colors.textMuted,
-    marginTop: spacing.lg,
-  },
-  error: {
-    color: colors.statusFailed,
-    fontSize: fontSize.lg,
-    textAlign: 'center',
   },
   fabContainer: {
     position: 'absolute',
