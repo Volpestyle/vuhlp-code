@@ -34,7 +34,7 @@ import { ArtifactStore } from "./artifact-store.js";
 import { EventLog } from "./event-log.js";
 import { RunStore, type NodeRecord, type RunRecord } from "./store.js";
 import { Scheduler } from "./scheduler.js";
-import { NoopRunner, type NodeRunner } from "./runner.js";
+import { type NodeRunner } from "./runner.js";
 import { CliRunner } from "./cli-runner.js";
 import { newId, nowIso } from "./utils.js";
 import {
@@ -53,6 +53,8 @@ const addUsage = (current: UsageTotals | undefined, delta: UsageTotals): UsageTo
   completionTokens: (current?.completionTokens ?? 0) + delta.completionTokens,
   totalTokens: (current?.totalTokens ?? 0) + delta.totalTokens
 });
+
+const getErrorCode = (error: { code?: string } | null | undefined): string | undefined => error?.code;
 
 export interface RuntimeOptions {
   dataDir: string;
@@ -75,6 +77,7 @@ export class Runtime {
   private readonly systemTemplatesDir?: string;
   private readonly logger: Logger;
   private readonly artifactStores = new Map<UUID, ArtifactStore>();
+  private readonly snapshotTimers = new Map<UUID, NodeJS.Timeout>();
 
   constructor(options: RuntimeOptions) {
     this.dataDir = options.dataDir;
@@ -139,14 +142,16 @@ export class Runtime {
           lastHeartbeatAt: now,
           lastOutputAt: now
         };
+        const nextStatus = nodeRecord.state.status === "running" ? "idle" : nodeRecord.state.status;
         nodeRecord.state = {
           ...nodeRecord.state,
-          status: nodeRecord.state.status === "running" ? "idle" : nodeRecord.state.status,
+          status: nextStatus,
           summary: nodeRecord.state.status === "running" ? "idle" : nodeRecord.state.summary,
           connection: nodeRecord.state.connection
             ? { ...nodeRecord.state.connection, ...disconnected }
             : disconnected,
-          lastActivityAt: now
+          lastActivityAt: now,
+          inboxCount: 0
         };
         record.state.nodes[nodeRecord.state.id] = nodeRecord.state;
       }
@@ -156,9 +161,13 @@ export class Runtime {
       record.state.updatedAt = now;
       await this.saveRunSnapshot(record.state.id);
     }
+    // Flush any pending snapshots before shutting down
+    for (const runId of this.snapshotTimers.keys()) {
+      await this.flushRunSnapshot(runId);
+    }
+
     this.logger.info("runtime shutdown complete", { runs: this.store.listRuns().length });
   }
-
 
   onEvent(listener: (event: EventEnvelope) => void): () => void {
     return this.eventBus.on(listener);
@@ -375,7 +384,36 @@ export class Runtime {
   private async saveRunSnapshot(runId: UUID): Promise<void> {
     const record = this.store.getRun(runId);
     if (!record) {
-      this.logger.warn("run snapshot skipped (missing run)", { runId });
+      if (this.snapshotTimers.has(runId)) {
+        clearTimeout(this.snapshotTimers.get(runId));
+        this.snapshotTimers.delete(runId);
+      }
+      return;
+    }
+
+    if (this.snapshotTimers.has(runId)) {
+      clearTimeout(this.snapshotTimers.get(runId));
+    }
+
+    const timer = setTimeout(async () => {
+      this.snapshotTimers.delete(runId);
+      await this.performSnapshotSave(runId);
+    }, 2000); // Debounce for 2 seconds
+
+    this.snapshotTimers.set(runId, timer);
+  }
+
+  private async flushRunSnapshot(runId: UUID): Promise<void> {
+    if (this.snapshotTimers.has(runId)) {
+      clearTimeout(this.snapshotTimers.get(runId));
+      this.snapshotTimers.delete(runId);
+      await this.performSnapshotSave(runId);
+    }
+  }
+
+  private async performSnapshotSave(runId: UUID): Promise<void> {
+    const record = this.store.getRun(runId);
+    if (!record) {
       return;
     }
     const snapshotPath = this.runSnapshotPath(runId);
@@ -395,7 +433,7 @@ export class Runtime {
     try {
       entries = await fs.readdir(runsDir, { withFileTypes: true });
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
+      const code = getErrorCode(error as any);
       if (code === "ENOENT") {
         this.logger.info("no persisted runs found", { runsDir });
         return;
@@ -420,6 +458,11 @@ export class Runtime {
       }
       const normalized = this.normalizePersistedRunState(runState);
       this.rehydrateRun(normalized);
+      this.logger.info("rehydrated run", {
+        runId: normalized.id,
+        nodes: Object.keys(normalized.nodes).length,
+        edges: Object.keys(normalized.edges).length
+      });
     }
   }
 
@@ -427,11 +470,11 @@ export class Runtime {
     const snapshotPath = this.runSnapshotPath(runId);
     try {
       const contents = await fs.readFile(snapshotPath, "utf8");
-      const parsed = JSON.parse(contents) as RunState;
+      const parsed: RunState = JSON.parse(contents);
       this.logger.info("loaded run snapshot", { runId, path: snapshotPath });
       return parsed;
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
+      const code = getErrorCode(error as any);
       if (code === "ENOENT") {
         return null;
       }
@@ -475,15 +518,15 @@ export class Runtime {
           runState = { ...base, ...event.patch };
         } else {
           runState = {
-            ...runState,
+            ...(runState as any),
             ...event.patch,
-            nodes: event.patch.nodes ? { ...runState.nodes, ...event.patch.nodes } : runState.nodes,
+            nodes: event.patch.nodes ? { ...(runState.nodes as any), ...event.patch.nodes } : runState.nodes,
             nodeConfigs: event.patch.nodeConfigs
-              ? { ...runState.nodeConfigs, ...event.patch.nodeConfigs }
+              ? { ...(runState.nodeConfigs as any), ...event.patch.nodeConfigs }
               : runState.nodeConfigs,
-            edges: event.patch.edges ? { ...runState.edges, ...event.patch.edges } : runState.edges,
+            edges: event.patch.edges ? { ...(runState.edges as any), ...event.patch.edges } : runState.edges,
             artifacts: event.patch.artifacts
-              ? { ...runState.artifacts, ...event.patch.artifacts }
+              ? { ...(runState.artifacts as any), ...event.patch.artifacts }
               : runState.artifacts
           };
         }
@@ -597,7 +640,8 @@ export class Runtime {
         status: node.status === "running" ? "idle" : node.status,
         summary: node.status === "running" ? "idle" : node.summary,
         connection: node.connection ? { ...node.connection, ...disconnected } : disconnected,
-        lastActivityAt: now
+        lastActivityAt: now,
+        inboxCount: 0
       };
       const config = runState.nodeConfigs[hydrated.id] ?? this.buildNodeConfigFromState(hydrated);
       this.store.addNode(runState.id, hydrated, config);
@@ -677,12 +721,18 @@ export class Runtime {
       this.resumeInterruptedNodes(record);
     }
 
+    void this.saveRunSnapshot(runId);
     return record.state;
   }
 
   async deleteRun(runId: UUID): Promise<void> {
     const record = this.requireRun(runId);
     const now = nowIso();
+
+    if (this.snapshotTimers.has(runId)) {
+      clearTimeout(this.snapshotTimers.get(runId));
+      this.snapshotTimers.delete(runId);
+    }
 
     if (this.runner.disposeNode) {
       for (const nodeRecord of record.nodes.values()) {
@@ -995,6 +1045,7 @@ export class Runtime {
 
     record.nodes.delete(nodeId);
     delete record.state.nodes[nodeId];
+    delete record.state.nodeConfigs[nodeId];
     record.state.updatedAt = now;
 
     this.emitEvent(runId, {
@@ -1012,6 +1063,7 @@ export class Runtime {
       type: "run.patch",
       patch: { updatedAt: now }
     });
+    void this.saveRunSnapshot(runId);
   }
 
   async getArtifactContent(runId: UUID, artifactId: UUID): Promise<{ artifact: Artifact; content: string }> {
@@ -1092,6 +1144,7 @@ export class Runtime {
       mode: runState.mode,
       globalMode: runState.globalMode
     });
+    void this.saveRunSnapshot(runState.id);
     return runState;
   }
 
@@ -1139,6 +1192,22 @@ export class Runtime {
       nodeId: nodeState.id,
       patch: nodeState
     });
+    this.emitEvent(runId, {
+      id: newId(),
+      runId,
+      ts: now,
+      type: "run.patch",
+      patch: {
+        nodeConfigs: { [nodeState.id]: normalized },
+        updatedAt: now
+      }
+    });
+    this.logger.info("node config snapshot stored", {
+      runId,
+      nodeId: nodeState.id,
+      config: normalized
+    });
+    void this.saveRunSnapshot(runId);
     return nodeState;
   }
 
@@ -1292,6 +1361,7 @@ export class Runtime {
     const record = this.requireRun(runId);
     const now = nowIso();
     const nodeRecord = this.requireNode(record, nodeId);
+    const previousConfig = nodeRecord.config;
     let updatedPatch = { ...patch };
     let configPatch = config;
 
@@ -1331,9 +1401,7 @@ export class Runtime {
     }
 
     const updated = this.store.updateNode(runId, nodeId, updatedPatch);
-    if (configPatch) {
-      this.store.updateNodeConfig(runId, nodeId, configPatch);
-    }
+    const updatedConfig = configPatch ? this.store.updateNodeConfig(runId, nodeId, configPatch) : undefined;
     this.touchRun(record, now);
     this.emitEvent(runId, {
       id: newId(),
@@ -1343,6 +1411,25 @@ export class Runtime {
       nodeId,
       patch: updatedPatch
     });
+    if (updatedConfig) {
+      this.emitEvent(runId, {
+        id: newId(),
+        runId,
+        ts: now,
+        type: "run.patch",
+        patch: {
+          nodeConfigs: { [nodeId]: updatedConfig },
+          updatedAt: now
+        }
+      });
+      this.logger.info("node config updated", {
+        runId,
+        nodeId,
+        previousConfig,
+        updatedConfig
+      });
+    }
+    void this.saveRunSnapshot(runId);
     return updated;
   }
 
@@ -1366,6 +1453,7 @@ export class Runtime {
       type: "edge.created",
       edge: resolved
     });
+    void this.saveRunSnapshot(runId);
     return resolved;
   }
 
@@ -1381,6 +1469,7 @@ export class Runtime {
       type: "edge.deleted",
       edgeId
     });
+    void this.saveRunSnapshot(runId);
   }
 
   postMessage(runId: UUID, nodeId: UUID, content: string, interrupt = false): UserMessageRecord {
@@ -1508,6 +1597,7 @@ export class Runtime {
       type: "artifact.created",
       artifact
     });
+    void this.saveRunSnapshot(runId);
     return artifact;
   }
 

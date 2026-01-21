@@ -80,9 +80,58 @@ const appRoot = process.env.VUHLP_APP_ROOT
 logger.info("resolved runtime paths", { appRoot, repoRoot, dataDir });
 
 const runtime = new Runtime({ dataDir, repoRoot, appRoot, systemTemplatesDir, logger });
-runtime.start();
-
 const server = createServer(runtime);
-server.listen(port, "0.0.0.0", () => {
-  logger.info(`vuhlp daemon listening on http://0.0.0.0:${port}`, { port });
+
+const start = async (): Promise<void> => {
+  await runtime.start();
+  server.listen(port, "0.0.0.0", () => {
+    logger.info(`vuhlp daemon listening on http://0.0.0.0:${port}`, { port });
+  });
+};
+
+void start().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.error("failed to start daemon", { message });
+  process.exit(1);
+});
+
+let shuttingDown = false;
+
+const closeServer = async (): Promise<void> => {
+  if (!server.listening) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    server.close((error) => {
+      if (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("failed to close server", { message });
+      }
+      resolve();
+    });
+  });
+};
+
+const shutdown = async (signal: string): Promise<void> => {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  logger.info("daemon shutdown requested", { signal });
+  try {
+    await runtime.shutdown(signal);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("runtime shutdown failed", { message });
+  }
+  await closeServer();
+  process.exit(0);
+};
+
+process.on("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+
+process.on("SIGTERM", () => {
+  void shutdown("SIGTERM");
 });

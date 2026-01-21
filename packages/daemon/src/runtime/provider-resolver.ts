@@ -87,6 +87,23 @@ export class ProviderResolver {
 
     const explicitCommand = this.readEnv(`VUHLP_${prefix}_COMMAND`);
     let command = explicitCommand ?? provider;
+    if (provider === "claude" && !explicitCommand) {
+      const localBinary = this.resolveLocalClaudeBinary();
+      if (localBinary) {
+        command = localBinary.path;
+        this.logger.info("using local Claude CLI binary", {
+          provider,
+          path: localBinary.path,
+          source: localBinary.source
+        });
+      } else {
+        this.logger.error("Claude CLI not found; set VUHLP_CLAUDE_COMMAND or install claude", {
+          provider,
+          command,
+          nodeExecPath: process.execPath
+        });
+      }
+    }
     if (provider === "codex" && !explicitCommand) {
       const localBinary = this.resolveLocalCodexBinary();
       if (localBinary) {
@@ -517,5 +534,52 @@ export class ProviderResolver {
       return { path: bundlePath };
     }
     return null;
+  }
+
+  private resolveLocalClaudeBinary(): { path: string; source: "node-bin" | "path" } | null {
+    const nodeBin = path.join(path.dirname(process.execPath), "claude");
+    if (this.isExecutableFile(nodeBin)) {
+      return { path: nodeBin, source: "node-bin" };
+    }
+    const pathBinary = this.resolveCommandFromPath("claude");
+    if (pathBinary) {
+      return { path: pathBinary, source: "path" };
+    }
+    return null;
+  }
+
+  private resolveCommandFromPath(command: string): string | null {
+    if (path.isAbsolute(command)) {
+      return this.isExecutableFile(command) ? command : null;
+    }
+    const pathEnv = this.readEnv("PATH");
+    if (!pathEnv) {
+      return null;
+    }
+    const extensions = this.getPathExtensions();
+    const entries = pathEnv.split(path.delimiter).filter((entry) => entry.length > 0);
+    for (const entry of entries) {
+      for (const ext of extensions) {
+        const candidate = path.join(entry, `${command}${ext}`);
+        if (this.isExecutableFile(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    return null;
+  }
+
+  private getPathExtensions(): string[] {
+    if (process.platform !== "win32") {
+      return [""];
+    }
+    const pathExt = this.readEnv("PATHEXT");
+    if (!pathExt) {
+      return [""];
+    }
+    return pathExt
+      .split(";")
+      .map((ext) => ext.trim())
+      .filter((ext) => ext.length > 0);
   }
 }
