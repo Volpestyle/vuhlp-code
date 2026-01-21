@@ -1,0 +1,43 @@
+/* Provider Badge */
+.provider-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-family: var(--font-display);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-strong);
+}
+
+.provider-badge--sm {
+  padding: var(--space-0) var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+/* Provider colors - Desaturated pastels */
+.provider-badge--claude {
+  background: rgba(196, 144, 128, 0.1);
+  border-color: rgba(196, 144, 128, 0.35);
+  color: #c49080;
+}
+
+.provider-badge--codex {
+  background: rgba(122, 168, 138, 0.1);
+  border-color: rgba(122, 168, 138, 0.35);
+  color: #7aa88a;
+}
+
+.provider-badge--gemini {
+  background: rgba(138, 159, 196, 0.1);
+  border-color: rgba(138, 159, 196, 0.35);
+  color: #8a9fc4;
+}
+
+.provider-badge--custom {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-muted);
+}

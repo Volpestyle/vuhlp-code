@@ -1,61 +1,21 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect } from 'react';
+import { useRunStore } from '../stores/runStore';
+import { applyTheme, THEME_STORAGE_KEY } from '../lib/theme';
 
-export type Theme = 'dark' | 'light' | 'midnight' | 'terminal';
-
-const THEME_STORAGE_KEY = 'vuhlp-theme';
-
-function getStoredTheme(): Theme {
-  if (typeof window === 'undefined') return 'dark';
-  const stored = localStorage.getItem(THEME_STORAGE_KEY);
-  if (stored && isValidTheme(stored)) {
-    return stored;
-  }
-  // Check system preference
-  if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-    return 'light';
-  }
-  return 'dark';
-}
-
-function isValidTheme(value: string): value is Theme {
-  return ['dark', 'light', 'midnight', 'terminal'].includes(value);
-}
-
-function applyTheme(theme: Theme): void {
-  document.documentElement.setAttribute('data-theme', theme);
-}
-
-export function useTheme(): [Theme, (theme: Theme) => void, () => void] {
-  const [theme, setThemeState] = useState<Theme>(() => getStoredTheme());
+export const useTheme = () => {
+  const theme = useRunStore((s) => s.ui.theme);
+  const setTheme = useRunStore((s) => s.setTheme);
+  const toggleTheme = useRunStore((s) => s.toggleTheme);
 
   useEffect(() => {
     applyTheme(theme);
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Ignore storage errors (private mode or blocked storage).
+    }
   }, [theme]);
 
-  // Apply initial theme on mount
-  useEffect(() => {
-    applyTheme(getStoredTheme());
-  }, []);
-
-  const setTheme = useCallback((newTheme: Theme) => {
-    setThemeState(newTheme);
-  }, []);
-
-  const toggleTheme = useCallback(() => {
-    setThemeState((current) => {
-      // Simple toggle between dark and light
-      return current === 'light' ? 'dark' : 'light';
-    });
-  }, []);
-
-  return [theme, setTheme, toggleTheme];
-}
-
-// Available themes with metadata
-export const THEMES: { id: Theme; label: string; description: string }[] = [
-  { id: 'dark', label: 'Dark', description: 'Default dark theme' },
-  { id: 'light', label: 'Light', description: 'Light theme' },
-  { id: 'midnight', label: 'Midnight', description: 'Deeper blacks, purple accent' },
-  { id: 'terminal', label: 'Terminal', description: 'Green accent, retro feel' },
-];
+  return { theme, setTheme, toggleTheme };
+};

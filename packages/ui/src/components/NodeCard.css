@@ -1,0 +1,191 @@
+/* Node Card */
+.node-card {
+  position: relative;
+  width: var(--node-card-width);
+  padding: var(--space-3);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 22px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+
+.node-card--static {
+  cursor: default;
+}
+
+.node-card:hover {
+  border-color: var(--color-text-muted);
+  background: var(--color-bg-hover);
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.28);
+}
+
+.node-card--selected,
+.node-card--selected:hover {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent), 0 16px 28px rgba(0, 0, 0, 0.32);
+}
+
+/* Status-based left border */
+.node-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  width: 3px;
+  border-radius: 1px;
+  background: var(--color-status-idle);
+}
+
+.node-card--running::before {
+  background: var(--color-status-running);
+}
+
+.node-card--blocked::before {
+  background: var(--color-status-blocked);
+}
+
+.node-card--failed::before {
+  background: var(--color-status-failed);
+}
+
+/* Header */
+.node-card__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.node-card__role {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+/* Title */
+.node-card__title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0 0 var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Summary */
+.node-card__summary {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin: 0 0 var(--space-3);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Footer */
+.node-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.node-card__time {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+/* Connection indicator */
+.node-card__connection {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.node-card__connection-inline {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+}
+
+.node-card__connection-dot {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+}
+
+.node-card__connection--connected .node-card__connection-dot {
+  background: var(--color-status-running);
+}
+
+.node-card__connection--idle .node-card__connection-dot {
+  background: var(--color-text-muted);
+}
+
+.node-card__connection--disconnected .node-card__connection-dot {
+  background: var(--color-status-failed);
+}
+
+.node-card__connection--streaming .node-card__connection-dot {
+  animation: pulse 1s ease-in-out infinite;
+}
+
+/* Inbox badge */
+.node-card__inbox {
+  position: absolute;
+  top: calc(-1 * var(--space-2));
+  right: calc(-1 * var(--space-2));
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--space-1);
+  background: var(--color-accent);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 9px;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Collapsed variant */
+.node-card--collapsed {
+  width: auto;
+  min-width: 200px;
+  padding: var(--space-2) var(--space-3);
+}
+
+.node-card--collapsed::before {
+  display: none;
+}
+
+.node-card__collapsed-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.node-card__collapsed-label {
+  flex: 1;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

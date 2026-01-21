@@ -1,16 +1,11 @@
-# Node
-node_modules/
-dist/
-*.log
-
-# Local runtime data
-.vuhlp/
-data/
-tmp/
-
-# OS
+node_modules
 .DS_Store
-
-# IDE
-.vscode/
-.idea/
+dist
+coverage
+.env
+.env.local
+*.log
+*.tsbuildinfo
+/data
+packages/daemon/data
+typecheck_output.txt

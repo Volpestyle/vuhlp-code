@@ -1,1 +1,7 @@
-Refer to @AGENTS.md
+- never use 'any' or 'unknown' types or type casting unless absolutely necessary
+- /docs/ is the source of truth for the product spec 
+- always delete legacy or deprecated code
+- always use proper logging methods to make any complexity easily debuggable via logs
+- always include proper and visible error handling
+- never use toast ui messages
+- Only defer implementation if absolutely necessary. If you must defer implementation, always leave a TODO comment

@@ -1,0 +1,31 @@
+/* JSON View Styles - Custom theme matching app design */
+
+.json-view {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.json-view__code {
+  margin: 0;
+  white-space: pre;
+}
+
+.json-view--error {
+  border: 1px solid rgba(255, 77, 77, 0.35);
+  background: rgba(255, 77, 77, 0.06);
+  color: #ff4d4d;
+}
+
+.json-view__error {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--space-1);
+}

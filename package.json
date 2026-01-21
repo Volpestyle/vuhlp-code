@@ -1,17 +1,33 @@
 {
-  "name": "vuhlp-code",
+  "name": "vuhlp",
   "private": true,
-  "version": "0.0.0",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=25.0.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "pnpm build:ui && concurrently -n daemon,client,sleek,brutalist -c blue,green,magenta,cyan \"pnpm --filter @vuhlp/daemon dev\" \"pnpm --filter client dev\" \"pnpm --filter @vuhlp/sleek-ui dev\" \"pnpm --filter @vuhlp/brutalist-ui dev\"",
-    "dev:daemon": "pnpm --filter @vuhlp/daemon dev",
-    "dev:client": "pnpm --filter client dev",
-    "build": "pnpm build:ui && pnpm --filter @vuhlp/daemon build && pnpm --filter client build",
-    "build:ui": "pnpm --filter @vuhlp/sleek-ui build && pnpm --filter @vuhlp/brutalist-ui build",
-    "start": "pnpm --filter @vuhlp/daemon start"
+    "dev": "pnpm --filter @vuhlp/daemon dev",
+    "dev:clean": "pnpm build:clis && pnpm dev",
+    "dev:ui": "pnpm --parallel --filter @vuhlp/spinners --filter @vuhlp/ui dev",
+    "build": "pnpm -r build && pnpm build:clis",
+    "build:clis": "pnpm build:codex-cli && pnpm build:gemini-cli",
+    "build:codex-cli": "cargo build -p codex-cli --manifest-path packages/providers/codex/codex-rs/Cargo.toml --target-dir packages/providers/codex/target --release",
+    "build:gemini-cli": "pnpm -C packages/providers/gemini-cli run bundle",
+    "lint": "pnpm -r lint"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "@typescript-eslint/parser": "^8.0.0",
+    "typescript": "^5.9.3"
   },
-  "packageManager": "pnpm@9.15.0+sha512.76e2379760a4328ec4415815bcd6628dee727af3779aaa4c914e3944156c4299921a89f976381ee107d41f12cfa4b66681ca9c718f0668fa0831ed4c6d8ba56c"
+  "pnpm": {
+    "overrides": {
+      "@types/three": "0.182.0",
+      "react": "19.1.0",
+      "react-dom": "19.1.0",
+      "markdown-it": "^14.1.0"
+    }
+  }
 }

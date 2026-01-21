@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Vuhlp",
+    "slug": "vuhlp-mobile",
+    "version": "0.1.0",
+    "orientation": "default",
+    "scheme": "vuhlp",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.vuhlp.mobile",
+      "deploymentTarget": "17.0",
+      "appleTeamId": "8YW4D4C6CW"
+    },
+    "android": {
+      "package": "com.vuhlp.mobile"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-asset"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
