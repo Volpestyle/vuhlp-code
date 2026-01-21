@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { createInterface } from "node:readline";
 import type {
   ApprovalResolution,
@@ -204,7 +205,7 @@ export class CliProviderAdapter implements ProviderAdapter {
       nativeToolHandling: this.config.nativeToolHandling ?? "vuhlp"
     }));
 
-    const env = this.config.env ? { ...process.env, ...this.config.env } : process.env;
+    const env = this.buildProcessEnv();
     const child = spawn(this.config.command, this.config.args ?? [], {
       cwd: this.config.cwd,
       env,
@@ -268,6 +269,48 @@ export class CliProviderAdapter implements ProviderAdapter {
         void this.handleLine(line, "stderr");
       });
     }
+  }
+
+  private buildProcessEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (this.config.env) {
+      for (const [key, value] of Object.entries(this.config.env)) {
+        env[key] = value;
+      }
+    }
+    const nodeBin = path.dirname(process.execPath);
+    if (nodeBin.length > 0) {
+      const currentPath = env.PATH ?? "";
+      if (!this.pathContains(currentPath, nodeBin)) {
+        env.PATH = currentPath.length > 0
+          ? `${nodeBin}${path.delimiter}${currentPath}`
+          : nodeBin;
+        this.logger.info("prepended node bin to PATH for provider process", this.withRunMeta({
+          nodeId: this.config.nodeId,
+          provider: this.config.provider,
+          nodeBin
+        }));
+      }
+    }
+    return env;
+  }
+
+  private pathContains(pathValue: string, candidate: string): boolean {
+    const entries = pathValue.split(path.delimiter).filter((entry) => entry.length > 0);
+    const normalizedCandidate = this.normalizePathEntry(candidate);
+    for (const entry of entries) {
+      if (this.normalizePathEntry(entry) === normalizedCandidate) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private normalizePathEntry(entry: string): string {
+    if (process.platform === "win32") {
+      return entry.toLowerCase();
+    }
+    return entry;
   }
 
   private async handleLine(line: string, source: "stdout" | "stderr"): Promise<void> {

@@ -446,12 +446,18 @@ function parseUsage(
   }
   const promptTokens = getNumber(obj.promptTokens);
   const completionTokens = getNumber(obj.completionTokens);
-  const totalTokens = getNumber(obj.totalTokens);
+  const inputTokens = getNumber(obj.inputTokens);
+  const outputTokens = getNumber(obj.outputTokens);
+  const resolvedPrompt = promptTokens ?? inputTokens;
+  const resolvedCompletion = completionTokens ?? outputTokens;
 
-  if (promptTokens === null || completionTokens === null || totalTokens === null) {
+  if (resolvedPrompt === null || resolvedCompletion === null) {
     return null;
   }
-  return { promptTokens, completionTokens, totalTokens };
+
+  const totalTokens = getNumber(obj.totalTokens);
+  const resolvedTotal = totalTokens ?? resolvedPrompt + resolvedCompletion;
+  return { promptTokens: resolvedPrompt, completionTokens: resolvedCompletion, totalTokens: resolvedTotal };
 }
 
 
