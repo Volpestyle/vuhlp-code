@@ -1,6 +1,6 @@
-# Codex vuhlp JSONL protocol
+# Codex vuhlp stream-json protocol
 
-This document defines the JSONL stdin/stdout protocol used by the local Codex fork in vuhlp.
+This document defines the stream-json (newline-delimited JSON) stdin/stdout protocol used by the local Codex fork in vuhlp.
 
 ## Binary and mode
 - Local fork: `${VUHLP_APP_ROOT}/packages/providers/codex`
@@ -11,12 +11,10 @@ This document defines the JSONL stdin/stdout protocol used by the local Codex fo
 ## Input (stdin)
 Each line is either a JSON object or a reset command.
 
-### Prompt
+### User message
 ```
-{"kind":"prompt","prompt":"...","promptKind":"full|delta","turnId":"<uuid>"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}
 ```
-- `promptKind` is optional (default `full`).
-- `turnId` is optional and may be echoed in logs.
 
 ### Reset
 ```
@@ -24,6 +22,17 @@ Each line is either a JSON object or a reset command.
 /clear
 ```
 - Starts a fresh thread and clears in-process context.
+
+### Approval resolution
+```
+{"type":"approval.resolved","approvalId":"<uuid>","resolution":{"status":"approved|denied|modified","modifiedArgs":{}}}
+```
+- `modifiedArgs` is optional and ignored by Codex vuhlp mode.
+
+### Session end
+```
+{"type":"session.end"}
+```
 
 ## Output (stdout)
 Each line is a JSON object. Do not write other output to stdout.

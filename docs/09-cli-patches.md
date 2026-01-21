@@ -393,6 +393,7 @@ Conflicts are rare since daemon mode changes are additive and localized. If upst
 1. Start the patched CLI in daemon mode
    - Codex: `codex vuhlp`
    - Gemini: `gemini --input-format stream-json`
+   - Local dev: `pnpm dev:clean` (bundles Gemini CLI before starting the daemon)
 2. Send a user message via stdin
 3. Verify streaming deltas arrive on stdout
 4. Verify `message_stop` signals turn completion

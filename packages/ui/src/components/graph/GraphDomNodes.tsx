@@ -37,23 +37,34 @@ export function GraphDomNodes({
   }, [nodes, selectedNodeId, viewMode, viewport.zoom, viewportSize]);
 
   return (
-    <div className={`graph-dom-layer ${viewMode === 'fullscreen' ? 'graph-dom-layer--focused' : ''}`}>
+    <div 
+      className={`graph-dom-layer ${viewMode === 'fullscreen' ? 'graph-dom-layer--focused' : ''}`}
+      style={{ 
+        transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+        transformOrigin: '0 0',
+        width: '100%',
+        height: '100%',
+        overflow: 'visible' 
+      }}
+    >
       {nodes.map((node) => {
         const hideForFocus = node.id === selectedNodeId && focusPhase;
         if (hideForFocus) {
           return null;
         }
 
-        const left = node.position.x * viewport.zoom + viewport.x;
-        const top = node.position.y * viewport.zoom + viewport.y;
-        const transform = `scale(${viewport.zoom})`;
         const isCollapsed = viewMode === 'collapsed';
 
         return (
           <div
             key={node.id}
             className={`graph-dom-node ${isCollapsed ? 'graph-dom-node--collapsed' : ''}`}
-            style={{ width: node.dimensions.width, height: node.dimensions.height, transform, left, top }}
+            style={{ 
+              width: node.dimensions.width, 
+              height: node.dimensions.height, 
+              left: node.position.x, 
+              top: node.position.y 
+            }}
             onPointerDown={(event) => onNodePointerDown(node.id, event)}
           >
             <NodeCard node={node} collapsed={isCollapsed} interactive={false} />

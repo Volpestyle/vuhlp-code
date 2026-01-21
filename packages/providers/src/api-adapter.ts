@@ -67,6 +67,10 @@ export class ApiProviderAdapter implements ProviderAdapter {
   private currentResponseId: UUID | null = null;
   private readonly debug = process.env.VUHLP_DEBUG_API === "true";
 
+  private withRunMeta(meta?: LogMeta): LogMeta {
+    return { ...(meta ?? {}), runId: this.config.runId };
+  }
+
   constructor(config: ApiProviderConfig, logger: Logger = new ConsoleLogger()) {
     this.config = config;
     this.logger = logger;
@@ -88,7 +92,7 @@ export class ApiProviderAdapter implements ProviderAdapter {
 
   private debugLog(message: string, meta?: LogMeta): void {
     if (this.debug) {
-      this.logger.debug(message, meta);
+      this.logger.debug(message, this.withRunMeta(meta));
     }
   }
 
@@ -144,7 +148,10 @@ export class ApiProviderAdapter implements ProviderAdapter {
 
   async resolveApproval(approvalId: UUID, resolution: ApprovalResolution): Promise<void> {
     if (!this.pendingApproval || this.pendingApproval.approvalId !== approvalId) {
-      this.logger.warn("approval resolution without pending request", { approvalId });
+      this.logger.warn(
+        "approval resolution without pending request",
+        this.withRunMeta({ approvalId })
+      );
       return;
     }
 

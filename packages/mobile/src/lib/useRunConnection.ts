@@ -1,11 +1,9 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import type { EventEnvelope, NodeState } from '@vuhlp/contracts';
+import type { EventEnvelope, NodeState, ChatMessage, ToolEvent } from '@vuhlp/contracts';
 import { api, getWebSocketUrl } from './api';
 import {
   useGraphStore,
-  type ChatMessage,
   type PendingApproval,
-  type ToolEvent,
   type TurnStatusEvent,
 } from '@/stores/graph-store';
 
@@ -50,6 +48,7 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const connectionIdRef = useRef(0);
+  const seenEventIdsRef = useRef<Set<string>>(new Set());
 
   const setRun = useGraphStore((s) => s.setRun);
   const applyRunPatch = useGraphStore((s) => s.applyRunPatch);
@@ -94,6 +93,10 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
 
   const handleEvent = useCallback(
     (event: EventEnvelope) => {
+      if (seenEventIdsRef.current.has(event.id)) {
+        return;
+      }
+      seenEventIdsRef.current.add(event.id);
       switch (event.type) {
         case 'run.patch':
           applyRunPatch(event.patch);
@@ -291,6 +294,29 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
     ]
   );
 
+  const syncEventsAfterConnect = useCallback(
+    (connectionId: number) => {
+      if (!runId) {
+        return;
+      }
+      api
+        .getRunEvents(runId)
+        .then((events) => {
+          if (connectionId !== connectionIdRef.current) {
+            return;
+          }
+          for (const event of events) {
+            handleEvent(event);
+          }
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('[ws] failed to sync events after connect:', message);
+        });
+    },
+    [runId, handleEvent]
+  );
+
   const connect = useCallback(() => {
     if (!runId) return;
 
@@ -308,6 +334,7 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
       console.log(`[ws] connected id=${connectionId}`);
       reconnectAttemptsRef.current = 0;
       setState((s) => ({ ...s, connected: true }));
+      syncEventsAfterConnect(connectionId);
     };
 
     ws.onmessage = (e) => {
@@ -361,6 +388,7 @@ export function useRunConnection(runId: string | undefined): ConnectionState {
     }
 
     reset();
+    seenEventIdsRef.current = new Set();
     setState({ loading: true, error: null, connected: false });
 
     Promise.all([api.getRun(runId), api.getRunEvents(runId)])

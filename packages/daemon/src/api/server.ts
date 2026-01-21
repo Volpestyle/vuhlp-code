@@ -6,10 +6,12 @@ import type {
   CreateEdgeRequest,
   CreateNodeRequest,
   CreateRunRequest,
+  CreateTemplateRequest,
   PostChatRequest,
   ResolveApprovalRequest,
   UpdateRunRequest,
-  UpdateNodeRequest
+  UpdateNodeRequest,
+  UpdateTemplateRequest
 } from "@vuhlp/contracts";
 
 export function createServer(runtime: Runtime): http.Server {
@@ -81,10 +83,48 @@ export function createServer(runtime: Runtime): http.Server {
     }
   });
 
+  app.get("/api/templates", async (_req, res) => {
+    try {
+      const result = await runtime.listTemplates();
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
   app.get("/api/templates/:name", async (req, res) => {
     try {
       const template = await runtime.getRoleTemplate(req.params.name);
       res.json(template);
+    } catch (error) {
+      res.status(400).json({ error: String(error) });
+    }
+  });
+
+  app.post("/api/templates", async (req, res) => {
+    try {
+      const body = req.body as CreateTemplateRequest;
+      const result = await runtime.createTemplate(body.name, body.content);
+      res.status(201).json(result);
+    } catch (error) {
+      res.status(400).json({ error: String(error) });
+    }
+  });
+
+  app.put("/api/templates/:name", async (req, res) => {
+    try {
+      const body = req.body as UpdateTemplateRequest;
+      const result = await runtime.updateTemplate(req.params.name, body.content);
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: String(error) });
+    }
+  });
+
+  app.delete("/api/templates/:name", async (req, res) => {
+    try {
+      const result = await runtime.deleteTemplate(req.params.name);
+      res.json(result);
     } catch (error) {
       res.status(400).json({ error: String(error) });
     }

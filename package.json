@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "dev": "pnpm --filter @vuhlp/daemon dev",
+    "dev:clean": "pnpm build:clis && pnpm dev",
     "dev:ui": "pnpm --parallel --filter @vuhlp/spinners --filter @vuhlp/ui dev",
     "build": "pnpm -r build && pnpm build:clis",
     "build:clis": "pnpm build:codex-cli && pnpm build:gemini-cli",

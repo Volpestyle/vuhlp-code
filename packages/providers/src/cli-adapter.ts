@@ -13,7 +13,7 @@ import type {
 } from "@vuhlp/contracts";
 import { asJsonObject, getNumber, getString, parseJsonValue, type JsonObject } from "./json.js";
 import { parseCliEventLine, parseCliStreamEndLine, isIgnoredEvent, type ParsedCliEvent, type ParsedCliEventResult } from "./cli-protocol.js";
-import { ConsoleLogger, type Logger } from "./logger.js";
+import { ConsoleLogger, type Logger, type LogMeta } from "./logger.js";
 import { normalizeCliEvent } from "./normalize.js";
 import type {
   CliProviderConfig,
@@ -70,6 +70,10 @@ export class CliProviderAdapter implements ProviderAdapter {
   private loggedStreamJsonEof = false;
   private loggedStreamJsonInput = false;
 
+  private withRunMeta(meta?: LogMeta): LogMeta {
+    return { ...(meta ?? {}), runId: this.config.runId };
+  }
+
   constructor(config: CliProviderConfig, logger: Logger = new ConsoleLogger()) {
     this.config = config;
     this.logger = logger;
@@ -97,17 +101,17 @@ export class CliProviderAdapter implements ProviderAdapter {
     await this.ensureProcess();
     const closeAfterPrompt = this.shouldCloseAfterPrompt();
     if (this.shouldUseStreamJsonInput() && !this.loggedStreamJsonInput) {
-      this.logger.info("stream-json input enabled; keeping stdin open between turns", {
+      this.logger.info("stream-json input enabled; keeping stdin open between turns", this.withRunMeta({
         nodeId: this.config.nodeId,
         provider: this.config.provider
-      });
+      }));
       this.loggedStreamJsonInput = true;
     }
     if (closeAfterPrompt && this.config.protocol === "stream-json" && !this.loggedStreamJsonEof) {
-      this.logger.info("stream-json prompts require stdin EOF; closing input after prompt", {
+      this.logger.info("stream-json prompts require stdin EOF; closing input after prompt", this.withRunMeta({
         nodeId: this.config.nodeId,
         provider: this.config.provider
-      });
+      }));
       this.loggedStreamJsonEof = true;
     }
     this.shouldCloseAfterTurn = !this.config.resume || closeAfterPrompt;
@@ -139,20 +143,20 @@ export class CliProviderAdapter implements ProviderAdapter {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn("failed to interrupt provider process", {
+      this.logger.warn("failed to interrupt provider process", this.withRunMeta({
         nodeId: this.config.nodeId,
         message
-      });
+      }));
     }
   }
 
   async resolveApproval(approvalId: UUID, resolution: ApprovalResolution): Promise<void> {
     await this.ensureProcess();
     if (!this.pendingApprovals.has(approvalId) && !this.resolvedApprovals.has(approvalId)) {
-      this.logger.warn("approval resolution without pending request", {
+      this.logger.warn("approval resolution without pending request", this.withRunMeta({
         nodeId: this.config.nodeId,
         approvalId
-      });
+      }));
     }
     await this.sendApprovalResolution(approvalId, resolution, "ui");
   }
@@ -163,7 +167,10 @@ export class CliProviderAdapter implements ProviderAdapter {
       return;
     }
     if (this.config.resetCommands.length === 0) {
-      this.logger.warn("reset requested without reset commands", { nodeId: this.config.nodeId });
+      this.logger.warn(
+        "reset requested without reset commands",
+        this.withRunMeta({ nodeId: this.config.nodeId })
+      );
       return;
     }
     for (const command of this.config.resetCommands) {
@@ -187,7 +194,7 @@ export class CliProviderAdapter implements ProviderAdapter {
   }
 
   private async spawnProcess(): Promise<void> {
-    this.logger.info("starting provider process", {
+    this.logger.info("starting provider process", this.withRunMeta({
       nodeId: this.config.nodeId,
       provider: this.config.provider,
       command: this.config.command,
@@ -195,7 +202,7 @@ export class CliProviderAdapter implements ProviderAdapter {
       protocol: this.config.protocol,
       resume: this.config.resume,
       nativeToolHandling: this.config.nativeToolHandling ?? "vuhlp"
-    });
+    }));
 
     const env = this.config.env ? { ...process.env, ...this.config.env } : process.env;
     const child = spawn(this.config.command, this.config.args ?? [], {
@@ -210,7 +217,10 @@ export class CliProviderAdapter implements ProviderAdapter {
     child.on("error", (error: Error) => {
       this.hadProcessError = true;
       this.awaitingTurn = false;
-      this.logger.error("provider process error", { nodeId: this.config.nodeId, message: error.message });
+      this.logger.error(
+        "provider process error",
+        this.withRunMeta({ nodeId: this.config.nodeId, message: error.message })
+      );
       this.errorListeners.emit(error);
       this.emitTurnStatus("turn.failed", error.message);
       this.stopHeartbeat();
@@ -221,11 +231,11 @@ export class CliProviderAdapter implements ProviderAdapter {
       if (this.process === child) {
         this.process = null;
       }
-      this.logger.warn("provider process exited", {
+      this.logger.warn("provider process exited", this.withRunMeta({
         nodeId: this.config.nodeId,
         code: code ?? null,
         signal: signal ?? null
-      });
+      }));
       if (this.config.protocol === "raw" && this.awaitingTurn && !this.hadProcessError) {
         const content = this.sawTurnOutput ? "" : this.formatRawExitMessage(code, signal);
         this.emitRawFinal(content);
@@ -283,10 +293,10 @@ export class CliProviderAdapter implements ProviderAdapter {
       // Truly unrecognized JSON event - log for debugging
       const excerpt =
         this.debugCli || trimmed.length <= 200 ? trimmed : `${trimmed.slice(0, 200)}...`;
-      this.logger.debug("unrecognized JSON event type", {
+      this.logger.debug("unrecognized JSON event type", this.withRunMeta({
         nodeId: this.config.nodeId,
         line: excerpt
-      });
+      }));
     }
 
     const shouldLog = source === "stderr" || this.config.protocol === "raw" || !handledStructured;
@@ -419,13 +429,16 @@ export class CliProviderAdapter implements ProviderAdapter {
     }
     if (delta.length > existing.length && delta.startsWith(existing)) {
       const remainder = delta.slice(existing.length);
-      this.logger.debug("normalized snapshot stream delta", {
-        nodeId: this.config.nodeId,
-        kind,
-        previousLength: existing.length,
-        incomingLength: delta.length,
-        emittedLength: remainder.length
-      });
+      this.logger.debug(
+        "normalized snapshot stream delta",
+        this.withRunMeta({
+          nodeId: this.config.nodeId,
+          kind,
+          previousLength: existing.length,
+          incomingLength: delta.length,
+          emittedLength: remainder.length
+        })
+      );
       return remainder;
     }
     return delta;
@@ -487,10 +500,10 @@ export class CliProviderAdapter implements ProviderAdapter {
     }
     const captured = this.trackToolEvent(obj);
     if (captured && this.debugCli) {
-      this.logger.debug("captured structured tool event", {
-        nodeId: this.config.nodeId,
-        line
-      });
+      this.logger.debug(
+        "captured structured tool event",
+        this.withRunMeta({ nodeId: this.config.nodeId, line })
+      );
     }
     return captured;
   }
@@ -587,7 +600,10 @@ export class CliProviderAdapter implements ProviderAdapter {
       const args = this.parseToolArgs(entry.inputJson);
       const mapped = this.mapToolUse(entry.name, args);
       if (!mapped) {
-        this.logger.debug("ignored provider tool", { nodeId: this.config.nodeId, tool: entry.name });
+        this.logger.debug(
+          "ignored provider tool",
+          this.withRunMeta({ nodeId: this.config.nodeId, tool: entry.name })
+        );
         continue;
       }
       const id = entry.id ?? randomUUID();
@@ -607,10 +623,10 @@ export class CliProviderAdapter implements ProviderAdapter {
     if (!obj) {
       const input =
         this.debugCli || trimmed.length <= 200 ? trimmed : `${trimmed.slice(0, 200)}...`;
-      this.logger.warn("failed to parse tool input JSON", {
-        nodeId: this.config.nodeId,
-        input
-      });
+      this.logger.warn(
+        "failed to parse tool input JSON",
+        this.withRunMeta({ nodeId: this.config.nodeId, input })
+      );
       return {};
     }
     return obj;
@@ -804,10 +820,11 @@ export class CliProviderAdapter implements ProviderAdapter {
     if (this.config.protocol === "raw") {
       return input.prompt;
     }
+    if (this.shouldUseStreamJsonInput()) {
+      return this.serializeStreamJsonInput(input);
+    }
     if (this.config.protocol === "stream-json") {
-      return this.shouldUseStreamJsonInput()
-        ? this.serializeStreamJsonInput(input)
-        : input.prompt;
+      return input.prompt;
     }
     return JSON.stringify({
       kind: "prompt",
@@ -818,7 +835,8 @@ export class CliProviderAdapter implements ProviderAdapter {
   }
 
   private shouldUseStreamJsonInput(): boolean {
-    if (this.config.protocol !== "stream-json") {
+    // Both stream-json and jsonl protocols can support structured input
+    if (this.config.protocol !== "stream-json" && this.config.protocol !== "jsonl") {
       return false;
     }
     if (this.config.provider === "claude") {
@@ -887,10 +905,10 @@ export class CliProviderAdapter implements ProviderAdapter {
     this.pendingApprovals.delete(approvalId);
 
     if (this.config.protocol !== "stream-json") {
-      this.logger.error("approval resolution not supported for non-stream-json protocol", {
-        nodeId: this.config.nodeId,
-        protocol: this.config.protocol
-      });
+      this.logger.error(
+        "approval resolution not supported for non-stream-json protocol",
+        this.withRunMeta({ nodeId: this.config.nodeId, protocol: this.config.protocol })
+      );
       return;
     }
 
@@ -900,11 +918,10 @@ export class CliProviderAdapter implements ProviderAdapter {
       resolution
     });
     await this.writeLine(payload);
-    this.logger.info("approval resolved", {
-      nodeId: this.config.nodeId,
-      approvalId,
-      source
-    });
+    this.logger.info(
+      "approval resolved",
+      this.withRunMeta({ nodeId: this.config.nodeId, approvalId, source })
+    );
 
     const event = normalizeCliEvent(this.eventContext(), {
       type: "approval.resolved",

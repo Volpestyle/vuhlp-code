@@ -1,0 +1,27 @@
+{
+    "name": "@vuhlp/spinners",
+    "version": "0.1.0",
+    "private": true,
+    "main": "src/index.ts",
+    "exports": {
+        "./native": "./src/native/index.ts"
+    },
+    "scripts": {
+        "lint": "eslint . --ext .ts,.tsx",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@react-three/drei": "^10.7.7",
+        "@react-three/fiber": "^9.5.0",
+        "react": "19.1.0",
+        "react-native": "0.81.5",
+        "react-native-gesture-handler": "~2.28.0",
+        "react-native-reanimated": "~4.1.6",
+        "three": "^0.182.0"
+    },
+    "devDependencies": {
+        "@types/react": "^19.2.8",
+        "@types/three": "^0.182.0",
+        "typescript": "^5.9.3"
+    }
+}

@@ -1,12 +1,15 @@
 import type {
   Artifact,
   ArtifactMetadata,
+  Envelope,
   EventEnvelope,
   NodeConnection,
   NodeState,
   PromptArtifacts,
+  UserMessageRecord,
   UUID
 } from "@vuhlp/contracts";
+import { ConsoleLogger, type Logger } from "@vuhlp/providers";
 import type { NodeRunner, TurnResult } from "./runner.js";
 import type { NodeRecord, RunRecord, RunStore } from "./store.js";
 import { updateStallState } from "./loop-safety.js";
@@ -19,6 +22,7 @@ export interface SchedulerOptions {
   runner: NodeRunner;
   dataDir: string;
   stallThreshold?: number;
+  logger?: Logger;
 }
 
 export class Scheduler {
@@ -27,6 +31,7 @@ export class Scheduler {
   private readonly runner: NodeRunner;
   private readonly dataDir: string;
   private readonly stallThreshold: number;
+  private readonly logger: Logger;
   private timer?: NodeJS.Timeout;
   private ticking = false;
   private artifactStores = new Map<UUID, ArtifactStore>();
@@ -37,6 +42,7 @@ export class Scheduler {
     this.runner = options.runner;
     this.dataDir = options.dataDir;
     this.stallThreshold = options.stallThreshold ?? 2;
+    this.logger = options.logger ?? new ConsoleLogger({ scope: "scheduler" });
   }
 
   start(intervalMs = 250): void {
@@ -90,7 +96,8 @@ export class Scheduler {
     return (
       nodeRecord.runtime.inbox.length > 0 ||
       nodeRecord.runtime.queuedMessages.length > 0 ||
-      nodeRecord.runtime.pendingTurn
+      nodeRecord.runtime.pendingTurn ||
+      nodeRecord.runtime.autoPromptQueued
     );
   }
 
@@ -123,10 +130,20 @@ export class Scheduler {
     });
 
     const resumePending = nodeRecord.runtime.pendingTurn;
-    const { envelopes, messages } = resumePending
-      ? { envelopes: [], messages: [] }
-      : this.store.consumeInbox(nodeRecord);
-    if (!resumePending) {
+    const hasQueuedInputs =
+      nodeRecord.runtime.inbox.length > 0 || nodeRecord.runtime.queuedMessages.length > 0;
+    const autoQueued = nodeRecord.runtime.autoPromptQueued;
+    let envelopes: Envelope[] = [];
+    let messages: UserMessageRecord[] = [];
+    if (resumePending) {
+      nodeRecord.runtime.autoPromptQueued = false;
+    } else if (autoQueued && !hasQueuedInputs) {
+      nodeRecord.runtime.autoPromptQueued = false;
+    } else {
+      nodeRecord.runtime.autoPromptQueued = false;
+      const consumed = this.store.consumeInbox(nodeRecord);
+      envelopes = consumed.envelopes;
+      messages = consumed.messages;
       this.patchNode(record, nodeRecord, { inboxCount: 0 });
     }
 
@@ -425,6 +442,8 @@ export class Scheduler {
       status: "idle",
       summary: result.summary
     });
+
+    this.queueAutoPrompt(record, nodeRecord);
   }
 
   private async handleInterrupted(
@@ -553,6 +572,44 @@ export class Scheduler {
       artifact
     });
     return artifact;
+  }
+
+  private queueAutoPrompt(record: RunRecord, nodeRecord: NodeRecord): void {
+    if (!this.shouldAutoPrompt(record, nodeRecord)) {
+      return;
+    }
+    nodeRecord.runtime.autoPromptQueued = true;
+    this.logger.info("auto re-prompt queued", {
+      runId: record.state.id,
+      nodeId: nodeRecord.state.id,
+      roleTemplate: nodeRecord.state.roleTemplate
+    });
+  }
+
+  private shouldAutoPrompt(record: RunRecord, nodeRecord: NodeRecord): boolean {
+    if (record.state.status !== "running" || record.state.mode !== "AUTO") {
+      return false;
+    }
+    if (!this.isOrchestratorRole(nodeRecord.state.roleTemplate)) {
+      return false;
+    }
+    if (nodeRecord.state.status !== "idle") {
+      return false;
+    }
+    if (nodeRecord.runtime.pendingTurn || nodeRecord.runtime.autoPromptQueued) {
+      return false;
+    }
+    if (nodeRecord.runtime.inbox.length > 0 || nodeRecord.runtime.queuedMessages.length > 0) {
+      return false;
+    }
+    if (nodeRecord.state.connection?.status === "disconnected") {
+      return false;
+    }
+    return true;
+  }
+
+  private isOrchestratorRole(roleTemplate: string): boolean {
+    return roleTemplate.trim().toLowerCase() === "orchestrator";
   }
 
   private getArtifactStore(runId: UUID): ArtifactStore {

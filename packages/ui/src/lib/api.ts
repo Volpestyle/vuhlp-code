@@ -34,6 +34,10 @@ export const stopNodeProcess = client.stopNodeProcess;
 export const interruptNodeProcess = client.interruptNodeProcess;
 export const getArtifactContent = client.getArtifactContent;
 export const getRoleTemplate = client.getRoleTemplate;
+export const listTemplates = client.listTemplates;
+export const createTemplate = client.createTemplate;
+export const updateTemplate = client.updateTemplate;
+export const deleteTemplate = client.deleteTemplate;
 export const listDirectory = client.listDirectory;
 
 // Functions with slightly different signatures need wrappers to maintain backwards compatibility

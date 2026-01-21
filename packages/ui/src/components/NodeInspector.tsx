@@ -15,7 +15,6 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject 
 import type {
   NodeState,
   Artifact,
-  Envelope,
   EdgeState,
   ProviderName,
   NodeCapabilities,
@@ -32,8 +31,11 @@ import {
   parseProviderName,
   PERMISSIONS_MODE_OPTIONS,
   PROVIDER_OPTIONS,
+  isHandoffTimelineItem,
+  buildReceiveHandoffToolEvent,
 } from '@vuhlp/shared';
-import { useRunStore, type ChatMessage, type ToolEvent, type NodeLogEntry, type TimelineEvent } from '../stores/runStore';
+import { useRunStore, type NodeLogEntry, type TimelineEvent } from '../stores/runStore';
+import type { ChatMessage } from '@vuhlp/contracts';
 import { useChatAutoScroll } from '../hooks/useChatAutoScroll';
 import { TimelineItem } from './TimelineItem';
 import {
@@ -73,62 +75,7 @@ const BOOLEAN_CAPABILITIES: BooleanCapability[] = [
   'delegateOnly',
 ];
 
-const isHandoffToolName = (name: string): boolean =>
-  name === 'send_handoff' || name === 'receive_handoff';
 
-const isHandoffToolEvent = (event: ToolEvent): boolean => isHandoffToolName(event.tool.name);
-
-const isHandoffTimelineItem = (item: TimelineEvent): boolean =>
-  item.type === 'tool' && isHandoffToolEvent(item.data);
-
-const buildReceiveHandoffToolEvent = (handoff: Envelope): ToolEvent => {
-  const toolId = `handoff-${handoff.id}`;
-  const payload = handoff.payload;
-  const args: {
-    envelopeId: string;
-    from: string;
-    to: string;
-    message: string;
-    structured?: Envelope['payload']['structured'];
-    artifacts?: Envelope['payload']['artifacts'];
-    status?: Envelope['payload']['status'];
-    response?: Envelope['payload']['response'];
-    contextRef?: string;
-  } = {
-    envelopeId: handoff.id,
-    from: handoff.fromNodeId,
-    to: handoff.toNodeId,
-    message: payload.message,
-  };
-
-  if (payload.structured) {
-    args.structured = payload.structured;
-  }
-  if (payload.artifacts) {
-    args.artifacts = payload.artifacts;
-  }
-  if (payload.status) {
-    args.status = payload.status;
-  }
-  if (payload.response) {
-    args.response = payload.response;
-  }
-  if (handoff.contextRef) {
-    args.contextRef = handoff.contextRef;
-  }
-
-  return {
-    id: toolId,
-    nodeId: handoff.toNodeId,
-    tool: {
-      id: toolId,
-      name: 'receive_handoff',
-      args,
-    },
-    status: 'completed',
-    timestamp: handoff.createdAt,
-  };
-};
 
 
 type NodeConfigDraft = {
@@ -189,6 +136,7 @@ export function NodeInspector({ node }: NodeInspectorProps) {
   const getNodeEdges = useRunStore((s) => s.getNodeEdges);
 
   const recentHandoffs = useRunStore((s) => s.recentHandoffs);
+  const run = useRunStore((s) => s.run);
   const runId = useRunStore((s) => s.run?.id);
   const runUsage = useRunStore((s) => s.run?.usage);
   const removeNode = useRunStore((s) => s.removeNode);
@@ -251,6 +199,8 @@ export function NodeInspector({ node }: NodeInspectorProps) {
   const transcripts = artifacts
     .filter((a) => a.kind === 'transcript')
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const isOrchestrator = node.roleTemplate.trim().toLowerCase() === 'orchestrator';
+  const isAutoMode = run?.mode === 'AUTO';
 
   useEffect(() => {
     setProviderValue(node.provider);
@@ -729,9 +679,19 @@ export function NodeInspector({ node }: NodeInspectorProps) {
           </div>
           <div className="inspector__meta-block">
             <span className="inspector__meta-label">Role</span>
-            <span className="inspector__role">
-              {node.customSystemPrompt ? 'custom' : node.roleTemplate}
-            </span>
+            <div className="inspector__role-row">
+              <span className="inspector__role">
+                {node.customSystemPrompt ? 'custom' : node.roleTemplate}
+              </span>
+              {isOrchestrator && (
+                <span className="inspector__role-badge inspector__role-badge--orchestrator">
+                  Orchestrator
+                </span>
+              )}
+              {isOrchestrator && isAutoMode && (
+                <span className="inspector__role-badge inspector__role-badge--auto">Auto Loop</span>
+              )}
+            </div>
           </div>
         </div>
       </header>

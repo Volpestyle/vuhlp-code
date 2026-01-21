@@ -256,9 +256,7 @@
 }
 
 .timeline-tool__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: block; /* changed from flex to allow internal structure */
   width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--color-bg-subtle);
@@ -269,16 +267,39 @@
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   transition: background 0.15s ease;
+  text-align: left;
 }
 
 .timeline-tool__header:hover {
   background: var(--color-bg-elevated);
 }
 
-.timeline-tool__title-row {
+.timeline-tool__header-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+}
+
+.timeline-tool__meta-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.timeline-tool__main-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.timeline-tool__title-group {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
 }
 
 .timeline-tool__icon {
@@ -289,6 +310,9 @@
 
 .timeline-tool__name {
   font-weight: 600;
+  overflow-wrap: break-word; /* prevent overflow but prefer break points */
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .timeline-tool__status {
@@ -297,6 +321,7 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  flex-shrink: 0;
 }
 
 .timeline-tool__status--proposed {
@@ -321,6 +346,9 @@
 
 .timeline-tool__time {
   color: var(--color-text-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin-left: var(--space-2);
 }
 
 .timeline-tool__body {
@@ -404,10 +432,7 @@
   background: var(--color-bg-dim);
   padding: 2px 6px;
   border-radius: var(--radius-sm);
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Removed max-width constraints */
 }
 
 .ms-1 {

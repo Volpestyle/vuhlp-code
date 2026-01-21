@@ -30,11 +30,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Plus, Clock, ArrowUp } from 'iconoir-react-native';
 import {
   useGraphStore,
-  type ChatMessage,
-  type ToolEvent,
   type TurnStatusEvent,
 } from '@/stores/graph-store';
-import type { Envelope } from '@vuhlp/contracts';
+import type { Envelope, ChatMessage, ToolEvent } from '@vuhlp/contracts';
 import { api } from '@/lib/api';
 import { useChatAutoScroll } from '@/lib/useChatAutoScroll';
 import { ThinkingSpinner } from '@vuhlp/spinners/native';
@@ -48,6 +46,9 @@ import {
   formatClockTime,
   formatTurnSummary,
   type TimelineItem,
+  isHandoffToolName,
+  isHandoffToolEvent,
+  buildReceiveHandoffToolEvent,
 } from '@vuhlp/shared';
 
 const MIN_HEIGHT = 120;
@@ -90,59 +91,7 @@ const resolveKeyboardEasing = (easing: KeyboardEasingName): EasingFunction | Eas
   }
 };
 
-const isHandoffToolName = (name: string): boolean =>
-  name === 'send_handoff' || name === 'receive_handoff';
 
-const isHandoffToolEvent = (event: ToolEvent): boolean => isHandoffToolName(event.tool.name);
-
-const buildReceiveHandoffToolEvent = (handoff: Envelope): ToolEvent => {
-  const toolId = `handoff-${handoff.id}`;
-  const payload = handoff.payload;
-  const args: {
-    envelopeId: string;
-    from: string;
-    to: string;
-    message: string;
-    structured?: Envelope['payload']['structured'];
-    artifacts?: Envelope['payload']['artifacts'];
-    status?: Envelope['payload']['status'];
-    response?: Envelope['payload']['response'];
-    contextRef?: string;
-  } = {
-    envelopeId: handoff.id,
-    from: handoff.fromNodeId,
-    to: handoff.toNodeId,
-    message: payload.message,
-  };
-
-  if (payload.structured) {
-    args.structured = payload.structured;
-  }
-  if (payload.artifacts) {
-    args.artifacts = payload.artifacts;
-  }
-  if (payload.status) {
-    args.status = payload.status;
-  }
-  if (payload.response) {
-    args.response = payload.response;
-  }
-  if (handoff.contextRef) {
-    args.contextRef = handoff.contextRef;
-  }
-
-  return {
-    id: toolId,
-    nodeId: handoff.toNodeId,
-    tool: {
-      id: toolId,
-      name: 'receive_handoff',
-      args,
-    },
-    status: 'completed',
-    timestamp: handoff.createdAt,
-  };
-};
 
 export function NodeInspector() {
   const { height: screenHeight } = useWindowDimensions();
@@ -196,6 +145,9 @@ export function NodeInspector() {
   }, [nodes, selectedNodeId]);
 
   const selectedNode = displayNode;
+  const isOrchestrator =
+    selectedNode?.roleTemplate.trim().toLowerCase() === 'orchestrator';
+  const isAutoMode = run?.mode === 'AUTO';
   const nodeMessages = selectedNode?.id ? chatMessages[selectedNode.id] ?? [] : [];
   const nodeToolEvents = useMemo(() => {
     if (!selectedNode?.id) return [];
@@ -247,7 +199,7 @@ export function NodeInspector() {
     () => `${buildTimelineUpdateKey(timeline)}-${isRunning}-${isStreaming}`,
     [timeline, isRunning, isStreaming]
   );
-  const { handleScroll } = useChatAutoScroll({
+  const { handleScroll, onContentSizeChange } = useChatAutoScroll({
     scrollRef: scrollViewRef,
     enabled: activeTab === 'chat',
     updateKey: autoScrollKey,
@@ -284,9 +236,11 @@ export function NodeInspector() {
 
     if (inspectorOpen && (nodeChanged || !wasOpen)) {
       isClosingRef.current = false;
-      translateY.value = maxTranslateY;
+      // Start from closed position and animate in
+      translateY.value = closedTranslateY;
+      translateY.value = withSpring(maxTranslateY, { damping: 50, stiffness: 200 });
     }
-  }, [inspectorOpen, selectedNode, maxTranslateY]);
+  }, [inspectorOpen, selectedNode, maxTranslateY, closedTranslateY]);
 
   useEffect(() => {
     // If not open and no closing animation pending, do nothing
@@ -690,6 +644,7 @@ export function NodeInspector() {
             style={styles.messagesContainer}
             contentContainerStyle={styles.messagesContent}
             onScroll={handleScroll}
+            onContentSizeChange={onContentSizeChange}
             scrollEventThrottle={16}
             keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled"
@@ -801,6 +756,12 @@ export function NodeInspector() {
           <DetailRow label="Status" value={selectedNode.status} />
           <DetailRow label="Provider" value={selectedNode.provider} />
           <DetailRow label="Role" value={selectedNode.roleTemplate} />
+          {isOrchestrator && (
+            <View style={styles.roleBadges}>
+              <Badge label="Orchestrator" />
+              {isAutoMode && <Badge label="Auto Loop" />}
+            </View>
+          )}
           <DetailRow label="Summary" value={selectedNode.summary || 'No activity'} />
           {selectedNode.inboxCount !== undefined && (
             <DetailRow label="Inbox" value={`${selectedNode.inboxCount} messages`} />
@@ -1471,6 +1432,12 @@ const styles = StyleSheet.create({
   detailsContainer: {
     flex: 1,
     padding: 16,
+  },
+  roleBadges: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 8,
   },
   detailRow: {
     flexDirection: 'row',

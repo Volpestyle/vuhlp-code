@@ -68,12 +68,19 @@ The task payload should include:
 ## Agent templates
 Templates are stored as editable prompt files. They are intended as starting points, not constraints. Each template is a single file so users can version and replace it.
 
-Template files:
-- `docs/templates/orchestrator.md`
-- `docs/templates/planner.md`
-- `docs/templates/implementer.md`
-- `docs/templates/reviewer.md`
-- `docs/templates/investigator.md`
+### Template resolution
+The runtime loads templates in this order:
+1. **Repo override**: `{repoRoot}/docs/templates/{templateName}.md` - user-provided templates take priority
+2. **System defaults**: `packages/daemon/docs/templates/{templateName}.md` - shipped defaults
+
+This allows users to override any template by placing a file in their repo's `docs/templates/` directory.
+
+### Default template files
+- `packages/daemon/docs/templates/orchestrator.md`
+- `packages/daemon/docs/templates/planner.md`
+- `packages/daemon/docs/templates/implementer.md`
+- `packages/daemon/docs/templates/reviewer.md`
+- `packages/daemon/docs/templates/investigator.md`
 
 ### Orchestrator (default supervisor)
 - Delegates work to other agents.
@@ -123,6 +130,8 @@ Spawning nodes and using high-risk tools should be opt-in per node. A node can o
 CLI transports support tool calling in two ways:
 - **Native tools** (preferred when available): Provider-native tool_use events. Claude, Codex, and Gemini always execute their own native tools; other CLIs default to vuhlp execution and can be toggled with `VUHLP_<PROVIDER>_NATIVE_TOOLS=provider|vuhlp`.
 - **tool_call JSON**: emit a single-line JSON object in your response. vuhlp parses the line, executes the tool, and emits tool events for visibility. This is supported alongside streaming (stream-json) so you can keep progressive output.
+
+In provider-native mode (Claude, Codex, Gemini), use native tools for file/command operations. Only emit tool_call JSON for vuhlp-only tools: `spawn_node`, `create_edge`, `send_handoff`.
 
 Never use Bash to emit tool_call JSON. Emit the JSON directly in your assistant response.
 Bash output containing tool_call JSON is treated as an error.

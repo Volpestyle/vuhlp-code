@@ -15,6 +15,8 @@ import {
   ConsoleLogger,
   createProviderAdapter,
   executeToolCall,
+  getProviderNativeToolNames,
+  getVuhlpToolNames,
   resolvePermissionsMode,
   type ApiProviderConfig,
   type CliProviderConfig,
@@ -33,9 +35,17 @@ import { AsyncQueue } from "./async-queue.js";
 import { PromptBuilder } from "./prompt-builder.js";
 import { ProviderResolver, type ProviderSpec } from "./provider-resolver.js";
 import type { NodeRunner, TurnInput, TurnResult } from "./runner.js";
+import { SessionStateManager } from "./session-state-manager.js";
 import { extractToolCalls, isRecord, mergeToolCalls } from "./tool-call-parser.js";
 import { CLI_TOOL_PROTOCOL_PROVIDER_NATIVE, CLI_TOOL_PROTOCOL_VUHLP } from "./tool-protocols.js";
 import { hashString, newId, nowIso } from "./utils.js";
+
+const VUHLP_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...getVuhlpToolNames()
+]);
+const PROVIDER_NATIVE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...getProviderNativeToolNames()
+]);
 
 interface PendingTurn {
   promptArtifacts: PromptArtifacts;
@@ -52,19 +62,11 @@ interface ProviderSession {
   adapter: ProviderAdapter;
   queue: AsyncQueue<TurnSignal>;
   config: ProviderConfig;
-  promptSent: boolean;
-  lastPromptHeaderHash?: string;
   pendingTurn?: PendingTurn;
   activeTurn?: PendingTurn;
   sessionId?: string;
   interrupted?: boolean;
-  completedTurns: number;
-  baseArgs?: string[];
-  resumeArgs?: string[];
-  replayTurns: number;
-  needsReplay: boolean;
-  transcript: UserMessageRecord[];
-  statelessProtocol: boolean;
+  state: SessionStateManager;
 }
 
 type TurnSignal =
@@ -129,35 +131,32 @@ export class CliRunner implements NodeRunner {
       return this.resumePendingTurn(session, input);
     }
 
-    const { input: promptInput, replayed } = this.injectReplayMessages(input, session);
+    const { input: promptInput, replayed } = session.state.injectReplayMessages(input);
     const toolProtocol = this.buildToolProtocol(session.config);
     const prompt = await this.promptBuilder.build(promptInput, { toolProtocol });
     const promptHeaderHash = this.buildPromptHeaderHash(prompt.artifacts);
-    const promptKind = this.resolvePromptKind(session, promptHeaderHash);
+    const promptKind = session.state.resolvePromptKind(session.config.resume, promptHeaderHash);
     const promptPayload = promptKind === "full" ? prompt.artifacts.full : prompt.delta;
 
     try {
       session.interrupted = false;
-      this.applyResumeArgs(session);
+      session.state.applyResumeArgs(session.config);
       await session.adapter.send({
         prompt: promptPayload,
         promptKind,
         turnId: newId()
       });
       this.updateSessionId(input.node, session);
-      if (session.needsReplay) {
-        session.needsReplay = false;
-        if (replayed) {
-          this.logger.info("replayed transcript after reconnect", {
-            nodeId: session.config.nodeId,
-            provider: session.config.provider,
-            replayTurns: session.replayTurns
-          });
-        }
+      const clearedReplay = session.state.clearReplayFlag();
+      if (clearedReplay && replayed) {
+        this.logger.info("replayed transcript after reconnect", {
+          runId: session.config.runId,
+          nodeId: session.config.nodeId,
+          provider: session.config.provider,
+          replayTurns: session.state.getReplayTurns()
+        });
       }
-      if (promptKind === "full") {
-        session.lastPromptHeaderHash = promptHeaderHash;
-      }
+      session.state.notePromptSent(promptKind, promptHeaderHash);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
@@ -168,7 +167,6 @@ export class CliRunner implements NodeRunner {
       };
     }
 
-    session.promptSent = true;
     const turnState: PendingTurn = {
       promptArtifacts: prompt.artifacts,
       partialOutput: "",
@@ -192,8 +190,8 @@ export class CliRunner implements NodeRunner {
     }
 
     if (outcome.kind === "interrupted") {
-      this.recordTranscript(session, input.messages, outcome.message);
-      session.completedTurns += 1;
+      session.state.recordTranscript(input.messages, outcome.message);
+      session.state.markTurnCompleted();
       return {
         kind: "interrupted",
         summary: outcome.summary,
@@ -211,8 +209,8 @@ export class CliRunner implements NodeRunner {
       };
     }
 
-    this.recordTranscript(session, input.messages, outcome.message);
-    session.completedTurns += 1;
+    session.state.recordTranscript(input.messages, outcome.message);
+    session.state.markTurnCompleted();
     return {
       kind: "completed",
       summary: outcome.summary,
@@ -240,7 +238,12 @@ export class CliRunner implements NodeRunner {
       this.pendingApprovals.delete(approvalId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error("failed to forward approval resolution", { approvalId, nodeId, message });
+      this.logger.error("failed to forward approval resolution", {
+        approvalId,
+        nodeId,
+        runId: session.config.runId,
+        message
+      });
     }
   }
 
@@ -260,6 +263,7 @@ export class CliRunner implements NodeRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error("failed to start provider session", {
+        runId: input.run.id,
         nodeId: input.node.id,
         provider: input.config.provider,
         message
@@ -276,12 +280,8 @@ export class CliRunner implements NodeRunner {
       return;
     }
     await session.adapter.resetSession();
-    session.promptSent = false;
     session.pendingTurn = undefined;
-    session.lastPromptHeaderHash = undefined;
-    session.completedTurns = 0;
-    session.needsReplay = false;
-    session.transcript = [];
+    session.state.resetForSessionReset();
   }
 
   async stopNode(nodeId: UUID): Promise<void> {
@@ -296,15 +296,16 @@ export class CliRunner implements NodeRunner {
     }
     session.pendingTurn = undefined;
     session.activeTurn = undefined;
-    session.promptSent = false;
-    session.lastPromptHeaderHash = undefined;
-    session.needsReplay =
-      (session.resumeArgs?.length ?? 0) === 0 && session.replayTurns > 0;
+    session.state.markDisconnected();
     try {
       await session.adapter.close();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn("failed to close provider session", { nodeId, message });
+      this.logger.warn("failed to close provider session", {
+        runId: session.config.runId,
+        nodeId,
+        message
+      });
     }
     for (const [approvalId, pendingNodeId] of this.pendingApprovals.entries()) {
       if (pendingNodeId === nodeId) {
@@ -319,8 +320,7 @@ export class CliRunner implements NodeRunner {
       return;
     }
     await this.stopNode(nodeId);
-    session.transcript = [];
-    session.needsReplay = false;
+    session.state.resetForSessionReset();
     this.sessions.delete(nodeId);
   }
 
@@ -334,25 +334,13 @@ export class CliRunner implements NodeRunner {
       await session.adapter.interrupt();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn("failed to interrupt provider session", { nodeId, message });
+      this.logger.warn("failed to interrupt provider session", {
+        runId: session.config.runId,
+        nodeId,
+        message
+      });
     }
     session.queue.push({ type: "interrupted" });
-  }
-
-  private resolvePromptKind(session: ProviderSession, promptHeaderHash: string): "full" | "delta" {
-    if (session.needsReplay) {
-      return "full";
-    }
-    if (!session.config.resume) {
-      return "full";
-    }
-    if (!session.promptSent) {
-      return "full";
-    }
-    if (session.lastPromptHeaderHash !== promptHeaderHash) {
-      return "full";
-    }
-    return "delta";
   }
 
   private buildPromptHeaderHash(artifacts: PromptArtifacts): string {
@@ -405,8 +393,8 @@ export class CliRunner implements NodeRunner {
     if (outcome.kind === "interrupted") {
       const prompt = pending.promptLogged ? undefined : pending.promptArtifacts;
       pending.promptLogged = true;
-      this.recordTranscript(session, pending.inputMessages, outcome.message);
-      session.completedTurns += 1;
+      session.state.recordTranscript(pending.inputMessages, outcome.message);
+      session.state.markTurnCompleted();
       return {
         kind: "interrupted",
         summary: outcome.summary,
@@ -425,8 +413,8 @@ export class CliRunner implements NodeRunner {
     }
 
     const prompt = pending.promptLogged ? undefined : pending.promptArtifacts;
-    this.recordTranscript(session, pending.inputMessages, outcome.message);
-    session.completedTurns += 1;
+    session.state.recordTranscript(pending.inputMessages, outcome.message);
+    session.state.markTurnCompleted();
     return {
       kind: "completed",
       summary: outcome.summary,
@@ -456,7 +444,12 @@ export class CliRunner implements NodeRunner {
         const toolCalls = signal.toolCalls ?? [];
         const shouldParseToolCalls = this.shouldParseToolCallLines(session);
         const extracted = shouldParseToolCalls
-          ? extractToolCalls(message, session.config.nodeId, this.logger)
+          ? extractToolCalls(
+            message,
+            session.config.nodeId,
+            this.logger,
+            this.getToolCallParseOptions(session)
+          )
           : { message, toolCalls: [] };
         const combinedToolCalls = mergeToolCalls(
           toolCalls,
@@ -507,81 +500,6 @@ export class CliRunner implements NodeRunner {
     return `${firstLine.slice(0, maxLength - 3)}...`;
   }
 
-  private applyResumeArgs(session: ProviderSession): void {
-    if (session.config.transport === "api") {
-      return;
-    }
-    const baseArgs = session.baseArgs ?? [];
-    const resumeArgs = session.resumeArgs ?? [];
-    const shouldResume =
-      session.config.resume && session.completedTurns > 0 && resumeArgs.length > 0;
-    session.config.args = shouldResume ? [...baseArgs, ...resumeArgs] : [...baseArgs];
-  }
-
-  private injectReplayMessages(
-    input: TurnInput,
-    session: ProviderSession
-  ): { input: TurnInput; replayed: boolean } {
-    if (!this.shouldReplay(session)) {
-      return { input, replayed: false };
-    }
-    const history = this.getReplayMessages(session);
-    if (history.length === 0) {
-      return { input, replayed: false };
-    }
-    return {
-      input: {
-        ...input,
-        messages: [...history, ...input.messages]
-      },
-      replayed: true
-    };
-  }
-
-  private shouldReplay(session: ProviderSession): boolean {
-    if (session.replayTurns <= 0) {
-      return false;
-    }
-    if (session.needsReplay) {
-      return true;
-    }
-    return session.statelessProtocol && (session.resumeArgs?.length ?? 0) === 0;
-  }
-
-  private getReplayMessages(session: ProviderSession): UserMessageRecord[] {
-    const maxMessages = session.replayTurns * 2;
-    if (maxMessages <= 0 || session.transcript.length === 0) {
-      return [];
-    }
-    return session.transcript.slice(-maxMessages);
-  }
-
-  private recordTranscript(
-    session: ProviderSession,
-    incoming: UserMessageRecord[],
-    assistantMessage?: string
-  ): void {
-    if (session.replayTurns <= 0) {
-      return;
-    }
-    session.transcript.push(...incoming);
-    const content = assistantMessage?.trim();
-    if (content) {
-      session.transcript.push({
-        id: newId(),
-        runId: session.config.runId,
-        nodeId: session.config.nodeId,
-        role: "assistant",
-        content,
-        createdAt: nowIso()
-      });
-    }
-    const maxMessages = session.replayTurns * 2;
-    if (maxMessages > 0 && session.transcript.length > maxMessages) {
-      session.transcript = session.transcript.slice(-maxMessages);
-    }
-  }
-
   private resolveToolApproval(approvalId: UUID, resolution: ApprovalResolution): boolean {
     const session = this.findSessionWithToolApproval(approvalId);
     if (!session) {
@@ -594,6 +512,7 @@ export class CliRunner implements NodeRunner {
     this.pendingApprovals.delete(approvalId);
     this.logger.info("tool approval resolved", {
       approvalId,
+      runId: session.config.runId,
       nodeId: session.config.nodeId,
       status: resolution.status
     });
@@ -616,6 +535,19 @@ export class CliRunner implements NodeRunner {
 
   private shouldParseToolCallLines(session: ProviderSession): boolean {
     return session.config.transport === "cli";
+  }
+
+  private getToolCallParseOptions(session: ProviderSession) {
+    if (session.config.transport !== "cli") {
+      return undefined;
+    }
+    if (session.config.protocol !== "stream-json") {
+      return undefined;
+    }
+    return {
+      strictWrapper: true,
+      allowlist: VUHLP_TOOL_NAMES
+    };
   }
 
   private async processToolQueue(
@@ -647,11 +579,27 @@ export class CliRunner implements NodeRunner {
 
     while (toolQueue.length > 0) {
       let tool = toolQueue[0];
+      const providerNativeGuard = this.guardProviderNativeToolCall(session, tool);
+      if (providerNativeGuard) {
+        const errorMessage = providerNativeGuard;
+        this.emitToolCompleted(session, tool.id, { ok: false, output: "" }, errorMessage);
+        this.logger.warn("provider-native tool_call ignored", {
+          runId: session.config.runId,
+          nodeId: session.config.nodeId,
+          tool: tool.name,
+          toolId: tool.id,
+          provider: session.config.provider
+        });
+        toolErrors.push(`${tool.name}: ${errorMessage}`);
+        toolQueue.shift();
+        continue;
+      }
       const agentManagementGuard = this.guardAgentManagementTool(session, tool);
       if (agentManagementGuard) {
         const errorMessage = agentManagementGuard;
         this.emitToolCompleted(session, tool.id, { ok: false, output: "" }, errorMessage);
         this.logger.warn("tool blocked by capabilities", {
+          runId: session.config.runId,
           nodeId: session.config.nodeId,
           tool: tool.name,
           toolId: tool.id,
@@ -665,6 +613,7 @@ export class CliRunner implements NodeRunner {
         const resolution = this.pendingToolResolutions.get(tool.id);
         if (!resolution) {
           this.logger.info("tool approval required", {
+            runId: session.config.runId,
             nodeId: session.config.nodeId,
             tool: tool.name,
             toolId: tool.id
@@ -689,17 +638,29 @@ export class CliRunner implements NodeRunner {
       }
 
       this.emitToolStarted(session, tool);
-      this.logger.info("tool execution started", { nodeId: session.config.nodeId, tool: tool.name, toolId: tool.id });
+      this.logger.info("tool execution started", {
+        runId: session.config.runId,
+        nodeId: session.config.nodeId,
+        tool: tool.name,
+        toolId: tool.id
+      });
       let result: ToolExecutionResult;
       try {
         result = await executeToolCall(tool, toolOptions);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.error("tool execution failed", { nodeId: session.config.nodeId, tool: tool.name, toolId: tool.id, message });
+        this.logger.error("tool execution failed", {
+          runId: session.config.runId,
+          nodeId: session.config.nodeId,
+          tool: tool.name,
+          toolId: tool.id,
+          message
+        });
         return { kind: "failed", summary: "Tool execution failed", error: message };
       }
       this.emitToolCompleted(session, tool.id, result, result.error);
       this.logger.info("tool execution completed", {
+        runId: session.config.runId,
         nodeId: session.config.nodeId,
         tool: tool.name,
         toolId: tool.id,
@@ -750,6 +711,16 @@ export class CliRunner implements NodeRunner {
       return scope === "none" ? "edgeManagement capability is disabled" : null;
     }
     return null;
+  }
+
+  private guardProviderNativeToolCall(session: ProviderSession, tool: ToolCall): string | null {
+    if (session.config.nativeToolHandling !== "provider") {
+      return null;
+    }
+    if (!PROVIDER_NATIVE_TOOL_NAMES.has(tool.name)) {
+      return null;
+    }
+    return "provider-native tool_call ignored; use provider-native tools instead";
   }
 
   private isAgentManagementTool(tool: ToolCall): boolean {
@@ -901,12 +872,14 @@ export class CliRunner implements NodeRunner {
     const resume = forceResume ? true : statelessProtocol ? false : requestedResume;
     if (forceResume && !requestedResume) {
       this.logger.warn("Claude CLI always keeps sessions alive; ignoring resume=false", {
+        runId: input.run.id,
         nodeId: input.node.id,
         provider: input.config.provider
       });
     }
     if (!resume && input.config.session.resume) {
       this.logger.warn("stateless protocol disables session resume; forcing full prompts", {
+        runId: input.run.id,
         nodeId: input.node.id,
         provider: input.config.provider,
         protocol: spec.protocol ?? "jsonl"
@@ -958,24 +931,36 @@ export class CliRunner implements NodeRunner {
     const adapter = createProviderAdapter(resolvedConfig, this.logger);
     const queue = new AsyncQueue<TurnSignal>();
     const isCli = resolvedConfig.transport !== "api";
-    const baseArgs = isCli ? [...(resolvedConfig.args ?? [])] : undefined;
+    const baseArgs = isCli ? [...(resolvedConfig.args ?? [])] : [];
+    const resumeArgs = isCli ? [...(spec.resumeArgs ?? [])] : [];
+    const state = new SessionStateManager({
+      runId: input.run.id,
+      nodeId: input.node.id,
+      baseArgs,
+      resumeArgs,
+      replayTurns: spec.replayTurns ?? 0,
+      statelessProtocol,
+      logger: this.logger,
+      logMeta: {
+        runId: input.run.id,
+        nodeId: input.node.id,
+        provider: input.config.provider
+      }
+    });
     const session: ProviderSession = {
       adapter,
       queue,
       config: resolvedConfig,
-      promptSent: false,
-      completedTurns: 0,
-      baseArgs,
-      resumeArgs: isCli ? [...(spec.resumeArgs ?? [])] : undefined,
-      replayTurns: spec.replayTurns ?? 0,
-      needsReplay: false,
-      transcript: [],
-      statelessProtocol
+      state
     };
 
     adapter.onEvent((event: EventEnvelope) => this.handleAdapterEvent(session, event));
     adapter.onError((error: Error) => {
-      this.logger.error("provider adapter error", { nodeId: input.node.id, message: error.message });
+      this.logger.error("provider adapter error", {
+        runId: input.run.id,
+        nodeId: input.node.id,
+        message: error.message
+      });
       queue.push({ type: "error", error });
     });
 
@@ -983,7 +968,11 @@ export class CliRunner implements NodeRunner {
       await adapter.start();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error("failed to start provider adapter", { nodeId: input.node.id, message });
+      this.logger.error("failed to start provider adapter", {
+        runId: input.run.id,
+        nodeId: input.node.id,
+        message
+      });
       return null;
     }
     this.updateSessionId(input.node, session);
@@ -1008,27 +997,31 @@ export class CliRunner implements NodeRunner {
     const forceResume = config.transport === "cli" && config.provider === "claude";
     if (forceResume && !requestedResume) {
       this.logger.warn("Claude CLI always keeps sessions alive; ignoring resume=false", {
+        runId: input.run.id,
         nodeId: input.node.id,
         provider: input.config.provider
       });
     }
-    if (session.statelessProtocol && requestedResume) {
+    if (session.state.isStatelessProtocol() && requestedResume) {
       this.logger.warn("stateless protocol disables session resume; keeping resume disabled", {
+        runId: input.run.id,
         nodeId: input.node.id,
         provider: input.config.provider,
         protocol: session.config.transport === "cli" ? session.config.protocol : undefined
       });
     }
-    config.resume = forceResume ? true : session.statelessProtocol ? false : requestedResume;
+    config.resume = forceResume ? true : session.state.isStatelessProtocol() ? false : requestedResume;
 
     if (prevEdgeManagement !== undefined && prevEdgeManagement !== nextEdgeManagement) {
       this.logger.info("node capabilities updated", {
+        runId: input.run.id,
         nodeId: input.node.id,
         edgeManagement: nextEdgeManagement
       });
     }
     if (prevPermissionsMode !== nextPermissionsMode) {
       this.logger.info("node permissions mode updated", {
+        runId: input.run.id,
         nodeId: input.node.id,
         permissionsMode: nextPermissionsMode
       });
@@ -1091,11 +1084,9 @@ export class CliRunner implements NodeRunner {
     if (event.type === "node.patch") {
       const connectionStatus = event.patch.connection?.status;
       if (connectionStatus === "disconnected") {
-        const canReplay = (session.resumeArgs?.length ?? 0) === 0 && session.replayTurns > 0;
-        session.promptSent = false;
-        session.lastPromptHeaderHash = undefined;
-        session.needsReplay = canReplay;
+        const canReplay = session.state.markDisconnected();
         this.logger.warn("provider session disconnected; forcing full prompt", {
+          runId: session.config.runId,
           nodeId: session.config.nodeId,
           provider: session.config.provider,
           canReplay

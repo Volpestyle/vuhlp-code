@@ -4,9 +4,13 @@
  */
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import type { Envelope, NodeState } from '@vuhlp/contracts';
-import { buildTimeline } from '@vuhlp/shared';
-import { useRunStore, type ChatMessage, type ToolEvent, type TimelineEvent } from '../stores/runStore';
+import type { NodeState } from '@vuhlp/contracts';
+import {
+  buildTimeline,
+  isHandoffTimelineItem,
+  buildReceiveHandoffToolEvent,
+} from '@vuhlp/shared';
+import { useRunStore, type ChatMessage, type ToolEvent } from '../stores/runStore';
 import { postChat } from '../lib/api';
 import { StatusBadge } from './StatusBadge';
 import { ProviderBadge } from './ProviderBadge';
@@ -20,65 +24,7 @@ type ChatVariant = 'full' | 'mid';
 type ChatFilter = 'all' | 'handoffs';
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
 
-const isHandoffToolName = (name: string): boolean =>
-  name === 'send_handoff' || name === 'receive_handoff';
 
-const isHandoffToolEvent = (event: ToolEvent): boolean => isHandoffToolName(event.tool.name);
-
-const isHandoffTimelineItem = (item: TimelineEvent): boolean =>
-  item.type === 'tool' && isHandoffToolEvent(item.data);
-
-const isToolTimelineItem = (item: TimelineEvent): item is { type: 'tool'; data: ToolEvent } =>
-  item.type === 'tool';
-
-const buildReceiveHandoffToolEvent = (handoff: Envelope): ToolEvent => {
-  const toolId = `handoff-${handoff.id}`;
-  const payload = handoff.payload;
-  const args: {
-    envelopeId: string;
-    from: string;
-    to: string;
-    message: string;
-    structured?: Envelope['payload']['structured'];
-    artifacts?: Envelope['payload']['artifacts'];
-    status?: Envelope['payload']['status'];
-    response?: Envelope['payload']['response'];
-    contextRef?: string;
-  } = {
-    envelopeId: handoff.id,
-    from: handoff.fromNodeId,
-    to: handoff.toNodeId,
-    message: payload.message,
-  };
-
-  if (payload.structured) {
-    args.structured = payload.structured;
-  }
-  if (payload.artifacts) {
-    args.artifacts = payload.artifacts;
-  }
-  if (payload.status) {
-    args.status = payload.status;
-  }
-  if (payload.response) {
-    args.response = payload.response;
-  }
-  if (handoff.contextRef) {
-    args.contextRef = handoff.contextRef;
-  }
-
-  return {
-    id: toolId,
-    nodeId: handoff.toNodeId,
-    tool: {
-      id: toolId,
-      name: 'receive_handoff',
-      args,
-    },
-    status: 'completed',
-    timestamp: handoff.createdAt,
-  };
-};
 
 interface FullscreenChatProps {
   node: NodeState;
@@ -134,7 +80,7 @@ export function FullscreenChat({
     [chatFilter, timeline]
   );
   const toolTimelineItems = useMemo(
-    () => filteredTimeline.filter(isToolTimelineItem),
+    () => filteredTimeline.filter((item): item is { type: 'tool'; data: ToolEvent } => item.type === 'tool'),
     [filteredTimeline]
   );
   const showToolFallback = chatFilter === 'all' && toolTimelineItems.length === 0 && combinedToolEvents.length > 0;

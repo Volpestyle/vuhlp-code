@@ -87,16 +87,9 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
       y: end.y + end.normal.y * offset
     };
 
-    // Calculate midpoint for label (Bezier at t=0.5)
-    const t = 0.5;
-    const labelX = Math.pow(1 - t, 3) * start.x + 
-                 3 * Math.pow(1 - t, 2) * t * cp1.x + 
-                 3 * (1 - t) * Math.pow(t, 2) * cp2.x + 
-                 Math.pow(t, 3) * end.x;
-    const labelY = Math.pow(1 - t, 3) * start.y + 
-                 3 * Math.pow(1 - t, 2) * t * cp1.y + 
-                 3 * (1 - t) * Math.pow(t, 2) * cp2.y + 
-                 3 * Math.pow(t, 3) * end.y;
+    // Use geometric midpoint for label - more visually centered than Bezier t=0.5
+    const labelX = (start.x + end.x) / 2;
+    const labelY = (start.y + end.y) / 2;
 
     return { start, end, cp1, cp2, labelX, labelY };
   }, [sourceNode, targetNode]);
@@ -184,10 +177,10 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
                    3 * Math.pow(1 - t, 2) * t * cp1.x + 
                    3 * (1 - t) * Math.pow(t, 2) * cp2.x + 
                    Math.pow(t, 3) * end.x;
-      const packetY = Math.pow(1 - t, 3) * start.y + 
-                   3 * Math.pow(1 - t, 2) * t * cp1.y + 
-                   3 * (1 - t) * Math.pow(t, 2) * cp2.y + 
-                   3 * Math.pow(t, 3) * end.y;
+      const packetY = Math.pow(1 - t, 3) * start.y +
+                   3 * Math.pow(1 - t, 2) * t * cp1.y +
+                   3 * (1 - t) * Math.pow(t, 2) * cp2.y +
+                   Math.pow(t, 3) * end.y;
 
       // Glow (Outer)
       g.circle(packetX, packetY, 8);

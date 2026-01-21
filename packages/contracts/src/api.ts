@@ -53,7 +53,7 @@ export interface GetRunEventsResponse {
 }
 
 export interface UpdateRunRequest {
-  patch: Partial<Pick<RunState, "status" | "mode" | "globalMode">>;
+  patch: Partial<Pick<RunState, "status" | "mode" | "globalMode" | "layout">>;
 }
 
 export interface UpdateRunResponse {
@@ -150,4 +150,37 @@ export interface GetRoleTemplateResponse {
   name: string;
   content: string;
   found: boolean;
+}
+
+export interface TemplateInfo {
+  name: string;
+  source: "repo" | "system";
+  path: string;
+}
+
+export interface ListTemplatesResponse {
+  templates: TemplateInfo[];
+}
+
+export interface CreateTemplateRequest {
+  name: string;
+  content: string;
+}
+
+export interface CreateTemplateResponse {
+  name: string;
+  path: string;
+}
+
+export interface UpdateTemplateRequest {
+  content: string;
+}
+
+export interface UpdateTemplateResponse {
+  name: string;
+  path: string;
+}
+
+export interface DeleteTemplateResponse {
+  name: string;
 }

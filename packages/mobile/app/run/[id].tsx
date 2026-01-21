@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'rea
 import { useLocalSearchParams } from 'expo-router';
 import { useGraphStore } from '@/stores/graph-store';
 import { useRunConnection } from '@/lib/useRunConnection';
+import { useLayoutPersistence } from '@/lib/useLayoutPersistence';
 import { GraphCanvas } from '@/components/GraphCanvas';
 import { GraphMinimap } from '@/components/GraphMinimap';
 import { NodeInspector } from '@/components/NodeInspector';
@@ -16,6 +17,7 @@ import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated'
 export default function RunScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { loading, error, connected } = useRunConnection(id);
+  useLayoutPersistence(id);
   const nodeCount = useGraphStore((s) => s.nodes.length);
   const edgeCount = useGraphStore((s) => s.edges.length);
   const pendingCount = useGraphStore((s) => s.pendingApprovals.length);

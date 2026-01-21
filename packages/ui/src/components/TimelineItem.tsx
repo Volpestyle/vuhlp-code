@@ -175,24 +175,32 @@ function ToolItem({ event }: { event: ToolEvent }) {
         onClick={() => setExpanded(!expanded)}
         type="button"
       >
-        <div className="timeline-tool__title-row">
-          {expanded ? (
-            <NavArrowDown width={14} height={14} />
-          ) : (
-            <NavArrowRight width={14} height={14} />
+        <div className="timeline-tool__header-content">
+          {node && (
+            <div className="timeline-tool__meta-row">
+              <span className="timeline-tool__node-label">{node.label}</span>
+            </div>
           )}
-          <span className="timeline-tool__icon">
-            <Wrench width={14} height={14} />
-          </span>
-          {node && <span className="timeline-tool__node-label">{node.label}</span>}
-          <span className="timeline-tool__name ms-1">{event.tool.name}</span>
-          <span className={`timeline-tool__status timeline-tool__status--${event.status}`}>
-            {event.status}
-          </span>
+          <div className="timeline-tool__main-row">
+            <div className="timeline-tool__title-group">
+              {expanded ? (
+                <NavArrowDown width={14} height={14} />
+              ) : (
+                <NavArrowRight width={14} height={14} />
+              )}
+              <span className="timeline-tool__icon">
+                <Wrench width={14} height={14} />
+              </span>
+              <span className="timeline-tool__name ms-1">{event.tool.name}</span>
+              <span className={`timeline-tool__status timeline-tool__status--${event.status}`}>
+                {event.status}
+              </span>
+            </div>
+            <span className="timeline-tool__time">
+              {new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}
+            </span>
+          </div>
         </div>
-        <span className="timeline-tool__time">
-          {new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}
-        </span>
       </button>
 
       {expanded && (

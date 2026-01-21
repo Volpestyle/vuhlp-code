@@ -9,8 +9,18 @@ import type {
   TurnStatus,
   UUID,
   Envelope,
+  ChatMessage,
+  ToolEvent,
+  GraphLayout,
 } from '@vuhlp/contracts';
-import { stripToolCallLines } from '@vuhlp/shared';
+import {
+  appendAssistantDelta,
+  finalizeAssistantMessage,
+  appendAssistantThinkingDelta,
+  finalizeAssistantThinking,
+  finalizeNodeMessages,
+  clearNodeMessages,
+} from '@vuhlp/shared';
 import { createLocalId } from '@/lib/ids';
 
 export interface Point {
@@ -45,31 +55,7 @@ export interface EdgeDragState {
   currentPoint: Point;
 }
 
-export interface ChatMessage {
-  id: string;
-  nodeId: UUID;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  createdAt: ISO8601;
-  streaming?: boolean;
-  status?: 'final' | 'interrupted';
-  thinking?: string;
-  thinkingStreaming?: boolean;
-  pending?: boolean;
-  sendError?: string;
-  interrupt?: boolean;
-  rawContent?: string;
-}
 
-export interface ToolEvent {
-  id: UUID;
-  nodeId: UUID;
-  tool: ToolCall;
-  status: 'proposed' | 'started' | 'completed' | 'failed';
-  timestamp: ISO8601;
-  result?: ToolCompletedEvent['result'];
-  error?: ToolCompletedEvent['error'];
-}
 
 export interface TurnStatusEvent {
   id: UUID;
@@ -95,6 +81,8 @@ interface GraphState {
   edges: VisualEdge[];
   viewport: Viewport;
   viewDimensions: Dimensions;
+  layoutUpdatedAt: ISO8601 | null;
+  layoutDirty: boolean;
 
   // Selection
   selectedNodeId: string | null;
@@ -184,6 +172,7 @@ interface GraphState {
 const DEFAULT_NODE_DIMENSIONS: Dimensions = { width: 240, height: 120 };
 const DEFAULT_ORIGIN: Point = { x: 100, y: 100 };
 const DEFAULT_SPACING = { x: 280, y: 160 };
+const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 
 function defaultPosition(index: number): Point {
   const col = index % 3;
@@ -194,15 +183,54 @@ function defaultPosition(index: number): Point {
   };
 }
 
+function isLayoutNewer(layout: GraphLayout, currentUpdatedAt: ISO8601 | null): boolean {
+  if (!currentUpdatedAt) return true;
+  const incomingTime = Date.parse(layout.updatedAt);
+  const currentTime = Date.parse(currentUpdatedAt);
+  if (Number.isNaN(incomingTime) || Number.isNaN(currentTime)) {
+    console.warn('[graph-store] invalid layout timestamp comparison', {
+      incoming: layout.updatedAt,
+      current: currentUpdatedAt,
+    });
+    return true;
+  }
+  return incomingTime >= currentTime;
+}
+
+function layoutMatchesState(
+  layout: GraphLayout,
+  nodes: VisualNode[],
+  viewport: Viewport
+): boolean {
+  if (
+    layout.viewport.x !== viewport.x ||
+    layout.viewport.y !== viewport.y ||
+    layout.viewport.zoom !== viewport.zoom
+  ) {
+    return false;
+  }
+  for (const node of nodes) {
+    const position = layout.positions[node.id];
+    if (!position) return false;
+    if (position.x !== node.position.x || position.y !== node.position.y) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function buildVisualNodes(
   run: RunState,
   existingNodes: Map<string, VisualNode>,
-  selectedNodeId: string | null
+  selectedNodeId: string | null,
+  layoutPositions: Record<string, Point> | null,
+  layoutFirst: boolean
 ): VisualNode[] {
   const runNodes = Object.values(run.nodes);
   return runNodes.map((node, index) => {
     const existing = existingNodes.get(node.id);
     const isSelected = node.id === selectedNodeId;
+    const layoutPosition = layoutPositions?.[node.id];
 
     // Return existing visual node if nothing changed
     if (
@@ -228,7 +256,9 @@ function buildVisualNodes(
 
     return {
       ...node,
-      position: existing?.position ?? defaultPosition(index),
+      position: layoutFirst
+        ? layoutPosition ?? existing?.position ?? defaultPosition(index)
+        : existing?.position ?? layoutPosition ?? defaultPosition(index),
       dimensions: existing?.dimensions ?? DEFAULT_NODE_DIMENSIONS,
       selected: isSelected,
     };
@@ -267,8 +297,10 @@ const initialState = {
   run: null,
   nodes: [] as VisualNode[],
   edges: [] as VisualEdge[],
-  viewport: { x: 0, y: 0, zoom: 1 },
+  viewport: DEFAULT_VIEWPORT,
   viewDimensions: { width: 0, height: 0 },
+  layoutUpdatedAt: null as ISO8601 | null,
+  layoutDirty: false,
   selectedNodeId: null,
   selectedEdgeId: null,
   edgeDrag: null,
@@ -285,12 +317,41 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   setRun: (run) => {
     const state = get();
-    const existingNodes = new Map(state.nodes.map((n) => [n.id, n]));
-    const existingEdges = new Map(state.edges.map((e) => [e.id, e]));
+    const runChanged = state.run?.id !== run.id;
+    const existingNodes = runChanged ? new Map() : new Map(state.nodes.map((n) => [n.id, n]));
+    const existingEdges = runChanged ? new Map() : new Map(state.edges.map((e) => [e.id, e]));
+    const incomingLayout = run.layout ?? null;
+    const layoutMatchesLocal = incomingLayout
+      ? layoutMatchesState(incomingLayout, state.nodes, state.viewport)
+      : false;
+    const shouldApplyLayout = incomingLayout
+      ? runChanged ||
+        isLayoutNewer(incomingLayout, state.layoutUpdatedAt) ||
+        (state.layoutDirty && layoutMatchesLocal)
+      : false;
+    const runNodes = Object.values(run.nodes);
+    const layoutPositions = incomingLayout?.positions ?? {};
+    const missingPositions = runNodes.some((node) => !layoutPositions[node.id]);
+    const markDirty = missingPositions && !state.layoutDirty;
     set({
       run,
-      nodes: buildVisualNodes(run, existingNodes, state.selectedNodeId),
+      nodes: buildVisualNodes(
+        run,
+        existingNodes,
+        state.selectedNodeId,
+        incomingLayout?.positions ?? null,
+        shouldApplyLayout
+      ),
       edges: buildVisualEdges(run, existingEdges, state.selectedEdgeId),
+      viewport: shouldApplyLayout
+        ? incomingLayout?.viewport ?? state.viewport
+        : (runChanged ? DEFAULT_VIEWPORT : state.viewport),
+      layoutUpdatedAt: markDirty
+        ? new Date().toISOString()
+        : (shouldApplyLayout
+          ? incomingLayout?.updatedAt ?? state.layoutUpdatedAt
+          : (runChanged ? null : state.layoutUpdatedAt)),
+      layoutDirty: markDirty ? true : (shouldApplyLayout ? false : (runChanged ? false : state.layoutDirty)),
     });
   },
 
@@ -298,16 +359,46 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     const state = get();
     if (!state.run) return;
     const updatedRun = { ...state.run, ...patch };
-    const existingNodes = new Map(state.nodes.map((n) => [n.id, n]));
-    const existingEdges = new Map(state.edges.map((e) => [e.id, e]));
+    const runChanged = updatedRun.id !== state.run.id;
+    const existingNodes = runChanged ? new Map() : new Map(state.nodes.map((n) => [n.id, n]));
+    const existingEdges = runChanged ? new Map() : new Map(state.edges.map((e) => [e.id, e]));
+    const incomingLayout = updatedRun.layout ?? null;
+    const layoutMatchesLocal = incomingLayout
+      ? layoutMatchesState(incomingLayout, state.nodes, state.viewport)
+      : false;
+    const shouldApplyLayout = incomingLayout
+      ? runChanged ||
+        isLayoutNewer(incomingLayout, state.layoutUpdatedAt) ||
+        (state.layoutDirty && layoutMatchesLocal)
+      : false;
+    const runNodes = Object.values(updatedRun.nodes);
+    const layoutPositions = incomingLayout?.positions ?? {};
+    const missingPositions = runNodes.some((node) => !layoutPositions[node.id]);
+    const markDirty = missingPositions && !state.layoutDirty;
     set({
       run: updatedRun,
-      nodes: buildVisualNodes(updatedRun, existingNodes, state.selectedNodeId),
+      nodes: buildVisualNodes(
+        updatedRun,
+        existingNodes,
+        state.selectedNodeId,
+        incomingLayout?.positions ?? null,
+        shouldApplyLayout
+      ),
       edges: buildVisualEdges(updatedRun, existingEdges, state.selectedEdgeId),
+      viewport: shouldApplyLayout
+        ? incomingLayout?.viewport ?? state.viewport
+        : (runChanged ? DEFAULT_VIEWPORT : state.viewport),
+      layoutUpdatedAt: markDirty
+        ? new Date().toISOString()
+        : (shouldApplyLayout
+          ? incomingLayout?.updatedAt ?? state.layoutUpdatedAt
+          : (runChanged ? null : state.layoutUpdatedAt)),
+      layoutDirty: markDirty ? true : (shouldApplyLayout ? false : (runChanged ? false : state.layoutDirty)),
     });
   },
 
   addNode: (node) => {
+    const now = new Date().toISOString();
     set((state) => {
       if (!state.run) return state;
       if (state.run.nodes[node.id]) return state;
@@ -320,6 +411,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       return {
         run: { ...state.run, nodes: { ...state.run.nodes, [node.id]: node } },
         nodes: [...state.nodes, visualNode],
+        layoutUpdatedAt: now,
+        layoutDirty: true,
       };
     });
   },
@@ -344,6 +437,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   removeNode: (nodeId) => {
+    const now = new Date().toISOString();
     set((state) => {
       if (!state.run) return state;
       const { [nodeId]: _, ...remainingNodes } = state.run.nodes;
@@ -353,6 +447,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         nodes: state.nodes.filter((n) => n.id !== nodeId),
         selectedNodeId: isSelected ? null : state.selectedNodeId,
         inspectorOpen: isSelected ? false : state.inspectorOpen,
+        layoutUpdatedAt: now,
+        layoutDirty: true,
       };
     });
   },
@@ -382,30 +478,45 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     });
   },
 
-  setViewport: (viewport) => set({ viewport }),
+  setViewport: (viewport) => {
+    const now = new Date().toISOString();
+    set({ viewport, layoutUpdatedAt: now, layoutDirty: true });
+  },
 
   setViewDimensions: (viewDimensions) => set({ viewDimensions }),
 
   panBy: (dx, dy) => {
+    const now = new Date().toISOString();
     set((state) => ({
       viewport: {
         ...state.viewport,
         x: state.viewport.x + dx,
         y: state.viewport.y + dy,
       },
+      layoutUpdatedAt: now,
+      layoutDirty: true,
     }));
   },
 
   zoomTo: (zoom, focalPoint) => {
+    const now = new Date().toISOString();
     set((state) => {
       const clampedZoom = Math.max(0.25, Math.min(zoom, 4));
       if (!focalPoint) {
-        return { viewport: { ...state.viewport, zoom: clampedZoom } };
+        return {
+          viewport: { ...state.viewport, zoom: clampedZoom },
+          layoutUpdatedAt: now,
+          layoutDirty: true,
+        };
       }
       const ratio = clampedZoom / state.viewport.zoom;
       const newX = focalPoint.x - (focalPoint.x - state.viewport.x) * ratio;
       const newY = focalPoint.y - (focalPoint.y - state.viewport.y) * ratio;
-      return { viewport: { x: newX, y: newY, zoom: clampedZoom } };
+      return {
+        viewport: { x: newX, y: newY, zoom: clampedZoom },
+        layoutUpdatedAt: now,
+        layoutDirty: true,
+      };
     });
   },
 
@@ -430,10 +541,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   updateNodePosition: (nodeId, x, y) => {
+    const now = new Date().toISOString();
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === nodeId ? { ...n, position: { x, y } } : n
       ),
+      layoutUpdatedAt: now,
+      layoutDirty: true,
     }));
   },
 
@@ -520,40 +634,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   appendAssistantDelta: (nodeId, delta, timestamp) =>
     set((state) => {
       const messages = state.chatMessages[nodeId] ?? [];
-      const streamId = `stream-${nodeId}`;
-      const existingIndex = messages.findIndex((msg) => msg.id === streamId);
-      if (existingIndex >= 0) {
-        const existing = messages[existingIndex];
-        if (!existing) return state;
-        const rawContent = `${existing.rawContent ?? existing.content}${delta}`;
-        const content = stripToolCallLines(rawContent);
-        const next = [...messages];
-        next[existingIndex] = {
-          ...existing,
-          content,
-          rawContent,
-          createdAt: timestamp,
-          streaming: true,
-        };
-        return {
-          chatMessages: { ...state.chatMessages, [nodeId]: next },
-        };
-      }
-      const rawContent = delta;
-      const content = stripToolCallLines(delta);
-      const nextMessage: ChatMessage = {
-        id: streamId,
-        nodeId,
-        role: 'assistant',
-        content,
-        rawContent,
-        createdAt: timestamp,
-        streaming: true,
-      };
       return {
         chatMessages: {
           ...state.chatMessages,
-          [nodeId]: [...messages, nextMessage],
+          [nodeId]: appendAssistantDelta(messages, nodeId, delta, timestamp),
         },
       };
     }),
@@ -561,39 +645,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   finalizeAssistantMessage: (nodeId, content, timestamp, status, id) =>
     set((state) => {
       const messages = state.chatMessages[nodeId] ?? [];
-      const streamId = `stream-${nodeId}`;
-      const thinkingStreamId = `thinking-stream-${nodeId}`;
-      const hasExistingMessage = messages.some((message) => message.id === id);
-      const filtered = messages.filter(
-        (message) => message.id !== streamId && message.id !== thinkingStreamId
-      );
-
-      if (hasExistingMessage) {
-        return {
-          chatMessages: {
-            ...state.chatMessages,
-            [nodeId]: filtered,
-          },
-        };
-      }
-
-      const streamingMsg = messages.find((message) => message.id === streamId);
-      const thinkingStreamingMsg = messages.find((message) => message.id === thinkingStreamId);
-      const thinking = streamingMsg?.thinking ?? thinkingStreamingMsg?.thinking;
-
-      const nextMessage: ChatMessage = {
-        id: id ?? createLocalId(),
-        nodeId,
-        role: 'assistant',
-        content,
-        createdAt: timestamp,
-        status,
-        thinking,
-      };
       return {
         chatMessages: {
           ...state.chatMessages,
-          [nodeId]: [...filtered, nextMessage],
+          [nodeId]: finalizeAssistantMessage(messages, nodeId, content, timestamp, status, id),
         },
       };
     }),
@@ -601,56 +656,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   appendAssistantThinkingDelta: (nodeId, delta, timestamp) =>
     set((state) => {
       const messages = state.chatMessages[nodeId] ?? [];
-      const streamId = `stream-${nodeId}`;
-      const existingStreamIndex = messages.findIndex((msg) => msg.id === streamId);
-
-      if (existingStreamIndex >= 0) {
-        const existing = messages[existingStreamIndex];
-        if (!existing) return state;
-        const next = [...messages];
-        next[existingStreamIndex] = {
-          ...existing,
-          thinking: `${existing.thinking ?? ''}${delta}`,
-          thinkingStreaming: true,
-          createdAt: timestamp,
-        };
-        return {
-          chatMessages: { ...state.chatMessages, [nodeId]: next },
-        };
-      }
-
-      const thinkingStreamId = `thinking-stream-${nodeId}`;
-      const existingThinkingIndex = messages.findIndex((msg) => msg.id === thinkingStreamId);
-
-      if (existingThinkingIndex >= 0) {
-        const existing = messages[existingThinkingIndex];
-        if (!existing) return state;
-        const next = [...messages];
-        next[existingThinkingIndex] = {
-          ...existing,
-          thinking: `${existing.thinking ?? ''}${delta}`,
-          thinkingStreaming: true,
-          createdAt: timestamp,
-        };
-        return {
-          chatMessages: { ...state.chatMessages, [nodeId]: next },
-        };
-      }
-
-      const nextMessage: ChatMessage = {
-        id: thinkingStreamId,
-        nodeId,
-        role: 'assistant',
-        content: '',
-        createdAt: timestamp,
-        streaming: true,
-        thinking: delta,
-        thinkingStreaming: true,
-      };
       return {
         chatMessages: {
           ...state.chatMessages,
-          [nodeId]: [...messages, nextMessage],
+          [nodeId]: appendAssistantThinkingDelta(messages, nodeId, delta, timestamp),
         },
       };
     }),
@@ -658,85 +667,21 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   finalizeAssistantThinking: (nodeId, content, timestamp) =>
     set((state) => {
       const messages = state.chatMessages[nodeId] ?? [];
-      const streamId = `stream-${nodeId}`;
-      const thinkingStreamId = `thinking-stream-${nodeId}`;
-
-      const streamIndex = messages.findIndex((msg) => msg.id === streamId);
-      if (streamIndex >= 0) {
-        const existing = messages[streamIndex];
-        if (!existing) return state;
-        const next = [...messages];
-        next[streamIndex] = {
-          ...existing,
-          thinking: content,
-          thinkingStreaming: false,
-          createdAt: timestamp,
-        };
-        return {
-          chatMessages: { ...state.chatMessages, [nodeId]: next },
-        };
-      }
-
-      const thinkingStreamIndex = messages.findIndex((msg) => msg.id === thinkingStreamId);
-      if (thinkingStreamIndex >= 0) {
-        const existing = messages[thinkingStreamIndex];
-        if (!existing) return state;
-        const next = [...messages];
-        next[thinkingStreamIndex] = {
-          ...existing,
-          thinking: content,
-          thinkingStreaming: false,
-          createdAt: timestamp,
-        };
-        return {
-          chatMessages: { ...state.chatMessages, [nodeId]: next },
-        };
-      }
-
-      const nextMessage: ChatMessage = {
-        id: thinkingStreamId,
-        nodeId,
-        role: 'assistant',
-        content: '',
-        createdAt: timestamp,
-        streaming: true,
-        thinking: content,
-        thinkingStreaming: false,
-      };
       return {
         chatMessages: {
           ...state.chatMessages,
-          [nodeId]: [...messages, nextMessage],
+          [nodeId]: finalizeAssistantThinking(messages, nodeId, content, timestamp),
         },
       };
     }),
 
   finalizeNodeMessages: (nodeId, timestamp) =>
     set((state) => {
-      const messages = state.chatMessages[nodeId];
-      if (!messages) return state;
-
-      const needsFinalization = messages.some(
-        (m) => m.streaming || m.thinkingStreaming
-      );
-      if (!needsFinalization) return state;
-
-      const next = messages.map((m) => {
-        if (!m.streaming && !m.thinkingStreaming) return m;
-
-        return {
-          ...m,
-          streaming: false,
-          thinkingStreaming: false,
-          status: m.status ?? 'interrupted',
-          createdAt: timestamp,
-        };
-      });
-
+      const messages = state.chatMessages[nodeId] ?? [];
       return {
         chatMessages: {
           ...state.chatMessages,
-          [nodeId]: next,
+          [nodeId]: finalizeNodeMessages(messages, timestamp),
         },
       };
     }),
@@ -746,8 +691,9 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       if (!state.chatMessages[nodeId]) {
         return state;
       }
-      const { [nodeId]: _removed, ...remaining } = state.chatMessages;
-      return { chatMessages: remaining };
+      return {
+        chatMessages: clearNodeMessages(state.chatMessages, nodeId),
+      };
     }),
 
   addHandoff: (envelope) =>

@@ -10,14 +10,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { NodePermissions } from '@vuhlp/contracts';
 import { useRunStore } from '../stores/runStore';
 import { updateRun, updateNode } from '../lib/api';
-import { ArrowLeft, SunLight, HalfMoon, Settings, Play, Pause } from 'iconoir-react';
+import { ArrowLeft, SunLight, HalfMoon, Settings, Play, Pause, Page } from 'iconoir-react';
 import './Header.css';
 
 interface HeaderProps {
   minimal?: boolean;
+  onOpenTemplates?: () => void;
 }
 
-export function Header({ minimal = false }: HeaderProps) {
+export function Header({ minimal = false, onOpenTemplates }: HeaderProps) {
   const run = useRunStore((s) => s.run);
   const viewMode = useRunStore((s) => s.ui.viewMode);
   const theme = useRunStore((s) => s.ui.theme);
@@ -248,6 +249,18 @@ export function Header({ minimal = false }: HeaderProps) {
             </div>
           )}
         </div>
+
+        {onOpenTemplates && (
+          <button
+            className="header__action header__action--neutral header__action--compact"
+            onClick={onOpenTemplates}
+            title="Manage Templates"
+            type="button"
+          >
+            <Page width={16} height={16} />
+          </button>
+        )}
+
         {/* View Mode Selector */}
         <div className="header__view-modes">
           <button

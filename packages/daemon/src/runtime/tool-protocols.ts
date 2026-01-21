@@ -5,6 +5,23 @@
  * emit tool calls for vuhlp to process.
  */
 
+import {
+  getToolRegistry,
+  getVuhlpOnlyToolNames,
+  getVuhlpToolNames,
+  type VuhlpToolName
+} from "@vuhlp/providers";
+
+function formatToolNames(names: ReadonlyArray<VuhlpToolName>): string {
+  return names.join(", ");
+}
+
+const TOOL_REGISTRY = getToolRegistry();
+const TOOL_SCHEMA_LINES = TOOL_REGISTRY.map((tool) => tool.protocolSchema);
+const VUHLP_ONLY_TOOL_SCHEMA_LINES = TOOL_REGISTRY
+  .filter((tool) => tool.kind === "vuhlp-only")
+  .map((tool) => tool.protocolSchema);
+
 /**
  * Tool protocol for vuhlp-handled tools
  * Used when nativeToolHandling is 'vuhlp'
@@ -26,19 +43,12 @@ export const CLI_TOOL_PROTOCOL_VUHLP = [
   "Use spawn_node alias to reference freshly spawned nodes in the same response.",
   "Aliases must be unique within the run.",
   "Tool schemas (tool_call args):",
-  "command: { cmd: string, cwd?: string }",
-  "read_file: { path: string }",
-  "write_file: { path: string, content: string }",
-  "list_files: { path?: string }",
-  "delete_file: { path: string }",
-  'spawn_node: { label: string, alias?: string, roleTemplate: string, instructions?: string, input?: object, provider?: string, capabilities?: object, permissions?: object, session?: object, customSystemPrompt?: string }',
-  'create_edge: { from: string, to: string, bidirectional?: boolean, type?: "handoff" | "report", label?: string } (from/to = node id or alias)',
-  'send_handoff: { to: string, message: string, structured?: object, artifacts?: [{type: string, ref: string}], status?: {ok: boolean, reason?: string}, response?: {expectation: "none" | "optional" | "required", replyTo?: string}, contextRef?: string } (to/replyTo = node id or alias)',
+  ...TOOL_SCHEMA_LINES,
   "Examples (emit exactly as a single line when calling):",
   '{"tool_call":{"id":"<uuid>","name":"spawn_node","args":{"label":"Docs Agent","alias":"docs-agent","roleTemplate":"planner","instructions":"Summarize docs/.","provider":"claude"}}}',
   '{"tool_call":{"id":"<uuid>","name":"create_edge","args":{"from":"<node-id-or-alias>","to":"<node-id-or-alias>","type":"handoff","bidirectional":true,"label":"docs"}}}',
   '{"tool_call":{"id":"<uuid>","name":"send_handoff","args":{"to":"<node-id-or-alias>","message":"Status update"}}}',
-  "Available vuhlp tools: command, read_file, write_file, list_files, delete_file, spawn_node, create_edge, send_handoff.",
+  `Available vuhlp tools: ${formatToolNames(getVuhlpToolNames())}.`,
   "Outgoing handoffs are explicit; use send_handoff to communicate between nodes.",
   "create_edge only connects nodes; it does not deliver messages.",
   "send_handoff requires to + message and an existing edge between nodes; optional structured, artifacts, status, response, contextRef."
@@ -51,7 +61,8 @@ export const CLI_TOOL_PROTOCOL_VUHLP = [
 export const CLI_TOOL_PROTOCOL_PROVIDER_NATIVE = [
   "Tool calls:",
   "Use native tool calling for provider-native tools. The CLI executes those tools directly; vuhlp will not rerun them.",
-  "Use tool_call JSON only when you need vuhlp tools (spawn_node, create_edge, send_handoff, command, read_file, write_file, list_files, delete_file).",
+  "Use tool_call JSON only for vuhlp-only tools (spawn_node, create_edge, send_handoff).",
+  "Do not emit tool_call JSON for file or command tools in provider-native mode; use provider-native tools instead.",
   '{"tool_call":{"id":"tool-1","name":"<tool>","args":{...}}}',
   "Do not wrap the JSON in markdown. One tool call per line.",
   "Tool_call JSON must be the entire line with no extra text.",
@@ -64,19 +75,12 @@ export const CLI_TOOL_PROTOCOL_PROVIDER_NATIVE = [
   "Use spawn_node alias to reference freshly spawned nodes in the same response.",
   "Aliases must be unique within the run.",
   "Tool schemas (tool_call args):",
-  "command: { cmd: string, cwd?: string }",
-  "read_file: { path: string }",
-  "write_file: { path: string, content: string }",
-  "list_files: { path?: string }",
-  "delete_file: { path: string }",
-  'spawn_node: { label: string, alias?: string, roleTemplate: string, instructions?: string, input?: object, provider?: string, capabilities?: object, permissions?: object, session?: object, customSystemPrompt?: string }',
-  'create_edge: { from: string, to: string, bidirectional?: boolean, type?: "handoff" | "report", label?: string } (from/to = node id or alias)',
-  'send_handoff: { to: string, message: string, structured?: object, artifacts?: [{type: string, ref: string}], status?: {ok: boolean, reason?: string}, response?: {expectation: "none" | "optional" | "required", replyTo?: string}, contextRef?: string } (to/replyTo = node id or alias)',
+  ...VUHLP_ONLY_TOOL_SCHEMA_LINES,
   "Examples (emit exactly as a single line when calling):",
   '{"tool_call":{"id":"<uuid>","name":"spawn_node","args":{"label":"Docs Agent","alias":"docs-agent","roleTemplate":"planner","instructions":"Summarize docs/.","provider":"claude"}}}',
   '{"tool_call":{"id":"<uuid>","name":"create_edge","args":{"from":"<node-id-or-alias>","to":"<node-id-or-alias>","type":"handoff","bidirectional":true,"label":"docs"}}}',
   '{"tool_call":{"id":"<uuid>","name":"send_handoff","args":{"to":"<node-id-or-alias>","message":"Status update"}}}',
-  "Available vuhlp tools: command, read_file, write_file, list_files, delete_file, spawn_node, create_edge, send_handoff.",
+  `Available vuhlp tools in provider-native mode: ${formatToolNames(getVuhlpOnlyToolNames())}.`,
   "Outgoing handoffs are explicit; use send_handoff to communicate between nodes.",
   "create_edge only connects nodes; it does not deliver messages.",
   "send_handoff requires to + message and an existing edge between nodes; optional structured, artifacts, status, response, contextRef."

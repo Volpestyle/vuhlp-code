@@ -6,14 +6,14 @@ import {
   ScrollView,
   Pressable,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import { useGraphStore, type PendingApproval } from '@/stores/graph-store';
 import { api } from '@/lib/api';
 import { colors, fontFamily } from '@/lib/theme';
 import { truncateText } from '@vuhlp/shared';
 
 export function ApprovalQueue() {
-  const insets = useSafeAreaInsets();
+
   const pendingApprovals = useGraphStore((s) => s.pendingApprovals);
   const nodes = useGraphStore((s) => s.nodes);
   const removeApproval = useGraphStore((s) => s.removeApproval);
@@ -47,7 +47,7 @@ export function ApprovalQueue() {
   }
 
   return (
-    <View style={[styles.container, { top: insets.top + 60 }]}>
+    <View style={[styles.container, { bottom: 80 }]}>
       <View style={styles.header}>
         <View style={styles.badge}>
           <Text style={styles.badgeText}>{pendingApprovals.length}</Text>

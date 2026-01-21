@@ -23,6 +23,23 @@ export interface UsageTotals {
   totalTokens: number;
 }
 
+export interface GraphPosition {
+  x: number;
+  y: number;
+}
+
+export interface GraphViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface GraphLayout {
+  positions: Record<UUID, GraphPosition>;
+  viewport: GraphViewport;
+  updatedAt: ISO8601;
+}
+
 export interface RunState {
   id: UUID;
   contractVersion: ContractVersion;
@@ -33,9 +50,11 @@ export interface RunState {
   updatedAt: ISO8601;
   usage?: UsageTotals;
   nodes: Record<UUID, NodeState>;
+  nodeConfigs: Record<UUID, NodeConfig>;
   edges: Record<UUID, EdgeState>;
   artifacts: Record<UUID, Artifact>;
   cwd?: string;
+  layout?: GraphLayout;
 }
 
 export interface NodeCapabilities {
@@ -226,6 +245,12 @@ export interface ToolCall {
   args: Record<string, unknown>;
 }
 
+export interface ApprovalResolution {
+  status: "approved" | "denied" | "modified";
+  modifiedArgs?: Record<string, unknown>;
+  reason?: string;
+}
+
 export interface ApprovalRequest {
   approvalId: UUID;
   nodeId: UUID;
@@ -233,10 +258,29 @@ export interface ApprovalRequest {
   context?: string;
 }
 
-export interface ApprovalResolution {
 
-  status: "approved" | "denied" | "modified";
+export interface ChatMessage {
+  id: string;
+  nodeId: UUID;
+  role: "user" | "assistant" | "system";
+  content: string;
+  createdAt: ISO8601;
+  streaming?: boolean;
+  status?: "final" | "interrupted";
+  thinking?: string;
+  thinkingStreaming?: boolean;
+  pending?: boolean;
+  sendError?: string;
+  rawContent?: string;
+  interrupt?: boolean;
+}
 
-  modifiedArgs?: Record<string, unknown>;
-
+export interface ToolEvent {
+  id: UUID;
+  nodeId: UUID;
+  tool: ToolCall;
+  status: "proposed" | "started" | "completed" | "failed";
+  timestamp: ISO8601;
+  result?: { ok: boolean; output?: string | object };
+  error?: { message: string };
 }

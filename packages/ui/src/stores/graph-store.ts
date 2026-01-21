@@ -1,29 +1,18 @@
 import { create } from 'zustand';
-import type { RunState } from '@vuhlp/contracts';
+import type { RunState, GraphLayout } from '@vuhlp/contracts';
 import { VisualNode, VisualEdge } from '../types/graph';
-
-/** Layout data that persists per run */
-interface LayoutData {
-  positions: Record<string, { x: number; y: number }>;
-  viewport: { x: number; y: number; zoom: number };
-}
 
 interface GraphState {
   nodes: VisualNode[];
   edges: VisualEdge[];
   viewport: { x: number; y: number; zoom: number };
   currentRunId: string | null;
-  layoutPositions: Record<string, { x: number; y: number }> | null;
+  layoutUpdatedAt: string | null;
+  layoutDirty: boolean;
 
   // Actions
-  setNodes: (nodes: VisualNode[]) => void;
   updateNodePosition: (id: string, x: number, y: number) => void;
-  addEdge: (edge: VisualEdge) => void;
-  setEdges: (edges: VisualEdge[]) => void;
   setViewport: (viewport: { x: number; y: number; zoom: number }, persist?: boolean) => void;
-  setCurrentRunId: (runId: string) => void;
-  loadLayoutForRun: (runId: string) => void;
-  saveLayoutForRun: () => void;
   syncWithRun: (
     run: RunState | null,
     selectedNodeId: string | null,
@@ -34,6 +23,7 @@ interface GraphState {
 const DEFAULT_NODE_DIMENSIONS = { width: 240, height: 160 };
 const DEFAULT_ORIGIN = { x: 200, y: 150 };
 const DEFAULT_SPACING = { x: 280, y: 200 };
+const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 
 function defaultPosition(index: number): { x: number; y: number } {
   const col = index % 4;
@@ -44,125 +34,72 @@ function defaultPosition(index: number): { x: number; y: number } {
   };
 }
 
-/** Storage key prefix for layout persistence */
-const LAYOUT_STORAGE_KEY = 'vuhlp-graph-layout';
-
-/** Get layout storage key for a specific run */
-function getLayoutKey(runId: string): string {
-  return `${LAYOUT_STORAGE_KEY}-${runId}`;
+function isLayoutNewer(layout: GraphLayout, currentUpdatedAt: string | null): boolean {
+  if (!currentUpdatedAt) return true;
+  const incomingTime = Date.parse(layout.updatedAt);
+  const currentTime = Date.parse(currentUpdatedAt);
+  if (Number.isNaN(incomingTime) || Number.isNaN(currentTime)) {
+    console.warn('[graph-store] invalid layout timestamp comparison', {
+      incoming: layout.updatedAt,
+      current: currentUpdatedAt
+    });
+    return true;
+  }
+  return incomingTime >= currentTime;
 }
 
-/** Load layout data from localStorage */
-function loadLayout(runId: string): LayoutData | null {
-  try {
-    const data = localStorage.getItem(getLayoutKey(runId));
-    if (data) {
-      const parsed = JSON.parse(data) as LayoutData;
-      console.log('[graph-store] loaded layout for run:', runId, parsed);
-      return parsed;
+function layoutMatchesState(
+  layout: GraphLayout,
+  nodes: VisualNode[],
+  viewport: { x: number; y: number; zoom: number }
+): boolean {
+  if (
+    layout.viewport.x !== viewport.x ||
+    layout.viewport.y !== viewport.y ||
+    layout.viewport.zoom !== viewport.zoom
+  ) {
+    return false;
+  }
+  for (const node of nodes) {
+    const position = layout.positions[node.id];
+    if (!position) return false;
+    if (position.x !== node.position.x || position.y !== node.position.y) {
+      return false;
     }
-  } catch (err) {
-    console.error('[graph-store] failed to load layout:', err);
   }
-  return null;
+  return true;
 }
 
-/** Save layout data to localStorage */
-function saveLayout(runId: string, layout: LayoutData): void {
-  try {
-    localStorage.setItem(getLayoutKey(runId), JSON.stringify(layout));
-    console.log('[graph-store] saved layout for run:', runId);
-  } catch (err) {
-    console.error('[graph-store] failed to save layout:', err);
-  }
-}
-
-export const useGraphStore = create<GraphState>((set, get) => ({
+export const useGraphStore = create<GraphState>((set) => ({
   nodes: [],
   edges: [],
-  viewport: { x: 0, y: 0, zoom: 1 },
+  viewport: DEFAULT_VIEWPORT,
   currentRunId: null,
-  layoutPositions: null,
-
-  setNodes: (nodes) => set({ nodes }),
-
-  addEdge: (edge) =>
-    set((state) => ({
-      edges: [...state.edges, edge],
-    })),
+  layoutUpdatedAt: null,
+  layoutDirty: false,
 
   updateNodePosition: (id, x, y) => {
-    set((state) => {
-      const nodes = state.nodes.map(node =>
+    const now = new Date().toISOString();
+    set((state) => ({
+      nodes: state.nodes.map(node =>
         node.id === id ? { ...node, position: { x, y } } : node
-      );
-      const layoutPositions = {
-        ...(state.layoutPositions ?? {}),
-        [id]: { x, y }
-      };
-      return { nodes, layoutPositions };
-    });
-    // Auto-save layout after position update (debounced in real usage)
-    const state = get();
-    if (state.currentRunId) {
-      const positions: Record<string, { x: number; y: number }> = {};
-      state.nodes.forEach(node => {
-        positions[node.id] = node.position;
-      });
-      saveLayout(state.currentRunId, { positions, viewport: state.viewport });
-    }
+      ),
+      layoutUpdatedAt: now,
+      layoutDirty: true
+    }));
   },
-
-  setEdges: (edges) => set({ edges }),
 
   setViewport: (viewport, persist = true) => {
-    set({ viewport });
-    if (!persist) return;
-    // Auto-save layout after viewport change
-    const state = get();
-    if (state.currentRunId) {
-      const positions: Record<string, { x: number; y: number }> = {};
-      state.nodes.forEach(node => {
-        positions[node.id] = node.position;
-      });
-      saveLayout(state.currentRunId, { positions, viewport });
-    }
-  },
-
-  setCurrentRunId: (runId) => set({ currentRunId: runId }),
-
-  loadLayoutForRun: (runId) => {
-    const layout = loadLayout(runId);
-    if (layout) {
-      set((state) => ({
-        currentRunId: runId,
-        viewport: layout.viewport,
-        layoutPositions: layout.positions,
-        nodes: state.nodes.map(node => {
-          const savedPosition = layout.positions[node.id];
-          if (savedPosition) {
-            return { ...node, position: savedPosition };
-          }
-          return node;
-        }),
-      }));
-    } else {
-      set({ currentRunId: runId, layoutPositions: null });
-    }
-  },
-
-  saveLayoutForRun: () => {
-    const state = get();
-    if (!state.currentRunId) {
-      console.warn('[graph-store] cannot save layout - no run ID set');
+    if (!persist) {
+      set({ viewport });
       return;
     }
-    const positions: Record<string, { x: number; y: number }> = {};
-    state.nodes.forEach(node => {
-      positions[node.id] = node.position;
+    const now = new Date().toISOString();
+    set({
+      viewport,
+      layoutUpdatedAt: now,
+      layoutDirty: true
     });
-    saveLayout(state.currentRunId, { positions, viewport: state.viewport });
-    set({ layoutPositions: positions });
   },
 
   syncWithRun: (run, selectedNodeId, selectedEdgeId) => {
@@ -170,12 +107,27 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       return;
     }
     set((state) => {
-      const existingNodes = new Map(state.nodes.map((node) => [node.id, node]));
-      const layoutPositions = state.layoutPositions ?? {};
+      const runChanged = state.currentRunId !== run.id;
+      const existingNodes = runChanged ? new Map() : new Map(state.nodes.map((node) => [node.id, node]));
+      const incomingLayout = run.layout ?? null;
+      const layoutMatchesLocal = incomingLayout
+        ? layoutMatchesState(incomingLayout, state.nodes, state.viewport)
+        : false;
+      const shouldApplyLayout = incomingLayout
+        ? runChanged ||
+          isLayoutNewer(incomingLayout, state.layoutUpdatedAt) ||
+          (state.layoutDirty && layoutMatchesLocal)
+        : false;
       const runNodes = Object.values(run.nodes);
+      const layoutPositions = incomingLayout?.positions ?? {};
+      const missingPositions = runNodes.some((node) => !layoutPositions[node.id]);
+      const markDirty = missingPositions && !state.layoutDirty;
       const nodes = runNodes.map((node, index) => {
         const existing = existingNodes.get(node.id);
-        const position = existing?.position ?? layoutPositions[node.id] ?? defaultPosition(index);
+        const layoutPosition = incomingLayout?.positions[node.id];
+        const position = shouldApplyLayout
+          ? layoutPosition ?? existing?.position ?? defaultPosition(index)
+          : existing?.position ?? layoutPosition ?? defaultPosition(index);
         const dimensions = existing?.dimensions ?? DEFAULT_NODE_DIMENSIONS;
         return {
           ...node,
@@ -188,10 +140,20 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         ...edge,
         selected: edge.id === selectedEdgeId
       }));
+      const nextViewport = shouldApplyLayout
+        ? incomingLayout?.viewport ?? state.viewport
+        : (runChanged ? DEFAULT_VIEWPORT : state.viewport);
       return {
         nodes,
         edges,
-        currentRunId: run.id
+        viewport: nextViewport,
+        currentRunId: run.id,
+        layoutUpdatedAt: markDirty
+          ? new Date().toISOString()
+          : (shouldApplyLayout
+            ? incomingLayout?.updatedAt ?? state.layoutUpdatedAt
+            : (runChanged ? null : state.layoutUpdatedAt)),
+        layoutDirty: markDirty ? true : (shouldApplyLayout ? false : (runChanged ? false : state.layoutDirty))
       };
     });
   },

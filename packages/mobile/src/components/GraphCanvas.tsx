@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { View, Text, StyleSheet, useWindowDimensions, LayoutChangeEvent, Alert } from 'react-native';
-import { Canvas, Path, Skia, Group, Line, vec } from '@shopify/react-native-skia';
+import { Canvas, Path, Skia, Group, Line, Circle, vec } from '@shopify/react-native-skia';
+import { useFrameCallback } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   useSharedValue,
@@ -26,6 +27,7 @@ const SPRING_CONFIG = {
 };
 
 const EDGE_SNAP_RADIUS = 30;
+const HANDOFF_ANIMATION_DURATION_MS = 2000;
 
 let skiaMissingLogged = false;
 let skiaAvailableCache: boolean | null = null;
@@ -83,6 +85,35 @@ function SkiaGraphCanvas() {
   const updateEdgeDrag = useGraphStore((s) => s.updateEdgeDrag);
   const endEdgeDrag = useGraphStore((s) => s.endEdgeDrag);
   const addEdge = useGraphStore((s) => s.addEdge);
+  const recentHandoffs = useGraphStore((s) => s.recentHandoffs);
+
+  // Track animation frame time for handoff animations
+  const [animationTime, setAnimationTime] = useState(Date.now());
+  const animationActiveUntil = useSharedValue(0);
+
+  // Update animation end time when handoffs change
+  useEffect(() => {
+    if (recentHandoffs.length === 0) return;
+
+    // Find the latest handoff and set animation to run until it completes
+    let latestEnd = 0;
+    for (const handoff of recentHandoffs) {
+      const endTime = Date.parse(handoff.createdAt) + HANDOFF_ANIMATION_DURATION_MS;
+      if (endTime > latestEnd) {
+        latestEnd = endTime;
+      }
+    }
+    animationActiveUntil.value = latestEnd;
+  }, [recentHandoffs, animationActiveUntil]);
+
+  // Drive handoff animations at ~60fps while active
+  useFrameCallback(() => {
+    'worklet';
+    const now = Date.now();
+    if (now < animationActiveUntil.value) {
+      runOnJS(setAnimationTime)(now);
+    }
+  });
 
   const onLayout = useCallback(
     (event: LayoutChangeEvent) => {
@@ -543,6 +574,29 @@ function SkiaGraphCanvas() {
     };
   }, [edgeDrag, nodes]);
 
+  // Calculate handoff packet positions for active animations
+  const handoffPackets = useMemo(() => {
+    const packets: Array<{ id: string; x: number; y: number }> = [];
+
+    for (const handoff of recentHandoffs) {
+      const elapsed = animationTime - Date.parse(handoff.createdAt);
+      if (elapsed < 0 || elapsed >= HANDOFF_ANIMATION_DURATION_MS) continue;
+
+      const progress = elapsed / HANDOFF_ANIMATION_DURATION_MS;
+
+      // Find source and target nodes
+      const sourceNode = nodes.find((n) => n.id === handoff.fromNodeId);
+      const targetNode = nodes.find((n) => n.id === handoff.toNodeId);
+      if (!sourceNode || !targetNode) continue;
+
+      // Calculate position along the Bezier curve
+      const pos = getBezierPoint(sourceNode, targetNode, progress);
+      packets.push({ id: handoff.id, x: pos.x, y: pos.y });
+    }
+
+    return packets;
+  }, [recentHandoffs, nodes, animationTime]);
+
   const nodesTransformStyle = useAnimatedStyle(
     () => {
       return {
@@ -596,6 +650,16 @@ function SkiaGraphCanvas() {
                     strokeCap="round"
                   />
                 )}
+
+                {/* Handoff animation packets */}
+                {handoffPackets.map((packet) => (
+                  <Group key={packet.id}>
+                    {/* Outer glow */}
+                    <Circle cx={packet.x} cy={packet.y} r={8} color="#4287f5" opacity={0.4} />
+                    {/* Inner core */}
+                    <Circle cx={packet.x} cy={packet.y} r={4} color="#ffffff" />
+                  </Group>
+                ))}
               </Group>
             </Canvas>
           </View>
@@ -687,6 +751,44 @@ function findConnectionPoints(source: VisualNode, target: VisualNode) {
   }
 
   return best;
+}
+
+// Calculate position on cubic Bezier curve at parameter t (0-1)
+function getBezierPoint(
+  source: VisualNode,
+  target: VisualNode,
+  t: number
+): { x: number; y: number } {
+  const { startX, startY, endX, endY } = findConnectionPoints(source, target);
+
+  const dx = endX - startX;
+  const dy = endY - startY;
+  const controlOffset = Math.min(Math.abs(dx), Math.abs(dy), 100) * 0.5;
+
+  let cp1x = startX;
+  let cp1y = startY;
+  let cp2x = endX;
+  let cp2y = endY;
+
+  if (Math.abs(dx) > Math.abs(dy)) {
+    cp1x = startX + Math.sign(dx) * controlOffset;
+    cp2x = endX - Math.sign(dx) * controlOffset;
+  } else {
+    cp1y = startY + Math.sign(dy) * controlOffset;
+    cp2y = endY - Math.sign(dy) * controlOffset;
+  }
+
+  // Cubic Bezier formula: B(t) = (1-t)³P₀ + 3(1-t)²tP₁ + 3(1-t)t²P₂ + t³P₃
+  const mt = 1 - t;
+  const mt2 = mt * mt;
+  const mt3 = mt2 * mt;
+  const t2 = t * t;
+  const t3 = t2 * t;
+
+  return {
+    x: mt3 * startX + 3 * mt2 * t * cp1x + 3 * mt * t2 * cp2x + t3 * endX,
+    y: mt3 * startY + 3 * mt2 * t * cp1y + 3 * mt * t2 * cp2y + t3 * endY,
+  };
 }
 
 const styles = StyleSheet.create({

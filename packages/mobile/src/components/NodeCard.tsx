@@ -83,7 +83,7 @@ export const NodeCard = memo(function NodeCard({
     onExpand(node.id);
   }, [onExpand, node.id]);
 
-  const dragGesture = Gesture.Pan()
+  const dragGesture = useMemo(() => Gesture.Pan()
     .maxPointers(1)
     .onTouchesDown((event, stateManager) => {
       'worklet';
@@ -116,13 +116,13 @@ export const NodeCard = memo(function NodeCard({
     })
     .onFinalize(() => {
       isDragging.value = false;
-    });
+    }), [node.id, effectiveZoom, ports, onDrag, handleDragEnd, isDragging, savedX, savedY, translateX, translateY]);
 
-  const tapGesture = Gesture.Tap().onEnd(() => {
+  const tapGesture = useMemo(() => Gesture.Tap().onEnd(() => {
     runOnJS(handlePress)();
-  });
+  }), [handlePress]);
 
-  const composedGesture = Gesture.Race(dragGesture, tapGesture);
+  const composedGesture = useMemo(() => Gesture.Race(dragGesture, tapGesture), [dragGesture, tapGesture]);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [

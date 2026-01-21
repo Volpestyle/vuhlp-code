@@ -121,6 +121,31 @@ export class ProviderResolver {
         return null;
       }
     }
+
+    if (provider === "gemini" && !explicitCommand) {
+      const localBinary = this.resolveLocalGeminiBinary();
+      if (localBinary) {
+        command = localBinary.path;
+        this.logger.info("using local Gemini CLI bundle", {
+          provider,
+          path: localBinary.path
+        });
+      } else {
+        const repoPath = this.resolveLocalGeminiRepo();
+        if (repoPath) {
+          const expectedBundle = path.join(repoPath, "bundle", "gemini.js");
+          this.logger.error("local Gemini repo found but bundle missing", {
+            provider,
+            repoPath,
+            expectedBundle,
+            hint: "Run `npm run bundle` from packages/providers/gemini-cli"
+          });
+        }
+        // If we don't find a local repo, we fall back to "gemini" globally, 
+        // which will likely fail but matches standard behavior.
+      }
+    }
+
     const args = this.parseArgs(this.readEnv(`VUHLP_${prefix}_ARGS`));
     const protocolRaw = this.readEnv(`VUHLP_${prefix}_PROTOCOL`);
     let protocol = this.parseProtocol(protocolRaw);
@@ -465,6 +490,31 @@ export class ProviderResolver {
       if (value.startsWith(`${option}=`)) {
         return value.slice(option.length + 1);
       }
+    }
+    return null;
+  }
+
+  private resolveLocalGeminiRepo(): string | null {
+    const repoPath = path.join(this.resolveProvidersRoot(), "gemini-cli");
+    if (!fs.existsSync(repoPath)) {
+      return null;
+    }
+    try {
+      const stats = fs.statSync(repoPath);
+      return stats.isDirectory() ? repoPath : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveLocalGeminiBinary(): { path: string } | null {
+    const repoPath = this.resolveLocalGeminiRepo();
+    if (!repoPath) {
+      return null;
+    }
+    const bundlePath = path.join(repoPath, "bundle", "gemini.js");
+    if (this.isExecutableFile(bundlePath)) {
+      return { path: bundlePath };
     }
     return null;
   }

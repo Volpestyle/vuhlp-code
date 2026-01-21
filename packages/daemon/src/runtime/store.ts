@@ -15,6 +15,7 @@ export interface NodeRuntime {
   inbox: Envelope[];
   queuedMessages: UserMessageRecord[];
   pendingTurn: boolean;
+  autoPromptQueued: boolean;
   cancelRequested: boolean;
   wasInterrupted: boolean;
   lastOutputHash?: string;
@@ -70,6 +71,10 @@ export class RunStore {
     return Array.from(this.runs.values()).map((record) => record.state);
   }
 
+  listRunRecords(): RunRecord[] {
+    return Array.from(this.runs.values());
+  }
+
   deleteRun(runId: UUID): RunRecord | undefined {
     const record = this.runs.get(runId);
     if (!record) {
@@ -88,6 +93,7 @@ export class RunStore {
         inbox: [],
         queuedMessages: [],
         pendingTurn: false,
+        autoPromptQueued: false,
         cancelRequested: false,
         wasInterrupted: false,
         summaryHistory: [],
@@ -98,6 +104,7 @@ export class RunStore {
     };
     record.nodes.set(node.id, nodeRecord);
     record.state.nodes[node.id] = node;
+    record.state.nodeConfigs[node.id] = config;
     return nodeRecord;
   }
 
@@ -113,6 +120,7 @@ export class RunStore {
     const record = this.requireRun(runId);
     const nodeRecord = this.requireNode(record, nodeId);
     nodeRecord.config = { ...nodeRecord.config, ...patch };
+    record.state.nodeConfigs[nodeId] = nodeRecord.config;
     return nodeRecord.config;
   }
 

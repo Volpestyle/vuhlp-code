@@ -46,8 +46,18 @@ This is a monorepo managed by pnpm workspaces.
 - **`packages/ui`**: The React-based frontend (Graph Builder, Inspector, Chat).
 - **`packages/daemon`**: The Node.js backend service (Express/Socket.io) that manages agent processes and state.
 - **`packages/contracts`**: Shared TypeScript types and Zod schemas used by both frontend and backend.
+- **`packages/shared`**: Shared application logic and utilities (logging, API clients, etc.).
 - **`packages/providers`**: Adapters for different LLM/Agent providers (e.g., standard CLI wrappers).
 - **`contracts/`**: Source-of-truth logic for graph rules and data shapes.
+
+## CLI Patches for Orchestration
+
+Vuhlp's orchestration model depends on **long-lived, stream-json CLI sessions** modeled after Claude Code’s multi‑turn daemon behavior. We need **stateful turns** to preserve the agent’s runtime state (cwd, tool side effects, in-process memory) and to avoid per-turn rehydration/resume lag. We need **streaming events** to drive the UI in real time (deltas, tool proposals, approvals) and to provide explicit turn boundaries for the scheduler. Upstream Codex and Gemini CLIs are one-shot, so we maintain thin, rebased patches:
+
+- **Codex**: adds a `codex vuhlp` subcommand that runs a daemon loop with stream-json stdin/stdout and approval events.
+- **Gemini**: adds `--input-format stream-json` to run a daemon loop with session persistence (approval workflow is still in progress).
+
+See `docs/09-cli-patches.md` for patch details, current status, and how to keep branches synced with upstream.
 
 ## Documentation
 

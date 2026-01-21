@@ -15,26 +15,29 @@ import type {
   RunStatus,
   ApprovalRequest,
   Envelope,
-  ToolCall,
   TurnStatus,
   UUID,
   ISO8601,
+  ChatMessage,
+  ToolEvent,
 } from '@vuhlp/contracts';
+export type { ChatMessage, ToolEvent };
 import { getInitialTheme, type ThemeMode } from '../lib/theme';
-import { buildTimeline, stripToolCallLines, type TimelineItem } from '@vuhlp/shared';
+import {
+  buildTimeline,
+
+  type TimelineItem,
+  appendAssistantDelta,
+  finalizeAssistantMessage,
+  appendAssistantThinkingDelta,
+  finalizeAssistantThinking,
+  finalizeNodeMessages,
+  clearNodeMessages,
+} from '@vuhlp/shared';
 
 export type ViewMode = 'graph' | 'fullscreen' | 'collapsed';
 
-/** Tool event for tracking tool usage per node */
-export interface ToolEvent {
-  id: UUID;
-  nodeId: UUID;
-  tool: ToolCall;
-  status: 'proposed' | 'started' | 'completed' | 'failed';
-  timestamp: ISO8601;
-  result?: { ok: boolean };
-  error?: { message: string };
-}
+
 
 export interface TurnStatusEvent {
   id: UUID;
@@ -52,19 +55,12 @@ export interface NodeLogEntry {
   timestamp: ISO8601;
 }
 
-export interface ChatMessage {
-  id: string;
+export interface NodeLogEntry {
+  id: UUID;
   nodeId: UUID;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  createdAt: ISO8601;
-  streaming?: boolean;
-  status?: 'final' | 'interrupted';
-  thinking?: string;
-  thinkingStreaming?: boolean;
-  pending?: boolean;
-  sendError?: string;
-  rawContent?: string;
+  source: 'stdout' | 'stderr';
+  line: string;
+  timestamp: ISO8601;
 }
 
 /** Stall evidence from run.stalled event */
@@ -158,8 +154,9 @@ interface RunStore {
   ) => void;
   appendAssistantThinkingDelta: (nodeId: string, delta: string, timestamp: ISO8601) => void;
   finalizeAssistantThinking: (nodeId: string, content: string, timestamp: ISO8601) => void;
-  clearNodeMessages: (nodeId: string) => void;
   finalizeNodeMessages: (nodeId: string, timestamp: ISO8601) => void;
+
+  clearNodeMessages: (nodeId: string) => void;
 
   // Actions - Tool Events
   addToolEvent: (event: ToolEvent) => void;
@@ -280,6 +277,9 @@ export const useRunStore = create<RunStore>()(
             ...state.run,
             ...patch,
             nodes: patch.nodes ? { ...state.run.nodes, ...patch.nodes } : state.run.nodes,
+            nodeConfigs: patch.nodeConfigs
+              ? { ...(state.run.nodeConfigs ?? {}), ...patch.nodeConfigs }
+              : state.run.nodeConfigs,
             edges: patch.edges ? { ...state.run.edges, ...patch.edges } : state.run.edges,
             artifacts: patch.artifacts ? { ...state.run.artifacts, ...patch.artifacts } : state.run.artifacts,
             updatedAt: patch.updatedAt ?? state.run.updatedAt,
@@ -575,39 +575,10 @@ export const useRunStore = create<RunStore>()(
     appendAssistantDelta: (nodeId, delta, timestamp) =>
       set((state) => {
         const messages = state.chatMessages[nodeId] ?? [];
-        const streamId = `stream-${nodeId}`;
-        const existingIndex = messages.findIndex((msg) => msg.id === streamId);
-        if (existingIndex >= 0) {
-          const existing = messages[existingIndex];
-          const rawContent = `${existing.rawContent ?? existing.content}${delta}`;
-          const content = stripToolCallLines(rawContent);
-          const next = [...messages];
-          next[existingIndex] = {
-            ...existing,
-            content,
-            rawContent,
-            createdAt: timestamp,
-            streaming: true,
-          };
-          return {
-            chatMessages: { ...state.chatMessages, [nodeId]: next },
-          };
-        }
-        const rawContent = delta;
-        const content = stripToolCallLines(delta);
-        const nextMessage: ChatMessage = {
-          id: streamId,
-          nodeId,
-          role: 'assistant',
-          content,
-          rawContent,
-          createdAt: timestamp,
-          streaming: true,
-        };
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: [...messages, nextMessage],
+            [nodeId]: appendAssistantDelta(messages, nodeId, delta, timestamp),
           },
         };
       }),
@@ -615,44 +586,10 @@ export const useRunStore = create<RunStore>()(
     finalizeAssistantMessage: (nodeId, content, timestamp, status, id) =>
       set((state) => {
         const messages = state.chatMessages[nodeId] ?? [];
-        const streamId = `stream-${nodeId}`;
-        const thinkingStreamId = `thinking-stream-${nodeId}`;
-
-        // Check if we already have this message (by ID)
-        // This handles race conditions where the backend event is processed multiple times
-        // or during history replay
-        const hasExistingMessage = messages.some((msg) => msg.id === id);
-
-        const filtered = messages.filter((msg) => msg.id !== streamId && msg.id !== thinkingStreamId);
-
-        if (hasExistingMessage) {
-          // If message exists, just remove stream and thinking
-          return {
-            chatMessages: {
-              ...state.chatMessages,
-              [nodeId]: filtered,
-            },
-          };
-        }
-
-        // Find the thinking content from the streaming message before we filter it out
-        const streamingMsg = messages.find((msg) => msg.id === streamId);
-        const thinkingStreamingMsg = messages.find((msg) => msg.id === thinkingStreamId);
-        const thinking = streamingMsg?.thinking ?? thinkingStreamingMsg?.thinking;
-
-        const nextMessage: ChatMessage = {
-          id: id ?? `local-${crypto.randomUUID()}`,
-          nodeId,
-          role: 'assistant',
-          content,
-          createdAt: timestamp,
-          status,
-          thinking,
-        };
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: [...filtered, nextMessage],
+            [nodeId]: finalizeAssistantMessage(messages, nodeId, content, timestamp, status, id),
           },
         };
       }),
@@ -660,56 +597,10 @@ export const useRunStore = create<RunStore>()(
     appendAssistantThinkingDelta: (nodeId, delta, timestamp) =>
       set((state) => {
         const messages = state.chatMessages[nodeId] ?? [];
-        const streamId = `stream-${nodeId}`;
-        const existingStreamIndex = messages.findIndex((msg) => msg.id === streamId);
-
-        // If there's an existing stream message, append thinking to it
-        if (existingStreamIndex >= 0) {
-          const existing = messages[existingStreamIndex];
-          const next = [...messages];
-          next[existingStreamIndex] = {
-            ...existing,
-            thinking: `${existing.thinking ?? ''}${delta}`,
-            thinkingStreaming: true,
-            createdAt: timestamp,
-          };
-          return {
-            chatMessages: { ...state.chatMessages, [nodeId]: next },
-          };
-        }
-
-        // Otherwise create a new streaming message with thinking
-        const thinkingStreamId = `thinking-stream-${nodeId}`;
-        const existingThinkingIndex = messages.findIndex((msg) => msg.id === thinkingStreamId);
-
-        if (existingThinkingIndex >= 0) {
-          const existing = messages[existingThinkingIndex];
-          const next = [...messages];
-          next[existingThinkingIndex] = {
-            ...existing,
-            thinking: `${existing.thinking ?? ''}${delta}`,
-            thinkingStreaming: true,
-            createdAt: timestamp,
-          };
-          return {
-            chatMessages: { ...state.chatMessages, [nodeId]: next },
-          };
-        }
-
-        const nextMessage: ChatMessage = {
-          id: thinkingStreamId,
-          nodeId,
-          role: 'assistant',
-          content: '',
-          createdAt: timestamp,
-          streaming: true,
-          thinking: delta,
-          thinkingStreaming: true,
-        };
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: [...messages, nextMessage],
+            [nodeId]: appendAssistantThinkingDelta(messages, nodeId, delta, timestamp),
           },
         };
       }),
@@ -717,98 +608,29 @@ export const useRunStore = create<RunStore>()(
     finalizeAssistantThinking: (nodeId, content, timestamp) =>
       set((state) => {
         const messages = state.chatMessages[nodeId] ?? [];
-        const streamId = `stream-${nodeId}`;
-        const thinkingStreamId = `thinking-stream-${nodeId}`;
-
-        // Try to find the stream message first
-        const streamIndex = messages.findIndex((msg) => msg.id === streamId);
-        if (streamIndex >= 0) {
-          const existing = messages[streamIndex];
-          const next = [...messages];
-          next[streamIndex] = {
-            ...existing,
-            thinking: content,
-            thinkingStreaming: false,
-            createdAt: timestamp,
-          };
-          return {
-            chatMessages: { ...state.chatMessages, [nodeId]: next },
-          };
-        }
-
-        // Try to find the thinking stream message
-        const thinkingStreamIndex = messages.findIndex((msg) => msg.id === thinkingStreamId);
-        if (thinkingStreamIndex >= 0) {
-          const existing = messages[thinkingStreamIndex];
-          const next = [...messages];
-          next[thinkingStreamIndex] = {
-            ...existing,
-            thinking: content,
-            thinkingStreaming: false,
-            createdAt: timestamp,
-          };
-          return {
-            chatMessages: { ...state.chatMessages, [nodeId]: next },
-          };
-        }
-
-        // Create new message with just thinking
-        const nextMessage: ChatMessage = {
-          id: thinkingStreamId,
-          nodeId,
-          role: 'assistant',
-          content: '',
-          createdAt: timestamp,
-          streaming: true,
-          thinking: content,
-          thinkingStreaming: false,
-        };
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: [...messages, nextMessage],
+            [nodeId]: finalizeAssistantThinking(messages, nodeId, content, timestamp),
           },
         };
       }),
 
     finalizeNodeMessages: (nodeId, timestamp) =>
       set((state) => {
-        const messages = state.chatMessages[nodeId];
-        if (!messages) return state;
-
-        const needsFinalization = messages.some(
-          (m) => m.streaming || m.thinkingStreaming
-        );
-        if (!needsFinalization) return state;
-
-        const next = messages.map((m) => {
-          if (!m.streaming && !m.thinkingStreaming) return m;
-
-          return {
-            ...m,
-            streaming: false,
-            thinkingStreaming: false,
-            status: m.status ?? 'interrupted',
-            createdAt: timestamp,
-          };
-        });
-
+        const messages = state.chatMessages[nodeId] ?? [];
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: next,
+            [nodeId]: finalizeNodeMessages(messages, timestamp),
           },
         };
       }),
 
     clearNodeMessages: (nodeId) =>
-      set((state) => {
-        if (!state.chatMessages[nodeId]) {
-          return state;
-        }
-        const { [nodeId]: _removed, ...remaining } = state.chatMessages;
-        return { chatMessages: remaining };
-      }),
+      set((state) => ({
+        chatMessages: clearNodeMessages(state.chatMessages, nodeId),
+      })),
 
     // Tool Events
     addToolEvent: (event) =>

@@ -13,9 +13,12 @@ import type {
   CreateNodeResponse,
   CreateRunRequest,
   CreateRunResponse,
+  CreateTemplateRequest,
+  CreateTemplateResponse,
   DeleteEdgeResponse,
   DeleteNodeResponse,
   DeleteRunResponse,
+  DeleteTemplateResponse,
   EdgeState,
   GetArtifactResponse,
   GetRoleTemplateResponse,
@@ -23,6 +26,7 @@ import type {
   GetRunResponse,
   ListDirectoryResponse,
   ListRunsResponse,
+  ListTemplatesResponse,
   NodeCapabilities,
   NodePermissions,
   NodeSessionConfig,
@@ -40,6 +44,8 @@ import type {
   UpdateNodeResponse,
   UpdateRunRequest,
   UpdateRunResponse,
+  UpdateTemplateRequest,
+  UpdateTemplateResponse,
 } from '@vuhlp/contracts';
 
 export interface ApiClientConfig {
@@ -322,10 +328,44 @@ export function createApiClient(config: ApiClientConfig) {
       `${normalizeBaseUrl(baseUrl)}/api/runs/${runId}/artifacts/${artifactId}`,
 
     // Templates
+    listTemplates: async (): Promise<ListTemplatesResponse> => {
+      return fetchJson<ListTemplatesResponse>(baseUrl, '/api/templates');
+    },
+
     getRoleTemplate: async (name: string): Promise<GetRoleTemplateResponse> => {
       return fetchJson<GetRoleTemplateResponse>(
         baseUrl,
         `/api/templates/${encodeURIComponent(name)}`
+      );
+    },
+
+    createTemplate: async (name: string, content: string): Promise<CreateTemplateResponse> => {
+      const body: CreateTemplateRequest = { name, content };
+      return fetchJson<CreateTemplateResponse>(baseUrl, '/api/templates', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+
+    updateTemplate: async (name: string, content: string): Promise<UpdateTemplateResponse> => {
+      const body: UpdateTemplateRequest = { content };
+      return fetchJson<UpdateTemplateResponse>(
+        baseUrl,
+        `/api/templates/${encodeURIComponent(name)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(body),
+        }
+      );
+    },
+
+    deleteTemplate: async (name: string): Promise<DeleteTemplateResponse> => {
+      return fetchJson<DeleteTemplateResponse>(
+        baseUrl,
+        `/api/templates/${encodeURIComponent(name)}`,
+        {
+          method: 'DELETE',
+        }
       );
     },
 

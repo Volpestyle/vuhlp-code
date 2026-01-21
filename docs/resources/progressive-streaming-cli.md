@@ -34,11 +34,11 @@ Note: Upstream Gemini CLI does not accept stream-json input. vuhlp passes `--inp
 
 Codex CLI (OpenAI)
 
-Vuhlp uses a local Codex fork with a `codex vuhlp` subcommand that accepts JSONL stdin and emits vuhlp JSONL events on stdout. This keeps stdin open for multi-turn sessions.
+Vuhlp uses a local Codex fork with a `codex vuhlp` subcommand that accepts stream-json stdin and emits vuhlp stream-json events on stdout. This keeps stdin open for multi-turn sessions.
 
 Example:
 
-printf '{\"kind\":\"prompt\",\"prompt\":\"Say hello\",\"promptKind\":\"full\"}\\n' | codex vuhlp
+printf '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Say hello\"}]}}\\n' | codex vuhlp
 
 
 ⸻
@@ -132,7 +132,10 @@ function buildCliCommand(provider: string, prompt: string) {
       return {
         cmd: "codex",
         args: ["vuhlp"],
-        stdinText: JSON.stringify({ kind: "prompt", prompt, promptKind: "full" }) + "\\n",
+        stdinText: JSON.stringify({
+          type: "user",
+          message: { role: "user", content: [{ type: "text", text: prompt }] },
+        }) + "\\n",
       };
     default:
       throw new Error(`Unknown provider: ${provider}`);

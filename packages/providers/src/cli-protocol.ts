@@ -282,6 +282,21 @@ function parseCliEventObject(obj: JsonObject): ParsedCliEventResult {
       const error = errorMessage ? { message: errorMessage } : undefined;
       return error ? { type: "tool.completed", toolId, result, error } : { type: "tool.completed", toolId, result };
     }
+    // Gemini CLI stream-json: {"type":"thought","subject":"...","description":"...","raw_text":"..."}
+    case "thought": {
+      const rawText = getString(obj.raw_text);
+      const trimmedRawText = rawText?.trim();
+      const subject = getString(obj.subject);
+      const description = getString(obj.description);
+      const composed = [subject, description]
+        .filter((item) => Boolean(item && item.trim()))
+        .join("\n\n");
+      const content = trimmedRawText ? rawText : composed;
+      if (!content) {
+        return null;
+      }
+      return { type: "message.assistant.thinking.delta", delta: content };
+    }
 
     case "tool.proposed":
     case "tool.started": {

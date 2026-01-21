@@ -16,6 +16,7 @@ import { EdgeInspector } from './components/EdgeInspector';
 import { ApprovalQueue } from './components/ApprovalQueue';
 import { StallNotification } from './components/StallNotification';
 import { NewNodeModal } from './components/NewNodeModal';
+import { TemplatesModal } from './components/TemplatesModal';
 import { SessionPanel } from './components/SessionPanel';
 import './styles/app.css';
 
@@ -42,6 +43,7 @@ export function App() {
   const pendingApprovals = useRunStore((s) => s.pendingApprovals);
   const runId = useRunStore((s) => s.run?.id ?? null);
   const [newNodeOpen, setNewNodeOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   const sessionsWidth = viewMode === 'fullscreen' ? 0 : (sidebarOpen ? DEFAULT_SESSIONS_WIDTH : 40);
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     if (typeof window === 'undefined') return DEFAULT_INSPECTOR_WIDTH;
@@ -132,6 +134,10 @@ export function App() {
     setNewNodeOpen(true);
   }, []);
 
+  const handleOpenTemplates = useCallback(() => {
+    setTemplatesOpen(true);
+  }, []);
+
   if (bootstrapError) {
     return (
       <div className="app">
@@ -157,7 +163,7 @@ export function App() {
         ['--sessions-width' as keyof CSSProperties]: `${sessionsWidth}px`,
       }}
     >
-      <Header minimal={viewMode === 'fullscreen'} />
+      <Header minimal={viewMode === 'fullscreen'} onOpenTemplates={handleOpenTemplates} />
       {historyError ? (
         <div className="app__banner app__banner--error" role="alert">
           <div className="app__banner-message">
@@ -201,6 +207,7 @@ export function App() {
       )}
       <StallNotification />
       <NewNodeModal open={newNodeOpen} onClose={() => setNewNodeOpen(false)} />
+      <TemplatesModal open={templatesOpen} onClose={() => setTemplatesOpen(false)} />
     </div>
   );
 }

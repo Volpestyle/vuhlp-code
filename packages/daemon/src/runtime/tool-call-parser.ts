@@ -20,6 +20,11 @@ export interface ExtractedToolCalls {
   toolCalls: ToolCall[];
 }
 
+export interface ToolCallParseOptions {
+  strictWrapper?: boolean;
+  allowlist?: ReadonlySet<string>;
+}
+
 /**
  * Extracts tool call JSON lines from a message
  *
@@ -30,14 +35,15 @@ export interface ExtractedToolCalls {
 export function extractToolCalls(
   message: string,
   nodeId: UUID | undefined,
-  logger?: Logger
+  logger?: Logger,
+  options?: ToolCallParseOptions
 ): ExtractedToolCalls {
   const lines = message.split("\n");
   const toolCalls: ToolCall[] = [];
   const keptLines: string[] = [];
 
   for (const line of lines) {
-    const toolCall = parseToolCallLine(line, nodeId, logger);
+    const toolCall = parseToolCallLine(line, nodeId, logger, options);
     if (toolCall) {
       toolCalls.push(toolCall);
       continue;
@@ -64,7 +70,8 @@ export function extractToolCalls(
 export function parseToolCallLine(
   line: string,
   nodeId: UUID | undefined,
-  logger?: Logger
+  logger?: Logger,
+  options?: ToolCallParseOptions
 ): ToolCall | null {
   const trimmed = line.trim();
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
@@ -94,6 +101,21 @@ export function parseToolCallLine(
       : null;
 
   if (!container) {
+    if (options?.strictWrapper) {
+      const directName =
+        typeof parsed.tool === "string"
+          ? parsed.tool.trim()
+          : typeof parsed.name === "string"
+            ? parsed.name.trim()
+            : "";
+      if (directName) {
+        logger?.debug("ignored tool_call without wrapper in strict mode", {
+          nodeId,
+          tool: directName
+        });
+      }
+      return null;
+    }
     // Try direct properties (nonstandard format)
     const directName =
       typeof parsed.tool === "string"
@@ -114,10 +136,19 @@ export function parseToolCallLine(
     const directId = typeof parsed.id === "string" ? parsed.id.trim() : "";
     const id = directId.length > 0 ? directId : newId();
 
-    logger?.warn("nonstandard tool_call JSON shape; prefer tool_call wrapper", {
-      nodeId,
-      tool: directName
-    });
+    if (options?.allowlist && !options.allowlist.has(directName)) {
+      logger?.debug("ignored tool_call not in allowlist", {
+        nodeId,
+        tool: directName
+      });
+      return null;
+    }
+    if (!options?.strictWrapper) {
+      logger?.warn("nonstandard tool_call JSON shape; prefer tool_call wrapper", {
+        nodeId,
+        tool: directName
+      });
+    }
 
     return { id, name: directName, args: directArgs };
   }
@@ -141,6 +172,14 @@ export function parseToolCallLine(
   const id = idValue.length > 0 ? idValue : newId();
 
   if (!name || !args) {
+    return null;
+  }
+
+  if (options?.allowlist && !options.allowlist.has(name)) {
+    logger?.debug("ignored tool_call not in allowlist", {
+      nodeId,
+      tool: name
+    });
     return null;
   }
 

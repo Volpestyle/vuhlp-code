@@ -136,6 +136,15 @@ export class PromptBuilder {
     lines.push(`Provider: ${input.node.provider}`);
     lines.push(`Orchestration: ${input.run.mode}`);
     lines.push(`Global mode: ${input.run.globalMode}`);
+    if (
+      input.run.mode === "AUTO" &&
+      input.messages.length === 0 &&
+      input.envelopes.length === 0
+    ) {
+      lines.push(
+        "Auto loop turn: no new inputs. Continue toward the goal or explicitly mark completion/stall."
+      );
+    }
     const caps = input.node.capabilities;
     lines.push(
       `Capabilities: edgeManagement=${caps.edgeManagement}, runCommands=${caps.runCommands}, writeCode=${caps.writeCode}, writeDocs=${caps.writeDocs}, delegateOnly=${caps.delegateOnly}`

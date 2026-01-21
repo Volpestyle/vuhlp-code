@@ -38,5 +38,11 @@ export function useChatAutoScroll({
     [updatePinned]
   );
 
-  return { handleScroll, isPinned };
+  const onContentSizeChange = useCallback(() => {
+    if (enabled && isPinned) {
+      scrollToEnd();
+    }
+  }, [enabled, isPinned, scrollToEnd]);
+
+  return { handleScroll, isPinned, onContentSizeChange };
 }
