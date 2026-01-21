@@ -17,6 +17,14 @@ export type ArtifactKind = "diff" | "prompt" | "log" | "transcript" | "contextpa
 
 export type EdgeManagementScope = "none" | "self" | "all";
 
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+export interface TodoItem {
+  content: string;
+  status: TodoStatus;
+  activeForm: string;
+}
+
 export interface UsageTotals {
   promptTokens: number;
   completionTokens: number;
@@ -108,6 +116,7 @@ export interface NodeState {
   session: NodeSession;
   connection?: NodeConnection;
   inboxCount?: number;
+  todos?: TodoItem[];
 }
 
 export interface NodeConfig {

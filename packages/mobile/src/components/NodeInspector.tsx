@@ -23,6 +23,9 @@ import Animated, {
   withTiming,
   runOnJS,
   useAnimatedKeyboard,
+  FadeIn,
+  FadeOut,
+  LinearTransition,
   type EasingFunction,
   type EasingFunctionFactory,
 } from 'react-native-reanimated';
@@ -32,7 +35,7 @@ import {
   useGraphStore,
   type TurnStatusEvent,
 } from '@/stores/graph-store';
-import type { Envelope, ChatMessage, ToolEvent } from '@vuhlp/contracts';
+import type { Envelope, ChatMessage, ToolEvent, TodoItem } from '@vuhlp/contracts';
 import { api } from '@/lib/api';
 import { useChatAutoScroll } from '@/lib/useChatAutoScroll';
 import { ThinkingSpinner } from '@vuhlp/spinners/native';
@@ -124,7 +127,32 @@ export function NodeInspector() {
   const [messageText, setMessageText] = useState('');
   const [messageError, setMessageError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'chat' | 'details'>('chat');
+  const [todosExpanded, setTodosExpanded] = useState(true);
+  const todosIconRotation = useSharedValue(1); // 1 = expanded (90deg), 0 = collapsed (0deg)
   const [mediaPickerVisible, setMediaPickerVisible] = useState(false);
+
+  // Animated style for todos toggle icon rotation
+  const todosIconAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${todosIconRotation.value * 90}deg` }],
+  }));
+
+  const handleTodosToggle = useCallback(() => {
+    todosIconRotation.value = withSpring(todosExpanded ? 0 : 1, { damping: 100, stiffness: 700 });
+    setTodosExpanded(!todosExpanded);
+  }, [todosExpanded, todosIconRotation]);
+
+  const todosSwipeGesture = Gesture.Pan()
+    .onEnd((event) => {
+      const threshold = 20;
+      // Swipe up to expand, swipe down to collapse
+      if (event.translationY < -threshold && !todosExpanded) {
+        runOnJS(setTodosExpanded)(true);
+        todosIconRotation.value = withSpring(1, { damping: 100, stiffness: 700 });
+      } else if (event.translationY > threshold && todosExpanded) {
+        runOnJS(setTodosExpanded)(false);
+        todosIconRotation.value = withSpring(0, { damping: 100, stiffness: 700 });
+      }
+    });
   const scrollViewRef = useRef<ScrollView>(null);
   const sendLongPressRef = useRef(false);
   const keyboardConfigWarnedRef = useRef(false);
@@ -199,7 +227,7 @@ export function NodeInspector() {
     () => `${buildTimelineUpdateKey(timeline)}-${isRunning}-${isStreaming}`,
     [timeline, isRunning, isStreaming]
   );
-  const { handleScroll, onContentSizeChange } = useChatAutoScroll({
+  const { handleScroll, onContentSizeChange, scrollToBottom } = useChatAutoScroll({
     scrollRef: scrollViewRef,
     enabled: activeTab === 'chat',
     updateKey: autoScrollKey,
@@ -511,8 +539,9 @@ export function NodeInspector() {
       setMessageText('');
       setMessageError(null);
       void sendMessage(messageId, content, interrupt);
+      scrollToBottom();
     },
-    [messageText, selectedNode, run, addChatMessage, sendMessage, handleResetContext]
+    [messageText, selectedNode, run, addChatMessage, sendMessage, handleResetContext, scrollToBottom]
   );
 
   const canSend = Boolean((messageText || '').trim());
@@ -679,6 +708,81 @@ export function NodeInspector() {
               </>
             )}
           </ScrollView>
+
+          {/* Collapsible Todos Panel */}
+          {selectedNode.todos && selectedNode.todos.length > 0 && (
+            <Animated.View style={styles.todosPanel} layout={LinearTransition.springify().damping(100).stiffness(700)}>
+              <GestureDetector gesture={todosSwipeGesture}>
+                <Pressable
+                  style={styles.todosPanelToggle}
+                  onPress={handleTodosToggle}
+                >
+                  <Animated.Text style={[styles.todosPanelToggleIcon, todosIconAnimatedStyle]}>
+                    ▶
+                  </Animated.Text>
+                  <Text style={styles.todosPanelToggleLabel}>
+                    Todos ({selectedNode.todos.length})
+                  </Text>
+                  <View style={styles.todosPanelBadges}>
+                    {selectedNode.todos.filter(t => t.status === 'in_progress').length > 0 && (
+                      <View style={styles.todosBadgeInProgress}>
+                        <Text style={styles.todosBadgeText}>
+                          {selectedNode.todos.filter(t => t.status === 'in_progress').length} active
+                        </Text>
+                      </View>
+                    )}
+                    {selectedNode.todos.filter(t => t.status === 'completed').length > 0 && (
+                      <View style={styles.todosBadgeCompleted}>
+                        <Text style={styles.todosBadgeTextCompleted}>
+                          {selectedNode.todos.filter(t => t.status === 'completed').length} done
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </Pressable>
+              </GestureDetector>
+              {todosExpanded && (
+                <Animated.View
+                  style={styles.todosPanelList}
+                  entering={FadeIn.duration(80)}
+                  exiting={FadeOut.duration(60)}
+                >
+                  {selectedNode.todos.map((todo, index) => (
+                    <Animated.View
+                      key={`${todo.content}-${index}`}
+                      style={[
+                        styles.todoItem,
+                        todo.status === 'pending' && styles.todoItemPending,
+                        todo.status === 'in_progress' && styles.todoItemInProgress,
+                        todo.status === 'completed' && styles.todoItemCompleted,
+                      ]}
+                      entering={FadeIn.delay(index * 10).springify().damping(100).stiffness(700)}
+                      layout={LinearTransition.springify().damping(100).stiffness(700)}
+                    >
+                      <Text
+                        style={[
+                          styles.todoStatus,
+                          todo.status === 'pending' && styles.todoStatusPending,
+                          todo.status === 'in_progress' && styles.todoStatusInProgress,
+                          todo.status === 'completed' && styles.todoStatusCompleted,
+                        ]}
+                      >
+                        {todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '▶' : '○'}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.todoContent,
+                          todo.status === 'completed' && styles.todoContentCompleted,
+                        ]}
+                      >
+                        {todo.status === 'in_progress' ? todo.activeForm : todo.content}
+                      </Text>
+                    </Animated.View>
+                  ))}
+                </Animated.View>
+              )}
+            </Animated.View>
+          )}
 
           <Animated.View style={styles.composerContainer}>
             <View style={styles.composerRow}>
@@ -1480,5 +1584,111 @@ const styles = StyleSheet.create({
   badgeText: {
     color: colors.textSecondary,
     fontSize: 12,
+  },
+  tabCount: {
+    color: colors.textMuted,
+    fontSize: 12,
+  },
+  todosPanel: {
+    backgroundColor: colors.bgElevated,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  todosPanelToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    backgroundColor: colors.bgSurface,
+  },
+  todosPanelToggleIcon: {
+    color: colors.textMuted,
+    fontSize: 10,
+    width: 14,
+  },
+  todosPanelToggleLabel: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontFamily: fontFamily.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  todosPanelBadges: {
+    flexDirection: 'row',
+    gap: 6,
+    marginLeft: 'auto',
+  },
+  todosBadgeInProgress: {
+    backgroundColor: 'rgba(77, 230, 168, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  todosBadgeCompleted: {
+    backgroundColor: 'rgba(0, 255, 136, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  todosBadgeText: {
+    color: colors.accent,
+    fontSize: 10,
+    fontFamily: fontFamily.medium,
+  },
+  todosBadgeTextCompleted: {
+    color: colors.statusRunning,
+    fontSize: 10,
+    fontFamily: fontFamily.medium,
+  },
+  todosPanelList: {
+    padding: 10,
+    gap: 8,
+  },
+  todoItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 12,
+    backgroundColor: colors.bgElevated,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderLeftWidth: 3,
+  },
+  todoItemPending: {
+    borderLeftColor: colors.textMuted,
+  },
+  todoItemInProgress: {
+    borderLeftColor: colors.accent,
+    backgroundColor: 'rgba(77, 230, 168, 0.08)',
+  },
+  todoItemCompleted: {
+    borderLeftColor: colors.statusRunning,
+    opacity: 0.7,
+  },
+  todoStatus: {
+    width: 18,
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  todoStatusPending: {
+    color: colors.textMuted,
+  },
+  todoStatusInProgress: {
+    color: colors.accent,
+  },
+  todoStatusCompleted: {
+    color: colors.statusRunning,
+  },
+  todoContent: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.textSecondary,
+    lineHeight: 20,
+  },
+  todoContentCompleted: {
+    textDecorationLine: 'line-through',
+    color: colors.textMuted,
   },
 });

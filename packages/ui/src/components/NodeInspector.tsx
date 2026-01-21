@@ -11,7 +11,7 @@
  * - Controls: start/stop process, pause running turn, interrupt/queue message, reset context
  */
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject, type MutableRefObject } from 'react';
 import type {
   NodeState,
   Artifact,
@@ -20,7 +20,8 @@ import type {
   NodeCapabilities,
   NodePermissions,
   GetRoleTemplateResponse,
-  UsageTotals
+  UsageTotals,
+  TodoItem
 } from '@vuhlp/contracts';
 import {
   buildTimeline,
@@ -55,6 +56,7 @@ import { StatusBadge } from './StatusBadge';
 import { ProviderBadge } from './ProviderBadge';
 import { ThinkingSpinner } from '@vuhlp/spinners';
 import { RefreshDouble, Trash, Check, Eye, NavArrowDown, NavArrowRight } from 'iconoir-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import './NodeInspector.css';
 
 interface NodeInspectorProps {
@@ -132,6 +134,7 @@ export function NodeInspector({ node }: NodeInspectorProps) {
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const templatePreviewRef = useRef<HTMLPreElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const scrollToBottomRef = useRef<(() => void) | null>(null);
   const getNodeArtifacts = useRunStore((s) => s.getNodeArtifacts);
   const getNodeEdges = useRunStore((s) => s.getNodeEdges);
 
@@ -383,6 +386,7 @@ export function NodeInspector({ node }: NodeInspectorProps) {
       console.error('[inspector] failed to send message', error);
       setMessageError('Failed to send message.');
     });
+    scrollToBottomRef.current?.();
   };
 
   const handleProviderChange = (value: string) => {
@@ -613,9 +617,12 @@ export function NodeInspector({ node }: NodeInspectorProps) {
     handleUpdateEdge(edge, { label });
   };
 
+  const todos = node.todos ?? [];
+
+  const [todosExpanded, setTodosExpanded] = useState(true);
+
   const tabs: { id: InspectorTab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
-
     { id: 'chat', label: 'Chat' },
     { id: 'prompts', label: 'Prompts', count: prompts.length },
     { id: 'transcripts', label: 'Transcripts', count: transcripts.length },
@@ -760,11 +767,15 @@ export function NodeInspector({ node }: NodeInspectorProps) {
             nodeStatus={node.status}
             nodeId={node.id}
             scrollRef={contentRef}
+            scrollToBottomRef={scrollToBottomRef}
             filter={chatFilter}
             allCount={timeline.length}
             handoffCount={handoffCount}
             isStreaming={isStreaming}
             onFilterChange={setChatFilter}
+            todos={todos}
+            todosExpanded={todosExpanded}
+            onTodosToggle={() => setTodosExpanded(!todosExpanded)}
           />
         )}
         {activeTab === 'prompts' && (
@@ -859,28 +870,44 @@ function ChatTab({
   nodeStatus,
   nodeId,
   scrollRef,
+  scrollToBottomRef,
   filter,
   allCount,
   handoffCount,
   isStreaming,
   onFilterChange,
+  todos,
+  todosExpanded,
+  onTodosToggle,
 }: {
   timeline: TimelineEvent[];
   nodeLabel: string;
   nodeStatus?: string;
   nodeId: string;
   scrollRef: RefObject<HTMLDivElement | null>;
+  scrollToBottomRef: MutableRefObject<(() => void) | null>;
   filter: ChatFilter;
   allCount: number;
   handoffCount: number;
   isStreaming: boolean;
   onFilterChange: (filter: ChatFilter) => void;
+  todos: TodoItem[];
+  todosExpanded: boolean;
+  onTodosToggle: () => void;
 }) {
   const autoScrollKey = useMemo(
     () => `${nodeStatus ?? ''}-${isStreaming ? '1' : '0'}-${filter}`,
     [nodeStatus, isStreaming, filter]
   );
-  useChatAutoScroll({ scrollRef, timeline, updateKey: autoScrollKey, resetKey: nodeId });
+  const { scrollToBottom } = useChatAutoScroll({ scrollRef, timeline, updateKey: autoScrollKey, resetKey: nodeId });
+
+  // Expose scrollToBottom to parent via ref
+  useEffect(() => {
+    scrollToBottomRef.current = scrollToBottom;
+    return () => {
+      scrollToBottomRef.current = null;
+    };
+  }, [scrollToBottom, scrollToBottomRef]);
 
   if (allCount === 0 && nodeStatus !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true') {
      return (
@@ -941,6 +968,77 @@ function ChatTab({
             </div>
           ) : null}
         </>
+      )}
+
+      {/* Collapsible Todos Section */}
+      {todos.length > 0 && (
+        <div className="inspector__todos-panel">
+          <button
+            className="inspector__todos-toggle"
+            onClick={onTodosToggle}
+            type="button"
+          >
+            <motion.span
+              className="inspector__todos-toggle-icon"
+              animate={{ rotate: todosExpanded ? 90 : 0 }}
+              transition={{ type: 'spring', stiffness: 500, damping: 50 }}
+            >
+              ▶
+            </motion.span>
+            <span className="inspector__todos-toggle-label">
+              Todos
+              <span className="inspector__todos-toggle-count">({todos.length})</span>
+            </span>
+            <span className="inspector__todos-toggle-summary">
+              {todos.filter(t => t.status === 'in_progress').length > 0 && (
+                <span className="inspector__todos-badge inspector__todos-badge--in-progress">
+                  {todos.filter(t => t.status === 'in_progress').length} active
+                </span>
+              )}
+              {todos.filter(t => t.status === 'completed').length > 0 && (
+                <span className="inspector__todos-badge inspector__todos-badge--completed">
+                  {todos.filter(t => t.status === 'completed').length} done
+                </span>
+              )}
+            </span>
+          </button>
+          <AnimatePresence initial={false}>
+            {todosExpanded && (
+              <motion.div
+                initial={{ height: 0 }}
+                animate={{ height: 'auto' }}
+                exit={{ height: 0 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 50 }}
+                style={{ overflow: 'hidden' }}
+              >
+                <motion.ul
+                  className="inspector__todos-list"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.1 }}
+                >
+                  {todos.map((todo, index) => (
+                    <motion.li
+                      key={`${todo.content}-${index}`}
+                      className={`inspector__todo inspector__todo--${todo.status.replace('_', '-')}`}
+                      initial={{ opacity: 0, x: -6 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: index * 0.02, type: 'spring', stiffness: 500, damping: 50 }}
+                    >
+                      <span className={`inspector__todo-status inspector__todo-status--${todo.status.replace('_', '-')}`}>
+                        {todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '▶' : '○'}
+                      </span>
+                      <span className="inspector__todo-content">
+                        {todo.status === 'in_progress' ? todo.activeForm : todo.content}
+                      </span>
+                    </motion.li>
+                  ))}
+                </motion.ul>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       )}
     </div>
   );

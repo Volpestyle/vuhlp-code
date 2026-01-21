@@ -23,6 +23,21 @@ export const usageTotalsSchema = {
   }
 } as const;
 
+export const todoStatusSchema = {
+  type: "string",
+  enum: ["pending", "in_progress", "completed"]
+} as const;
+
+export const todoItemSchema = {
+  type: "object",
+  required: ["content", "status", "activeForm"],
+  properties: {
+    content: { type: "string" },
+    status: todoStatusSchema,
+    activeForm: { type: "string" }
+  }
+} as const;
+
 export const nodeStateSchema = {
   $schema: "http://json-schema.org/draft-07/schema#",
   title: "NodeState",
@@ -89,7 +104,8 @@ export const nodeStateSchema = {
         lastOutputAt: { type: "string", format: "date-time" }
       }
     },
-    inboxCount: { type: "number" }
+    inboxCount: { type: "number" },
+    todos: { type: "array", items: todoItemSchema }
   },
   additionalProperties: true
 } as const;

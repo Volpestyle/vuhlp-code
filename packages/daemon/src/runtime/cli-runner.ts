@@ -7,6 +7,8 @@ import type {
   PromptArtifacts,
   ProviderName,
   RunState,
+  TodoItem,
+  TodoStatus,
   ToolCall,
   UserMessageRecord,
   UUID
@@ -637,6 +639,47 @@ export class CliRunner implements NodeRunner {
         }
       }
 
+      // Intercept TodoWrite tool calls - extract todos and emit patch
+      // Provider-wrapped tools have: tool.name="provider_tool", tool.args.name="TodoWrite", tool.args.input={todos:[...]}
+      // Direct tools would have: tool.name="TodoWrite", tool.args.todos=[...]
+      this.logger.debug("processing tool in queue", {
+        toolName: tool.name,
+        argsName: String(tool.args.name),
+        hasInput: "input" in tool.args,
+        argsKeys: Object.keys(tool.args)
+      });
+      const isProviderTodoWrite = tool.name === "provider_tool" && tool.args.name === "TodoWrite";
+      const isDirectTodoWrite = tool.name === "TodoWrite";
+      this.logger.debug("TodoWrite check", { isProviderTodoWrite, isDirectTodoWrite });
+      if (isProviderTodoWrite || isDirectTodoWrite) {
+        const argsToUse = isProviderTodoWrite && isRecord(tool.args.input) ? tool.args.input : tool.args;
+        this.logger.debug("TodoWrite args to parse", { argsToUse });
+        const todos = this.parseTodoWriteArgs(argsToUse);
+        this.logger.debug("parsed todos", { todosCount: todos?.length ?? 0, todos });
+        if (todos) {
+          this.emitTodoPatch(session, todos);
+          this.logger.info("todo list updated from TodoWrite tool", {
+            runId: session.config.runId,
+            nodeId: session.config.nodeId,
+            todoCount: todos.length,
+            isProviderWrapped: isProviderTodoWrite
+          });
+        } else {
+          this.logger.warn("TodoWrite tool detected but failed to parse todos", {
+            argsToUse
+          });
+        }
+      }
+
+      // For direct TodoWrite, skip execution since it's provider-internal
+      if (isDirectTodoWrite) {
+        this.emitToolStarted(session, tool);
+        this.emitToolCompleted(session, tool.id, { ok: true, output: "Todos updated" }, undefined);
+        toolQueue.shift();
+        continue;
+      }
+      // Provider-wrapped TodoWrite continues to normal execution (already handled by provider)
+
       this.emitToolStarted(session, tool);
       this.logger.info("tool execution started", {
         runId: session.config.runId,
@@ -666,6 +709,7 @@ export class CliRunner implements NodeRunner {
         toolId: tool.id,
         ok: result.ok
       });
+
       if (!result.ok) {
         const errorMessage = result.error ?? "tool failed";
         toolErrors.push(`${tool.name}: ${errorMessage}`);
@@ -1121,6 +1165,49 @@ export class CliRunner implements NodeRunner {
       }
       return;
     }
+  }
+
+  private parseTodoStatus(value: unknown): TodoStatus | null {
+    if (value === "pending" || value === "in_progress" || value === "completed") {
+      return value;
+    }
+    return null;
+  }
+
+  private parseTodoWriteArgs(args: Record<string, unknown>): TodoItem[] | null {
+    const todosArg = args.todos;
+    if (!Array.isArray(todosArg)) {
+      return null;
+    }
+    const todos: TodoItem[] = [];
+    for (const item of todosArg) {
+      if (!isRecord(item)) {
+        continue;
+      }
+      const content = item.content;
+      const status = item.status;
+      const activeForm = item.activeForm;
+      if (typeof content !== "string" || typeof activeForm !== "string") {
+        continue;
+      }
+      const validStatus = this.parseTodoStatus(status);
+      if (!validStatus) {
+        continue;
+      }
+      todos.push({ content, status: validStatus, activeForm });
+    }
+    return todos.length > 0 ? todos : null;
+  }
+
+  private emitTodoPatch(session: ProviderSession, todos: TodoItem[]): void {
+    this.emitEvent(session.config.runId, {
+      id: newId(),
+      runId: session.config.runId,
+      ts: nowIso(),
+      type: "node.patch",
+      nodeId: session.config.nodeId,
+      patch: { todos }
+    });
   }
 
 }
