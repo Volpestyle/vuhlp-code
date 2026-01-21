@@ -10,18 +10,26 @@ interface UseChatAutoScrollOptions {
   resetKey?: string;
 }
 
+interface UseChatAutoScrollResult {
+  handleScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
+  isPinned: boolean;
+  onContentSizeChange: () => void;
+  /** Force scroll to bottom - call this when user sends a message */
+  scrollToBottom: () => void;
+}
+
 export function useChatAutoScroll({
   scrollRef,
   enabled = true,
   threshold = 48,
   updateKey,
   resetKey,
-}: UseChatAutoScrollOptions) {
+}: UseChatAutoScrollOptions): UseChatAutoScrollResult {
   const scrollToEnd = useCallback(() => {
     scrollRef.current?.scrollToEnd({ animated: true });
   }, [scrollRef]);
 
-  const { isPinned, updatePinned } = useAutoScrollState({
+  const { isPinned, updatePinned, forcePinnedAndScroll } = useAutoScrollState({
     enabled,
     threshold,
     updateKey,
@@ -44,5 +52,5 @@ export function useChatAutoScroll({
     }
   }, [enabled, isPinned, scrollToEnd]);
 
-  return { handleScroll, isPinned, onContentSizeChange };
+  return { handleScroll, isPinned, onContentSizeChange, scrollToBottom: forcePinnedAndScroll };
 }

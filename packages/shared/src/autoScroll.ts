@@ -11,6 +11,8 @@ export interface AutoScrollOptions {
 export interface AutoScrollState {
   isPinned: boolean;
   updatePinned: (distanceFromBottom: number) => void;
+  /** Force pin to bottom and scroll immediately - call this when user sends a message */
+  forcePinnedAndScroll: () => void;
 }
 
 export function useAutoScrollState({
@@ -29,6 +31,14 @@ export function useAutoScrollState({
     [threshold]
   );
 
+  const forcePinnedAndScroll = useCallback(() => {
+    setIsPinned(true);
+    // Use requestAnimationFrame to ensure DOM has updated before scrolling
+    requestAnimationFrame(() => {
+      scrollToEnd();
+    });
+  }, [scrollToEnd]);
+
   useEffect(() => {
     if (resetKey !== undefined) {
       setIsPinned(true);
@@ -40,5 +50,5 @@ export function useAutoScrollState({
     scrollToEnd();
   }, [enabled, isPinned, scrollToEnd, updateKey]);
 
-  return { isPinned, updatePinned };
+  return { isPinned, updatePinned, forcePinnedAndScroll };
 }

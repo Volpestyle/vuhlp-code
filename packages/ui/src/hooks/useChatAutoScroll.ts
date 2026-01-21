@@ -12,6 +12,11 @@ interface UseChatAutoScrollOptions {
   resetKey?: string;
 }
 
+interface UseChatAutoScrollResult {
+  /** Force scroll to bottom - call this when user sends a message */
+  scrollToBottom: () => void;
+}
+
 export function useChatAutoScroll({
   scrollRef,
   timeline,
@@ -19,7 +24,7 @@ export function useChatAutoScroll({
   threshold = 48,
   updateKey,
   resetKey,
-}: UseChatAutoScrollOptions): void {
+}: UseChatAutoScrollOptions): UseChatAutoScrollResult {
   const timelineKey = useMemo(() => buildTimelineUpdateKey(timeline), [timeline]);
   const combinedKey = useMemo(
     () => `${timelineKey}::${updateKey ?? ''}`,
@@ -36,7 +41,7 @@ export function useChatAutoScroll({
     }
   }, [scrollRef]);
 
-  const { updatePinned } = useAutoScrollState({
+  const { updatePinned, forcePinnedAndScroll } = useAutoScrollState({
     enabled,
     threshold,
     updateKey: combinedKey,
@@ -58,4 +63,6 @@ export function useChatAutoScroll({
     element.addEventListener('scroll', handleScroll, { passive: true });
     return () => element.removeEventListener('scroll', handleScroll);
   }, [scrollRef, updatePinned]);
+
+  return { scrollToBottom: forcePinnedAndScroll };
 }
