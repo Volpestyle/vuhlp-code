@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type {
+  GraphLayout,
   RunState,
   NodeState,
   EdgeState,
@@ -11,7 +12,6 @@ import type {
   Envelope,
   ChatMessage,
   ToolEvent,
-  GraphLayout,
 } from '@vuhlp/contracts';
 import {
   appendAssistantDelta,
@@ -80,9 +80,9 @@ interface GraphState {
   nodes: VisualNode[];
   edges: VisualEdge[];
   viewport: Viewport;
-  viewDimensions: Dimensions;
   layoutUpdatedAt: ISO8601 | null;
   layoutDirty: boolean;
+  viewDimensions: Dimensions;
 
   // Selection
   selectedNodeId: string | null;
@@ -224,15 +224,24 @@ function buildVisualNodes(
   existingNodes: Map<string, VisualNode>,
   selectedNodeId: string | null,
   layoutPositions: Record<string, Point> | null,
-  layoutFirst: boolean
+  shouldApplyLayout: boolean
 ): VisualNode[] {
   const runNodes = Object.values(run.nodes);
   return runNodes.map((node, index) => {
     const existing = existingNodes.get(node.id);
     const isSelected = node.id === selectedNodeId;
     const layoutPosition = layoutPositions?.[node.id];
+    const position = shouldApplyLayout
+      ? layoutPosition ?? existing?.position ?? defaultPosition(index)
+      : existing?.position ?? layoutPosition ?? defaultPosition(index);
+    const dimensions = existing?.dimensions ?? DEFAULT_NODE_DIMENSIONS;
 
-    // Return existing visual node if nothing changed
+    const positionMatches =
+      existing?.position?.x === position.x && existing.position?.y === position.y;
+    const dimensionsMatches =
+      existing?.dimensions?.width === dimensions.width &&
+      existing.dimensions?.height === dimensions.height;
+
     if (
       existing &&
       existing.selected === isSelected &&
@@ -242,24 +251,21 @@ function buildVisualNodes(
       existing.lastActivityAt === node.lastActivityAt &&
       existing.roleTemplate === node.roleTemplate &&
       existing.provider === node.provider &&
-      // Check complex objects equality by reference (assuming immutable updates in contract)
       existing.capabilities === node.capabilities &&
       existing.permissions === node.permissions &&
       existing.session === node.session &&
       existing.inboxCount === node.inboxCount &&
-      // Check visual properties
-      existing.position &&
-      existing.dimensions
+      existing.todos === node.todos &&
+      positionMatches &&
+      dimensionsMatches
     ) {
       return existing;
     }
 
     return {
       ...node,
-      position: layoutFirst
-        ? layoutPosition ?? existing?.position ?? defaultPosition(index)
-        : existing?.position ?? layoutPosition ?? defaultPosition(index),
-      dimensions: existing?.dimensions ?? DEFAULT_NODE_DIMENSIONS,
+      position,
+      dimensions,
       selected: isSelected,
     };
   });
@@ -326,13 +332,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       : false;
     const shouldApplyLayout = incomingLayout
       ? runChanged ||
-        isLayoutNewer(incomingLayout, state.layoutUpdatedAt) ||
-        (state.layoutDirty && layoutMatchesLocal)
+      isLayoutNewer(incomingLayout, state.layoutUpdatedAt) ||
+      (state.layoutDirty && layoutMatchesLocal)
       : false;
     const runNodes = Object.values(run.nodes);
     const layoutPositions = incomingLayout?.positions ?? {};
     const missingPositions = runNodes.some((node) => !layoutPositions[node.id]);
     const markDirty = missingPositions && !state.layoutDirty;
+    const now = new Date().toISOString();
     set({
       run,
       nodes: buildVisualNodes(
@@ -347,7 +354,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         ? incomingLayout?.viewport ?? state.viewport
         : (runChanged ? DEFAULT_VIEWPORT : state.viewport),
       layoutUpdatedAt: markDirty
-        ? new Date().toISOString()
+        ? now
         : (shouldApplyLayout
           ? incomingLayout?.updatedAt ?? state.layoutUpdatedAt
           : (runChanged ? null : state.layoutUpdatedAt)),
@@ -358,7 +365,16 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   applyRunPatch: (patch) => {
     const state = get();
     if (!state.run) return;
-    const updatedRun = { ...state.run, ...patch };
+    const updatedRun = {
+      ...state.run,
+      ...patch,
+      nodes: patch.nodes ? { ...state.run.nodes, ...patch.nodes } : state.run.nodes,
+      nodeConfigs: patch.nodeConfigs
+        ? { ...(state.run.nodeConfigs ?? {}), ...patch.nodeConfigs }
+        : state.run.nodeConfigs,
+      edges: patch.edges ? { ...state.run.edges, ...patch.edges } : state.run.edges,
+      artifacts: patch.artifacts ? { ...state.run.artifacts, ...patch.artifacts } : state.run.artifacts,
+    };
     const runChanged = updatedRun.id !== state.run.id;
     const existingNodes = runChanged ? new Map() : new Map(state.nodes.map((n) => [n.id, n]));
     const existingEdges = runChanged ? new Map() : new Map(state.edges.map((e) => [e.id, e]));
@@ -368,13 +384,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       : false;
     const shouldApplyLayout = incomingLayout
       ? runChanged ||
-        isLayoutNewer(incomingLayout, state.layoutUpdatedAt) ||
-        (state.layoutDirty && layoutMatchesLocal)
+      isLayoutNewer(incomingLayout, state.layoutUpdatedAt) ||
+      (state.layoutDirty && layoutMatchesLocal)
       : false;
     const runNodes = Object.values(updatedRun.nodes);
     const layoutPositions = incomingLayout?.positions ?? {};
     const missingPositions = runNodes.some((node) => !layoutPositions[node.id]);
     const markDirty = missingPositions && !state.layoutDirty;
+    const now = new Date().toISOString();
     set({
       run: updatedRun,
       nodes: buildVisualNodes(
@@ -389,7 +406,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         ? incomingLayout?.viewport ?? state.viewport
         : (runChanged ? DEFAULT_VIEWPORT : state.viewport),
       layoutUpdatedAt: markDirty
-        ? new Date().toISOString()
+        ? now
         : (shouldApplyLayout
           ? incomingLayout?.updatedAt ?? state.layoutUpdatedAt
           : (runChanged ? null : state.layoutUpdatedAt)),
@@ -503,20 +520,12 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set((state) => {
       const clampedZoom = Math.max(0.25, Math.min(zoom, 4));
       if (!focalPoint) {
-        return {
-          viewport: { ...state.viewport, zoom: clampedZoom },
-          layoutUpdatedAt: now,
-          layoutDirty: true,
-        };
+        return { viewport: { ...state.viewport, zoom: clampedZoom }, layoutUpdatedAt: now, layoutDirty: true };
       }
       const ratio = clampedZoom / state.viewport.zoom;
       const newX = focalPoint.x - (focalPoint.x - state.viewport.x) * ratio;
       const newY = focalPoint.y - (focalPoint.y - state.viewport.y) * ratio;
-      return {
-        viewport: { x: newX, y: newY, zoom: clampedZoom },
-        layoutUpdatedAt: now,
-        layoutDirty: true,
-      };
+      return { viewport: { x: newX, y: newY, zoom: clampedZoom }, layoutUpdatedAt: now, layoutDirty: true };
     });
   },
 
@@ -541,14 +550,32 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   updateNodePosition: (nodeId, x, y) => {
-    const now = new Date().toISOString();
-    set((state) => ({
-      nodes: state.nodes.map((n) =>
-        n.id === nodeId ? { ...n, position: { x, y } } : n
-      ),
-      layoutUpdatedAt: now,
-      layoutDirty: true,
-    }));
+    set((state) => {
+      let found = false;
+      let changed = false;
+      const nodes = state.nodes.map((n) => {
+        if (n.id !== nodeId) return n;
+        found = true;
+        if (n.position.x === x && n.position.y === y) {
+          return n;
+        }
+        changed = true;
+        return { ...n, position: { x, y } };
+      });
+      if (!found) {
+        console.warn('[graph-store] updateNodePosition: node not found', { nodeId });
+        return state;
+      }
+      if (!changed) {
+        return state;
+      }
+      const now = new Date().toISOString();
+      return {
+        nodes,
+        layoutUpdatedAt: now,
+        layoutDirty: true,
+      };
+    });
   },
 
   // Edge creation

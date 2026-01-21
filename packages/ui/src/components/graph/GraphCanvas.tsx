@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Application, extend } from '@pixi/react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect } from 'react';
+import { Application, extend, useApplication } from '@pixi/react';
 import * as PIXI from 'pixi.js';
 import { Plus, Minus } from 'iconoir-react';
 import { useGraphStore } from '../../stores/graph-store';
@@ -68,15 +68,32 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
   const dragStartPointRef = useRef<{ x: number; y: number } | null>(null);
   const panStartPointRef = useRef<{ x: number; y: number } | null>(null);
   const [edgePreview, setEdgePreview] = useState<EdgePreview | null>(null);
+  const edgePreviewRef = useRef<EdgePreview | null>(null);
+  const edgePreviewRafRef = useRef<number | null>(null);
+  const dragRafRef = useRef<number | null>(null);
+  const latestDragPointRef = useRef<{ x: number; y: number } | null>(null);
   const [edgeMenu, setEdgeMenu] = useState<{ edgeId: string; x: number; y: number } | null>(null);
   const DRAG_THRESHOLD = 4;
   const EDGE_SNAP_RADIUS = 14;
+  const nodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const deviceResolution = useMemo(() => {
+    if (typeof window === 'undefined') return 1;
+    return Math.min(window.devicePixelRatio || 1, 2);
+  }, [dimensions.width, dimensions.height]);
+  const renderKickKey = useMemo(
+    () => `${nodes.length}:${edges.length}:${viewport.x}:${viewport.y}:${viewport.zoom}`,
+    [nodes.length, edges.length, viewport.x, viewport.y, viewport.zoom]
+  );
   
   // Interaction state
   const isPanning = useRef(false);
   const hasPanned = useRef(false);
   const hasDragged = useRef(false);
   const lastPanPosition = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  // Refs for imperative updates
+  const domLayerRef = useRef<HTMLDivElement>(null);
+  const pixiContainerRef = useRef<PIXI.Container>(null);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -93,6 +110,15 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
 
   useEffect(() => {
     viewportRef.current = viewport;
+    
+    // Sync refs with state when state changes (e.g. initial load, buttons, external updates)
+    if (domLayerRef.current) {
+      domLayerRef.current.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
+    }
+    if (pixiContainerRef.current) {
+      pixiContainerRef.current.position.set(viewport.x, viewport.y);
+      pixiContainerRef.current.scale.set(viewport.zoom);
+    }
   }, [viewport]);
 
   useEffect(() => {
@@ -102,6 +128,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
   useEffect(() => {
     edgesRef.current = edges;
   }, [edges]);
+
 
   useEffect(() => {
     if (viewMode === 'fullscreen') {
@@ -137,7 +164,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       draggedNodeIdRef.current = id;
       hasDragged.current = false;
 
-      const node = nodes.find((item) => item.id === id);
+      const node = nodesById.get(id);
       const point = getCanvasPoint(event.nativeEvent);
       if (point) {
         dragStartPointRef.current = point;
@@ -151,7 +178,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
         };
       }
     },
-    [getCanvasPoint, nodes, viewMode]
+    [getCanvasPoint, nodesById, viewMode]
   );
 
   const handleDeleteEdge = useCallback(
@@ -278,6 +305,42 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     [setViewport]
   );
 
+  const GraphRenderSync: React.FC<{ renderKey: string }> = ({ renderKey }) => {
+    const { app } = useApplication();
+
+    useLayoutEffect(() => {
+      if (!app) return;
+      let rafId: number | null = null;
+      try {
+        app.render();
+        rafId = requestAnimationFrame(() => {
+          try {
+            app.render();
+          } catch (error) {
+            console.error('[graph] pixi render failed', error);
+          }
+        });
+      } catch (error) {
+        console.error('[graph] pixi render failed', error);
+      }
+      return () => {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+        }
+      };
+    }, [app, renderKey]);
+
+    return null;
+  };
+
+  const scheduleEdgePreviewSync = useCallback(() => {
+    if (edgePreviewRafRef.current !== null) return;
+    edgePreviewRafRef.current = requestAnimationFrame(() => {
+      edgePreviewRafRef.current = null;
+      setEdgePreview(edgePreviewRef.current);
+    });
+  }, [setEdgePreview]);
+
   useEffect(() => {
     if (viewMode !== 'fullscreen' || !selectedNodeId) {
       lastFocusStateRef.current = {
@@ -288,7 +351,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       };
       return;
     }
-    const node = nodes.find((item) => item.id === selectedNodeId);
+    const node = nodesById.get(selectedNodeId);
     if (!node || !dimensions.width || !dimensions.height) return;
 
     const lastFocus = lastFocusStateRef.current;
@@ -311,12 +374,12 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       width: dimensions.width,
       height: dimensions.height,
     };
-  }, [viewMode, selectedNodeId, nodes, dimensions, animateViewportTo]);
+  }, [viewMode, selectedNodeId, nodesById, dimensions, animateViewportTo]);
 
   useEffect(() => {
     if (viewMode !== 'fullscreen' || !selectedNodeId) return;
     if (animationRef.current) return;
-    const node = nodes.find((item) => item.id === selectedNodeId);
+    const node = nodesById.get(selectedNodeId);
     if (!node || !dimensions.width || !dimensions.height) return;
     const { fullZoom } = getFocusZoomLevels(node, dimensions);
     const targetViewport = getViewportForNode(node, dimensions, fullZoom);
@@ -325,7 +388,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     const dz = Math.abs(viewport.zoom - targetViewport.zoom);
     if (dx < 0.5 && dy < 0.5 && dz < 0.005) return;
     setViewport(targetViewport, false);
-  }, [viewMode, selectedNodeId, nodes, dimensions, viewport.x, viewport.y, viewport.zoom, setViewport]);
+  }, [viewMode, selectedNodeId, nodesById, dimensions, viewport.x, viewport.y, viewport.zoom, setViewport]);
 
   useEffect(() => {
     if (viewMode === 'fullscreen') return;
@@ -352,7 +415,16 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
 
       if (edgeDragRef.current) {
         const worldPoint = toWorldPoint(point);
-        setEdgePreview((prev) => (prev ? { ...prev, to: worldPoint } : prev));
+        const currentPreview = edgePreviewRef.current;
+        if (!currentPreview) {
+          console.warn('[graph] edge preview missing during drag', {
+            fromNodeId: edgeDragRef.current.fromNodeId,
+            fromPortIndex: edgeDragRef.current.fromPortIndex
+          });
+          return;
+        }
+        edgePreviewRef.current = { ...currentPreview, to: worldPoint };
+        scheduleEdgePreviewSync();
         return;
       }
 
@@ -370,7 +442,16 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
         const worldY = (point.y - viewY) / zoom;
         const newX = worldX - offsetRef.current.x;
         const newY = worldY - offsetRef.current.y;
-        updateNodePosition(draggedNodeIdRef.current, newX, newY);
+        latestDragPointRef.current = { x: newX, y: newY };
+        if (dragRafRef.current === null) {
+          dragRafRef.current = requestAnimationFrame(() => {
+            dragRafRef.current = null;
+            const latest = latestDragPointRef.current;
+            const nodeId = draggedNodeIdRef.current;
+            if (!latest || !nodeId) return;
+            updateNodePosition(nodeId, latest.x, latest.y);
+          });
+        }
         return;
       }
 
@@ -386,10 +467,25 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
 
         const dx = point.x - lastPanPosition.current.x;
         const dy = point.y - lastPanPosition.current.y;
+        
+        // Imperative update for zero latency
+        const newX = viewportRef.current.x + dx;
+        const newY = viewportRef.current.y + dy;
+        const newZoom = viewportRef.current.zoom;
+
+        if (domLayerRef.current) {
+          domLayerRef.current.style.transform = `translate(${newX}px, ${newY}px) scale(${newZoom})`;
+        }
+        if (pixiContainerRef.current) {
+          pixiContainerRef.current.position.set(newX, newY);
+          pixiContainerRef.current.scale.set(newZoom);
+        }
+
         const nextViewport = {
           ...viewportRef.current,
-          x: viewportRef.current.x + dx,
-          y: viewportRef.current.y + dy
+          x: newX,
+          y: newY,
+          zoom: newZoom
         };
         viewportRef.current = nextViewport;
         setViewport(nextViewport, viewMode !== 'fullscreen');
@@ -439,6 +535,11 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
           }
         }
         edgeDragRef.current = null;
+        if (edgePreviewRafRef.current !== null) {
+          cancelAnimationFrame(edgePreviewRafRef.current);
+          edgePreviewRafRef.current = null;
+        }
+        edgePreviewRef.current = null;
         setEdgePreview(null);
         isPanning.current = false;
         hasPanned.current = false;
@@ -450,6 +551,15 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       }
 
       if (draggedNodeIdRef.current) {
+        if (dragRafRef.current !== null) {
+          cancelAnimationFrame(dragRafRef.current);
+          dragRafRef.current = null;
+        }
+        if (latestDragPointRef.current) {
+          const latest = latestDragPointRef.current;
+          updateNodePosition(draggedNodeIdRef.current, latest.x, latest.y);
+          latestDragPointRef.current = null;
+        }
         if (!hasDragged.current) {
           selectNode(draggedNodeIdRef.current);
         }
@@ -469,11 +579,19 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     window.addEventListener('pointerup', handleGlobalUp);
     window.addEventListener('pointercancel', handleGlobalUp);
     return () => {
+      if (dragRafRef.current !== null) {
+        cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      if (edgePreviewRafRef.current !== null) {
+        cancelAnimationFrame(edgePreviewRafRef.current);
+        edgePreviewRafRef.current = null;
+      }
       window.removeEventListener('pointermove', handleGlobalMove);
       window.removeEventListener('pointerup', handleGlobalUp);
       window.removeEventListener('pointercancel', handleGlobalUp);
     };
-  }, [selectNode, setViewport, updateNodePosition, viewMode, getCanvasPoint, toWorldPoint, findClosestPort, addEdge, run]);
+  }, [selectNode, setViewport, updateNodePosition, viewMode, getCanvasPoint, toWorldPoint, findClosestPort, addEdge, run, scheduleEdgePreviewSync]);
 
   // --- Zoom Handling ---
   useEffect(() => {
@@ -496,7 +614,19 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       const newX = point.x - (point.x - viewportRef.current.x) * (newZoom / viewportRef.current.zoom);
       const newY = point.y - (point.y - viewportRef.current.y) * (newZoom / viewportRef.current.zoom);
 
-      setViewport({ x: newX, y: newY, zoom: newZoom }, true);
+      // Imperative update
+      if (domLayerRef.current) {
+        domLayerRef.current.style.transform = `translate(${newX}px, ${newY}px) scale(${newZoom})`;
+      }
+      if (pixiContainerRef.current) {
+        pixiContainerRef.current.position.set(newX, newY);
+        pixiContainerRef.current.scale.set(newZoom);
+      }
+      
+      const nextViewport = { x: newX, y: newY, zoom: newZoom };
+      viewportRef.current = nextViewport;
+
+      setViewport(nextViewport, true);
     };
 
     window.addEventListener('wheel', handleWheel, { passive: false });
@@ -513,15 +643,17 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     if (event?.preventDefault) event.preventDefault();
     if (event?.stopPropagation) event.stopPropagation();
     edgeDragRef.current = { fromNodeId: id, fromPortIndex: portIndex };
-    const node = nodes.find(n => n.id === id);
+    const node = nodesById.get(id);
     if (!node) return;
     const port = getPortPosition(node, portIndex);
     if (!port) return;
-    setEdgePreview({
+    const preview = {
       fromNodeId: id,
       fromPortIndex: portIndex,
       to: { x: port.x, y: port.y }
-    });
+    };
+    edgePreviewRef.current = preview;
+    setEdgePreview(preview);
     draggedNodeIdRef.current = null;
     isPanning.current = false;
     hasPanned.current = false;
@@ -557,7 +689,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     (g: PIXI.Graphics) => {
       g.clear();
       if (!edgePreview) return;
-      const node = nodes.find((item) => item.id === edgePreview.fromNodeId);
+      const node = nodesById.get(edgePreview.fromNodeId);
       if (!node) return;
       const start = getPortPosition(node, edgePreview.fromPortIndex);
       if (!start) return;
@@ -570,7 +702,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       g.lineTo(edgePreview.to.x, edgePreview.to.y);
       g.stroke({ width: 2, color: 0x666666, alpha: 0.6 });
     },
-    [edgePreview, nodes, getPortPosition]
+    [edgePreview, nodesById, getPortPosition]
   );
 
   return (
@@ -585,22 +717,27 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
         height={Math.max(1, dimensions.height)} 
         backgroundAlpha={0}
         antialias={true}
+        resolution={deviceResolution}
+        autoStart={true}
+        sharedTicker={true}
         eventMode="static"
       >
+        <GraphRenderSync renderKey={renderKickKey} />
         <pixiGraphics
           draw={drawBackground}
           eventMode="static"
           onPointerDown={onCanvasPointerDown}
         />
         <pixiContainer 
+          ref={pixiContainerRef}
           x={viewport.x} 
           y={viewport.y} 
           scale={{ x: viewport.zoom, y: viewport.zoom }}
         >
           {/* Draw Edges first */}
           {edges.map(edge => {
-            const source = nodes.find(n => n.id === edge.from);
-            const target = nodes.find(n => n.id === edge.to);
+            const source = nodesById.get(edge.from);
+            const target = nodesById.get(edge.to);
             if (source && target) {
               return (
                 <GraphEdge 
@@ -608,6 +745,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
                   edge={edge} 
                   sourceNode={source} 
                   targetNode={target} 
+                  resolution={deviceResolution}
                   onSelect={handleEdgeSelect}
                   onContextMenu={handleEdgeContextMenu}
                 />
@@ -622,6 +760,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
         </pixiContainer>
       </Application>
       <GraphDomNodes
+        ref={domLayerRef}
         nodes={nodes}
         viewport={viewport}
         viewMode={viewMode}

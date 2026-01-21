@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useMemo } from 'react';
+import React, { useCallback, useState, useMemo, useEffect } from 'react';
 import { VisualNode, VisualEdge } from '../../types/graph';
 import * as PIXI from 'pixi.js';
 import { useRunStore } from '../../stores/runStore';
@@ -7,6 +7,7 @@ interface GraphEdgeProps {
   edge: VisualEdge;
   sourceNode: VisualNode;
   targetNode: VisualNode;
+  resolution: number;
   onSelect?: (edgeId: string) => void;
   onContextMenu?: (edgeId: string, event: PIXI.FederatedPointerEvent) => void;
 }
@@ -33,7 +34,7 @@ const getDistance = (p1: {x:number, y:number}, p2: {x:number, y:number}) => {
   return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
 };
 
-export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNode, onSelect, onContextMenu }) => {
+const GraphEdgeComponent: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNode, resolution, onSelect, onContextMenu }) => {
   const handlePointerDown = useCallback(
     (event: PIXI.FederatedPointerEvent) => {
       event.stopPropagation();
@@ -49,6 +50,15 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
   
   const lastHandoff = useRunStore((s) => s.ui.lastHandoffs?.[edge.id]);
   const [animationProgress, setAnimationProgress] = useState<number | null>(null);
+  const labelStyle = useMemo(() => new PIXI.TextStyle({
+    fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif',
+    fontSize: 12,
+    fontWeight: '500',
+    fill: edge.selected ? 0x007bff : 0xaaaaaa,
+    align: 'center',
+    stroke: { color: 0x1a1a1a, width: 3 },
+    letterSpacing: 0.3
+  }), [edge.selected]);
 
   // Calculate geometry synchronously to ensure label position is frame-perfect
   const geometry = useMemo(() => {
@@ -94,21 +104,32 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
     return { start, end, cp1, cp2, labelX, labelY };
   }, [sourceNode, targetNode]);
 
-  PIXI.Ticker.shared.add((_ticker) => {
+  useEffect(() => {
     if (!lastHandoff) {
-      if (animationProgress !== null) setAnimationProgress(null);
+      setAnimationProgress(null);
       return;
     }
-    const now = Date.now();
-    const elapsed = now - lastHandoff.timestamp;
+
     const duration = 2000; // 2 seconds
-    
-    if (elapsed < duration) {
-      setAnimationProgress(elapsed / duration);
-    } else if (animationProgress !== null) {
+    let stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      const elapsed = Date.now() - lastHandoff.timestamp;
+      if (elapsed < duration) {
+        setAnimationProgress(elapsed / duration);
+        return;
+      }
       setAnimationProgress(null);
-    }
-  });
+      stopped = true;
+      PIXI.Ticker.shared.remove(tick);
+    };
+
+    PIXI.Ticker.shared.add(tick);
+    return () => {
+      stopped = true;
+      PIXI.Ticker.shared.remove(tick);
+    };
+  }, [lastHandoff]);
 
   const draw = useCallback((g: PIXI.Graphics) => {
     if (!geometry) return;
@@ -214,18 +235,12 @@ export const GraphEdge: React.FC<GraphEdgeProps> = ({ edge, sourceNode, targetNo
         x={geometry.labelX}
         y={geometry.labelY}
         anchor={0.5}
-        resolution={Math.max(2, window.devicePixelRatio)}
-        style={new PIXI.TextStyle({
-          fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif',
-          fontSize: 12,
-          fontWeight: '500',
-          fill: edge.selected ? 0x007bff : 0xaaaaaa,
-          align: 'center',
-          stroke: { color: 0x1a1a1a, width: 3 },
-          letterSpacing: 0.3
-        })}
+        resolution={resolution}
+        style={labelStyle}
         eventMode="none"
       />
     </pixiContainer>
   );
 };
+
+export const GraphEdge = React.memo(GraphEdgeComponent);

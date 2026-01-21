@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { RunState, GraphLayout } from '@vuhlp/contracts';
+import type { GraphLayout, RunState } from '@vuhlp/contracts';
 import { VisualNode, VisualEdge } from '../types/graph';
 
 interface GraphState {
@@ -10,8 +10,8 @@ interface GraphState {
   layoutUpdatedAt: string | null;
   layoutDirty: boolean;
 
-  // Actions
   updateNodePosition: (id: string, x: number, y: number) => void;
+  addEdge: (edge: VisualEdge) => void;
   setViewport: (viewport: { x: number; y: number; zoom: number }, persist?: boolean) => void;
   syncWithRun: (
     run: RunState | null,
@@ -81,13 +81,18 @@ export const useGraphStore = create<GraphState>((set) => ({
   updateNodePosition: (id, x, y) => {
     const now = new Date().toISOString();
     set((state) => ({
-      nodes: state.nodes.map(node =>
+      nodes: state.nodes.map((node) =>
         node.id === id ? { ...node, position: { x, y } } : node
       ),
       layoutUpdatedAt: now,
       layoutDirty: true
     }));
   },
+
+  addEdge: (edge) =>
+    set((state) => ({
+      edges: [...state.edges, edge]
+    })),
 
   setViewport: (viewport, persist = true) => {
     if (!persist) {
@@ -108,7 +113,9 @@ export const useGraphStore = create<GraphState>((set) => ({
     }
     set((state) => {
       const runChanged = state.currentRunId !== run.id;
-      const existingNodes = runChanged ? new Map() : new Map(state.nodes.map((node) => [node.id, node]));
+      const existingNodes = runChanged
+        ? new Map()
+        : new Map(state.nodes.map((node) => [node.id, node]));
       const incomingLayout = run.layout ?? null;
       const layoutMatchesLocal = incomingLayout
         ? layoutMatchesState(incomingLayout, state.nodes, state.viewport)
@@ -156,5 +163,5 @@ export const useGraphStore = create<GraphState>((set) => ({
         layoutDirty: markDirty ? true : (shouldApplyLayout ? false : (runChanged ? false : state.layoutDirty))
       };
     });
-  },
+  }
 }));

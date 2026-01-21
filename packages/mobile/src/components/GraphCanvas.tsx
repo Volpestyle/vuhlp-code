@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, useWindowDimensions, LayoutChangeEvent, Alert } from 'react-native';
 import { Canvas, Path, Skia, Group, Line, Circle, vec } from '@shopify/react-native-skia';
 import { useFrameCallback } from 'react-native-reanimated';
@@ -86,6 +86,8 @@ function SkiaGraphCanvas() {
   const endEdgeDrag = useGraphStore((s) => s.endEdgeDrag);
   const addEdge = useGraphStore((s) => s.addEdge);
   const recentHandoffs = useGraphStore((s) => s.recentHandoffs);
+  const dragRafRef = useRef<number | null>(null);
+  const pendingDragRef = useRef<{ id: string; x: number; y: number } | null>(null);
 
   // Track animation frame time for handoff animations
   const [animationTime, setAnimationTime] = useState(Date.now());
@@ -115,6 +117,16 @@ function SkiaGraphCanvas() {
     }
   });
 
+  useEffect(() => {
+    return () => {
+      if (dragRafRef.current !== null) {
+        cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      pendingDragRef.current = null;
+    };
+  }, []);
+
   const onLayout = useCallback(
     (event: LayoutChangeEvent) => {
       const { width, height } = event.nativeEvent.layout;
@@ -128,6 +140,49 @@ function SkiaGraphCanvas() {
   const viewportX = useSharedValue(viewport.x);
   const viewportY = useSharedValue(viewport.y);
   const viewportZoom = useSharedValue(viewport.zoom);
+
+  // Shared state for nodes to sync edges with gestures
+  const sharedNodes = useSharedValue<Record<string, { position: Point; dimensions: ViewDimensions }>>({});
+  const activeDragNodeId = useSharedValue<string | null>(null);
+
+  // Sync shared nodes from store, but skip the node currently being dragged to avoid fighting
+  useEffect(() => {
+    const newSharedNodes = { ...sharedNodes.value };
+    let changed = false;
+
+    // Check if we need to update any nodes (skip dragged one)
+    for (const node of nodes) {
+      if (node.id === activeDragNodeId.value) continue;
+      
+      const current = newSharedNodes[node.id];
+      if (
+        !current || 
+        current.position.x !== node.position.x || 
+        current.position.y !== node.position.y ||
+        current.dimensions.width !== node.dimensions.width ||
+        current.dimensions.height !== node.dimensions.height
+      ) {
+        newSharedNodes[node.id] = {
+          position: { x: node.position.x, y: node.position.y },
+          dimensions: { width: node.dimensions.width, height: node.dimensions.height }
+        };
+        changed = true;
+      }
+    }
+
+    // Remove deleted nodes
+    const nodeIds = new Set(nodes.map(n => n.id));
+    for (const id in newSharedNodes) {
+      if (!nodeIds.has(id)) {
+        delete newSharedNodes[id];
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      sharedNodes.value = newSharedNodes;
+    }
+  }, [nodes, sharedNodes, activeDragNodeId]);
 
   // Sync shared values from store (gesture math relies on the latest values)
   // We only sync if no gesture is active to avoid fighting with the UI thread
@@ -155,7 +210,6 @@ function SkiaGraphCanvas() {
   const panTranslationOffsetX = useSharedValue(0);
   const panTranslationOffsetY = useSharedValue(0);
   const lastPanTranslationX = useSharedValue(0);
-
   const lastPanTranslationY = useSharedValue(0);
 
   // Manual double tap detection tracking
@@ -538,20 +592,6 @@ function SkiaGraphCanvas() {
     endEdgeDrag();
   }, [edgeDrag, run, edges, findClosestPort, addEdge, endEdgeDrag]);
 
-  // Build Skia paths for edges
-  const edgePaths = useMemo(() => {
-    return edges
-      .map((edge) => {
-        const source = nodes.find((n) => n.id === edge.from);
-        const target = nodes.find((n) => n.id === edge.to);
-        if (!source || !target) return null;
-
-        const path = createEdgePath(source, target);
-        return { edge, path };
-      })
-      .filter(Boolean) as Array<{ edge: VisualEdge; path: ReturnType<typeof Skia.Path.Make> }>;
-  }, [nodes, edges]);
-
   // Edge preview path
   const edgePreviewPath = useMemo(() => {
     if (!edgeDrag) return null;
@@ -590,7 +630,11 @@ function SkiaGraphCanvas() {
       if (!sourceNode || !targetNode) continue;
 
       // Calculate position along the Bezier curve
-      const pos = getBezierPoint(sourceNode, targetNode, progress);
+      const pos = getBezierPoint(
+        { position: sourceNode.position, dimensions: sourceNode.dimensions },
+        { position: targetNode.position, dimensions: targetNode.dimensions },
+        progress
+      );
       packets.push({ id: handoff.id, x: pos.x, y: pos.y });
     }
 
@@ -628,14 +672,11 @@ function SkiaGraphCanvas() {
               <Group
                 matrix={groupTransform}
               >
-                {edgePaths.map(({ edge, path }) => (
-                  <Path
+                {edges.map((edge) => (
+                  <AnimatedEdge
                     key={edge.id}
-                    path={path}
-                    color={edge.selected ? colors.accent : colors.borderStrong}
-                    style="stroke"
-                    strokeWidth={edge.selected ? 3 : 2}
-                    strokeCap="round"
+                    edge={edge}
+                    sharedNodes={sharedNodes}
                   />
                 ))}
 
@@ -681,6 +722,8 @@ function SkiaGraphCanvas() {
               onPortDragMove={handlePortDragMove}
               onPortDragEnd={handlePortDragEnd}
               onExpand={focusNode}
+              sharedNodes={sharedNodes}
+              activeDragNodeId={activeDragNodeId}
             />
           ))}
         </Animated.View>
@@ -689,106 +732,176 @@ function SkiaGraphCanvas() {
   );
 }
 
-function createEdgePath(source: VisualNode, target: VisualNode) {
-  const path = Skia.Path.Make();
+// Minimal subsets for worklets to avoid serializing full VisualNode
+type NodeLayout = {
+  position: { x: number; y: number };
+  dimensions: { width: number; height: number };
+};
 
-  const { startX, startY, endX, endY } = findConnectionPoints(source, target);
+type ViewDimensions = { width: number; height: number };
 
-  const dx = endX - startX;
-  const dy = endY - startY;
-  const controlOffset = Math.min(Math.abs(dx), Math.abs(dy), 100) * 0.5;
+type Port = { x: number; y: number; normal: { x: number; y: number } };
 
-  let cp1x = startX;
-  let cp1y = startY;
-  let cp2x = endX;
-  let cp2y = endY;
-
-  if (Math.abs(dx) > Math.abs(dy)) {
-    cp1x = startX + Math.sign(dx) * controlOffset;
-    cp2x = endX - Math.sign(dx) * controlOffset;
-  } else {
-    cp1y = startY + Math.sign(dy) * controlOffset;
-    cp2y = endY - Math.sign(dy) * controlOffset;
-  }
-
-  path.moveTo(startX, startY);
-  path.cubicTo(cp1x, cp1y, cp2x, cp2y, endX, endY);
-
-  return path;
+function getNodePorts(layout: NodeLayout): Port[] {
+  'worklet';
+  const { x, y } = layout.position;
+  const { width, height } = layout.dimensions;
+  return [
+    { x: x + width / 2, y, normal: { x: 0, y: -1 } },          // Top
+    { x: x + width, y: y + height / 2, normal: { x: 1, y: 0 } }, // Right
+    { x: x + width / 2, y: y + height, normal: { x: 0, y: 1 } }, // Bottom
+    { x, y: y + height / 2, normal: { x: -1, y: 0 } }          // Left
+  ];
 }
 
-function findConnectionPoints(source: VisualNode, target: VisualNode) {
-  const sp = source.position;
-  const sd = source.dimensions;
-  const tp = target.position;
-  const td = target.dimensions;
+function getEdgeGeometry(source: NodeLayout, target: NodeLayout) {
+  'worklet';
+  const sourcePorts = getNodePorts(source);
+  const targetPorts = getNodePorts(target);
 
-  const sourcePorts = [
-    { x: sp.x + sd.width / 2, y: sp.y },
-    { x: sp.x + sd.width, y: sp.y + sd.height / 2 },
-    { x: sp.x + sd.width / 2, y: sp.y + sd.height },
-    { x: sp.x, y: sp.y + sd.height / 2 },
-  ];
-
-  const targetPorts = [
-    { x: tp.x + td.width / 2, y: tp.y },
-    { x: tp.x + td.width, y: tp.y + td.height / 2 },
-    { x: tp.x + td.width / 2, y: tp.y + td.height },
-    { x: tp.x, y: tp.y + td.height / 2 },
-  ];
-
+  // Find shortest connection
   let minDist = Infinity;
-  let best = { startX: 0, startY: 0, endX: 0, endY: 0 };
+  let start = sourcePorts[0]!;
+  let end = targetPorts[0]!;
 
   for (const sp of sourcePorts) {
     for (const tp of targetPorts) {
-      const dist = Math.hypot(tp.x - sp.x, tp.y - sp.y);
-      if (dist < minDist) {
-        minDist = dist;
-        best = { startX: sp.x, startY: sp.y, endX: tp.x, endY: tp.y };
+      const d = Math.hypot(tp.x - sp.x, tp.y - sp.y);
+      if (d < minDist) {
+        minDist = d;
+        start = sp;
+        end = tp;
       }
     }
   }
 
-  return best;
+  const dist = minDist;
+  // Control point offset based on distance, clamped like web
+  const offset = Math.min(dist * 0.5, 150);
+
+  const cp1 = {
+    x: start.x + start.normal.x * offset,
+    y: start.y + start.normal.y * offset
+  };
+  
+  const cp2 = {
+    x: end.x + end.normal.x * offset,
+    y: end.y + end.normal.y * offset
+  };
+
+  return { start, end, cp1, cp2 };
+}
+
+function createEdgePath(source: NodeLayout, target: NodeLayout) {
+  'worklet';
+  const path = Skia.Path.Make();
+  const { start, end, cp1, cp2 } = getEdgeGeometry(source, target);
+
+  path.moveTo(start.x, start.y);
+  path.cubicTo(cp1.x, cp1.y, cp2.x, cp2.y, end.x, end.y);
+  return path;
+}
+
+// Cubic Bezier interpolation
+function bezier(t: number, p0: number, p1: number, p2: number, p3: number) {
+  'worklet';
+  const mt = 1 - t;
+  return mt * mt * mt * p0 + 
+         3 * mt * mt * t * p1 + 
+         3 * mt * t * t * p2 + 
+         t * t * t * p3;
 }
 
 // Calculate position on cubic Bezier curve at parameter t (0-1)
 function getBezierPoint(
-  source: VisualNode,
-  target: VisualNode,
+  source: NodeLayout,
+  target: NodeLayout,
   t: number
 ): { x: number; y: number } {
-  const { startX, startY, endX, endY } = findConnectionPoints(source, target);
-
-  const dx = endX - startX;
-  const dy = endY - startY;
-  const controlOffset = Math.min(Math.abs(dx), Math.abs(dy), 100) * 0.5;
-
-  let cp1x = startX;
-  let cp1y = startY;
-  let cp2x = endX;
-  let cp2y = endY;
-
-  if (Math.abs(dx) > Math.abs(dy)) {
-    cp1x = startX + Math.sign(dx) * controlOffset;
-    cp2x = endX - Math.sign(dx) * controlOffset;
-  } else {
-    cp1y = startY + Math.sign(dy) * controlOffset;
-    cp2y = endY - Math.sign(dy) * controlOffset;
-  }
-
-  // Cubic Bezier formula: B(t) = (1-t)³P₀ + 3(1-t)²tP₁ + 3(1-t)t²P₂ + t³P₃
-  const mt = 1 - t;
-  const mt2 = mt * mt;
-  const mt3 = mt2 * mt;
-  const t2 = t * t;
-  const t3 = t2 * t;
+  'worklet';
+  const { start, end, cp1, cp2 } = getEdgeGeometry(source, target);
 
   return {
-    x: mt3 * startX + 3 * mt2 * t * cp1x + 3 * mt * t2 * cp2x + t3 * endX,
-    y: mt3 * startY + 3 * mt2 * t * cp1y + 3 * mt * t2 * cp2y + t3 * endY,
+    x: bezier(t, start.x, cp1.x, cp2.x, end.x),
+    y: bezier(t, start.y, cp1.y, cp2.y, end.y),
   };
+}
+
+import type { SharedValue } from 'react-native-reanimated';
+
+interface AnimatedEdgeProps {
+  edge: VisualEdge;
+  sharedNodes: SharedValue<Record<string, { position: Point; dimensions: ViewDimensions }>>;
+}
+
+function AnimatedEdge({ edge, sharedNodes }: AnimatedEdgeProps) {
+  const edgePath = useDerivedValue(() => {
+    const source = sharedNodes.value[edge.from];
+    const target = sharedNodes.value[edge.to];
+    if (!source || !target) {
+      return Skia.Path.Make();
+    }
+    return createEdgePath(source, target);
+  }, [edge]);
+
+  const arrowPath = useDerivedValue(() => {
+    const source = sharedNodes.value[edge.from];
+    const target = sharedNodes.value[edge.to];
+    if (!source || !target) {
+      return Skia.Path.Make();
+    }
+
+    const { start, end, cp1, cp2 } = getEdgeGeometry(source, target);
+    const path = Skia.Path.Make();
+    const arrowLength = 10;
+    const arrowWidth = 4;
+
+    const addArrow = (tip: { x: number; y: number }, tail: { x: number; y: number }) => {
+      const dx = tip.x - tail.x;
+      const dy = tip.y - tail.y;
+      const angle = Math.atan2(dy, dx);
+
+      path.moveTo(tip.x, tip.y);
+      path.lineTo(
+        tip.x - arrowLength * Math.cos(angle) + arrowWidth * Math.sin(angle),
+        tip.y - arrowLength * Math.sin(angle) - arrowWidth * Math.cos(angle)
+      );
+      path.lineTo(
+        tip.x - arrowLength * Math.cos(angle) - arrowWidth * Math.sin(angle),
+        tip.y - arrowLength * Math.sin(angle) + arrowWidth * Math.cos(angle)
+      );
+      path.close();
+    };
+
+    // End Arrow (points from cp2 to end)
+    addArrow(end, cp2);
+
+    // Start Arrow (if bidirectional, points from cp1 to start)
+    if (edge.bidirectional) {
+      addArrow(start, cp1);
+    }
+
+    return path;
+  }, [edge]);
+
+  const color = edge.selected ? colors.accent : colors.borderStrong;
+
+  return (
+    <Group>
+      <Path
+        path={edgePath}
+        color={color}
+        style="stroke"
+        strokeWidth={edge.selected ? 3 : 2}
+        strokeCap="round"
+      />
+      <Path
+        path={arrowPath}
+        color={color}
+        style="fill"
+      />
+    </Group>
+  );
 }
 
 const styles = StyleSheet.create({

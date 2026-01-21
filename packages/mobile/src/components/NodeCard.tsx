@@ -18,6 +18,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   custom: 'Custom',
 };
 
+import type { SharedValue } from 'react-native-reanimated';
+
 interface NodeCardProps {
   node: VisualNode;
   viewportZoom: number;
@@ -27,6 +29,8 @@ interface NodeCardProps {
   onPortDragMove: (point: Point) => void;
   onPortDragEnd: (targetNodeId: string | null, targetPortIndex: number | null) => void;
   onExpand: (nodeId: string) => void;
+  sharedNodes: SharedValue<Record<string, { position: Point; dimensions: { width: number; height: number } }>>;
+  activeDragNodeId: SharedValue<string | null>;
 }
 
 const PORT_SIZE = 16;
@@ -41,6 +45,8 @@ export const NodeCard = memo(function NodeCard({
   onPortDragMove,
   onPortDragEnd,
   onExpand,
+  sharedNodes,
+  activeDragNodeId,
 }: NodeCardProps) {
   const { position, dimensions, status, label, summary, selected, provider, roleTemplate, lastActivityAt } = node;
   const effectiveZoom = Math.max(0.1, viewportZoom);
@@ -101,6 +107,7 @@ export const NodeCard = memo(function NodeCard({
     })
     .onStart(() => {
       isDragging.value = true;
+      activeDragNodeId.value = node.id;
       savedX.value = translateX.value;
       savedY.value = translateY.value;
     })
@@ -109,14 +116,33 @@ export const NodeCard = memo(function NodeCard({
       const nextY = savedY.value + e.translationY / effectiveZoom;
       translateX.value = nextX;
       translateY.value = nextY;
-      runOnJS(onDrag)(node.id, nextX, nextY);
+      
+      // Update shared state for edges
+      const current = sharedNodes.value;
+      const newNodeState = {
+        position: { x: nextX, y: nextY },
+        dimensions: { width: dimensions.width, height: dimensions.height },
+      };
+      // We must create a new object reference for the map or use modify?
+      // Reanimated shared values of objects usually require full replacement or use of .value modification if it's a proxy.
+      // For a large record, copying might be expensive but let's try shallow copy of the map first.
+      // Actually, sharedNodes.value is a frozen object on JS side, but on UI thread it's mutable if we update it?
+      // Best practice for Record<string, T> in SharedValue:
+      const nextNodes = { ...current };
+      nextNodes[node.id] = newNodeState;
+      sharedNodes.value = nextNodes;
+
+      // Don't sync to store during drag to avoid frequent re-renders and "replay" lag
+      // runOnJS(onDrag)(node.id, nextX, nextY);
     })
     .onEnd(() => {
+      activeDragNodeId.value = null;
       runOnJS(handleDragEnd)(translateX.value, translateY.value);
     })
     .onFinalize(() => {
       isDragging.value = false;
-    }), [node.id, effectiveZoom, ports, onDrag, handleDragEnd, isDragging, savedX, savedY, translateX, translateY]);
+      activeDragNodeId.value = null;
+    }), [node.id, effectiveZoom, ports, onDrag, handleDragEnd, isDragging, savedX, savedY, translateX, translateY, sharedNodes, activeDragNodeId, dimensions]);
 
   const tapGesture = useMemo(() => Gesture.Tap().onEnd(() => {
     runOnJS(handlePress)();
