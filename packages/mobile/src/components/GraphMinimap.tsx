@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { View, StyleSheet, useWindowDimensions } from 'react-native';
 import { Canvas, Rect, RoundedRect } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { runOnJS } from 'react-native-reanimated';
+import { runOnJS, useDerivedValue, SharedValue } from 'react-native-reanimated';
 import { useGraphStore } from '@/stores/graph-store';
 import { colors } from '@/lib/theme';
 import {
@@ -18,9 +18,18 @@ import {
 interface GraphMinimapProps {
   width?: number;
   height?: number;
+  viewportX: SharedValue<number>;
+  viewportY: SharedValue<number>;
+  viewportZoom: SharedValue<number>;
 }
 
-export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
+export function GraphMinimap({ 
+  width = 150, 
+  height = 100,
+  viewportX,
+  viewportY,
+  viewportZoom,
+}: GraphMinimapProps) {
   const screenDimensions = useWindowDimensions();
   const nodes = useGraphStore((s) => s.nodes);
   const viewport = useGraphStore((s) => s.viewport);
@@ -76,17 +85,41 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
     return null;
   }
 
-  // Calculate visible viewport rectangle in minimap coords
+  // Calculate visible viewport rectangle in minimap coords (derived value for smooth updates)
   const viewSize = {
-    width: viewDimensions.width || screenDimensions.width,
-    height: viewDimensions.height || screenDimensions.height,
-  };
-  const viewRect = getMinimapViewportRect(bounds, transform, viewport, viewSize);
+      width: viewDimensions.width || screenDimensions.width,
+      height: viewDimensions.height || screenDimensions.height,
+    };
+  
+  const rectX = useDerivedValue(() => {
+    if (!bounds || !transform) return 0;
+    const currentZoom = viewportZoom.value || 1;
+    const viewWorldLeft = -viewportX.value / currentZoom;
+    return (viewWorldLeft - bounds.minX) * transform.scale + transform.offsetX;
+  }, [bounds, transform, viewSize, viewportX, viewportY, viewportZoom]);
 
-  const viewMiniLeft = viewRect.x;
-  const viewMiniTop = viewRect.y;
-  const viewMiniWidth = viewRect.width;
-  const viewMiniHeight = viewRect.height;
+  const rectY = useDerivedValue(() => {
+    if (!bounds || !transform) return 0;
+    const currentZoom = viewportZoom.value || 1;
+    const viewWorldTop = -viewportY.value / currentZoom;
+    return (viewWorldTop - bounds.minY) * transform.scale + transform.offsetY;
+  }, [bounds, transform, viewSize, viewportX, viewportY, viewportZoom]);
+
+  const rectWidth = useDerivedValue(() => {
+    if (!bounds || !transform) return 0;
+    const currentZoom = viewportZoom.value || 1;
+    const viewWorldRight = (viewSize.width - viewportX.value) / currentZoom;
+    const viewWorldLeft = -viewportX.value / currentZoom;
+    return (viewWorldRight - viewWorldLeft) * transform.scale;
+  }, [bounds, transform, viewSize, viewportX, viewportY, viewportZoom]);
+
+  const rectHeight = useDerivedValue(() => {
+    if (!bounds || !transform) return 0;
+    const currentZoom = viewportZoom.value || 1;
+    const viewWorldBottom = (viewSize.height - viewportY.value) / currentZoom;
+    const viewWorldTop = -viewportY.value / currentZoom;
+    return (viewWorldBottom - viewWorldTop) * transform.scale;
+  }, [bounds, transform, viewSize, viewportX, viewportY, viewportZoom]);
 
   return (
     <View style={[styles.container, { width, height }]}>
@@ -115,17 +148,17 @@ export function GraphMinimap({ width = 150, height = 100 }: GraphMinimapProps) {
 
           {/* Render viewport rectangle */}
           <Rect
-            x={Math.max(0, viewMiniLeft)}
-            y={Math.max(0, viewMiniTop)}
-            width={Math.min(width, Math.max(1, viewMiniWidth))}
-            height={Math.min(height, Math.max(1, viewMiniHeight))}
+            x={rectX}
+            y={rectY}
+            width={rectWidth}
+            height={rectHeight}
             color={colors.accentGlow}
           />
           <Rect
-            x={Math.max(0, viewMiniLeft)}
-            y={Math.max(0, viewMiniTop)}
-            width={Math.min(width, Math.max(1, viewMiniWidth))}
-            height={Math.min(height, Math.max(1, viewMiniHeight))}
+            x={rectX}
+            y={rectY}
+            width={rectWidth}
+            height={rectHeight}
             color={colors.accent}
             style="stroke"
             strokeWidth={1}

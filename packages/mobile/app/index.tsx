@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
-import { View, Text, FlatList, Pressable, StyleSheet, TouchableOpacity } from 'react-native';
+import { useCallback, useEffect, useState, useMemo } from 'react';
+import { View, Text, FlatList, Pressable, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import type { RunState } from '@vuhlp/contracts';
 import { api } from '@/lib/api';
-import { Plus } from 'iconoir-react-native';
+import { Plus, SortDown, SortUp } from 'iconoir-react-native';
 import { colors, getStatusColor, fontFamily, fontSize, radius, spacing } from '@/lib/theme';
 import { NewSessionModal } from '@/components/NewSessionModal';
 import { PageLoader } from '@/components/PageLoader';
+import { SwipeableSessionItem } from '@/components/SwipeableSessionItem';
 
 export default function SessionsScreen() {
   const router = useRouter();
@@ -15,6 +16,19 @@ export default function SessionsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newSessionModalVisible, setNewSessionModalVisible] = useState(false);
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+
+  const sortedSessions = useMemo(() => {
+    return [...sessions].sort((a, b) => {
+      const dateA = new Date(a.updatedAt).getTime();
+      const dateB = new Date(b.updatedAt).getTime();
+      return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
+    });
+  }, [sessions, sortOrder]);
+
+  const toggleSortOrder = useCallback(() => {
+    setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+  }, []);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -56,6 +70,37 @@ export default function SessionsScreen() {
     router.push(`/run/${session.id}`);
   }, [router]);
 
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    Alert.alert(
+      'Delete Session',
+      'Are you sure you want to delete this session? This action cannot be undone.',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Optimistic update
+              setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+              await api.deleteRun(sessionId);
+              console.log('[SessionsScreen] Deleted session:', sessionId);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : 'Failed to delete session';
+              console.error('[SessionsScreen] Error deleting session:', message);
+              Alert.alert('Error', 'Failed to delete session. Please try again.');
+              // Revert optimistic update
+              await fetchSessions();
+            }
+          },
+        },
+      ]
+    );
+  }, [fetchSessions]);
+
   if (loading) {
     return <PageLoader />;
   }
@@ -69,40 +114,31 @@ export default function SessionsScreen() {
       <FlatList
         refreshing={refreshing}
         onRefresh={onRefresh}
-        data={sessions}
+        data={sortedSessions}
         keyExtractor={(item) => item.id}
         contentContainerStyle={[styles.list, sessions.length === 0 && styles.listEmpty]}
-        renderItem={({ item }) => (
-          <Pressable
-            style={styles.card}
-            onPress={() => router.push(`/run/${item.id}`)}
-          >
-            <View style={styles.cardHeader}>
-              <View style={[styles.statusDot, { backgroundColor: getStatusColor(item.status) }]} />
-              <Text style={styles.cardTitle} numberOfLines={1}>
-                {item.id.slice(0, 8)}
-              </Text>
-              <View style={styles.cardBadges}>
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{item.globalMode}</Text>
-                </View>
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{item.mode}</Text>
-                </View>
-              </View>
+        ListHeaderComponent={
+          sessions.length > 0 ? (
+            <View style={styles.headerActions}>
+              <TouchableOpacity 
+                style={styles.sortButton} 
+                onPress={toggleSortOrder}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.sortButtonText}>
+                  {sortOrder === 'desc' ? 'Newest First' : 'Oldest First'}
+                </Text>
+                {sortOrder === 'desc' ? (
+                  <SortDown width={16} height={16} color={colors.textSecondary} />
+                ) : (
+                  <SortUp width={16} height={16} color={colors.textSecondary} />
+                )}
+              </TouchableOpacity>
             </View>
-            <Text style={styles.cardMeta}>
-              {Object.keys(item.nodes).length} nodes · {Object.keys(item.edges).length} edges · {item.status}
-            </Text>
-            {item.cwd && (
-              <Text style={styles.cardCwd} numberOfLines={1}>
-                {item.cwd}
-              </Text>
-            )}
-            <Text style={styles.cardDate}>
-              {new Date(item.updatedAt).toLocaleString()}
-            </Text>
-          </Pressable>
+          ) : null
+        }
+        renderItem={({ item }) => (
+          <SwipeableSessionItem item={item} onDelete={handleDeleteSession} />
         )}
         ListEmptyComponent={
           <View style={styles.center}>
@@ -245,5 +281,27 @@ const styles = StyleSheet.create({
     color: colors.bgPrimary,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.xs,
+  },
+  sortButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgElevated,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+  },
+  sortButtonText: {
+    fontSize: fontSize.xs,
+    fontFamily: fontFamily.medium,
+    color: colors.textSecondary,
   },
 });

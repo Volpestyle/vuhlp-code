@@ -10,6 +10,7 @@ import Animated, {
   runOnJS,
   useDerivedValue,
 } from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import {
   useGraphStore,
   type VisualNode,
@@ -51,7 +52,13 @@ const logSkiaMissing = () => {
   console.error('[GraphCanvas] Skia API unavailable. Rebuild the dev client to enable graph rendering.');
 };
 
-export function GraphCanvas() {
+interface GraphCanvasProps {
+  viewportX: SharedValue<number>;
+  viewportY: SharedValue<number>;
+  viewportZoom: SharedValue<number>;
+}
+
+export function GraphCanvas(props: GraphCanvasProps) {
   if (!isSkiaAvailable()) {
     logSkiaMissing();
     return (
@@ -64,10 +71,10 @@ export function GraphCanvas() {
     );
   }
 
-  return <SkiaGraphCanvas />;
+  return <SkiaGraphCanvas {...props} />;
 }
 
-function SkiaGraphCanvas() {
+function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [dimensions, setDimensions] = useState({ width: windowWidth, height: windowHeight });
 
@@ -138,10 +145,10 @@ function SkiaGraphCanvas() {
     [setViewDimensions]
   );
 
-  // Animated viewport values for smooth gestures
-  const viewportX = useSharedValue(viewport.x);
-  const viewportY = useSharedValue(viewport.y);
-  const viewportZoom = useSharedValue(viewport.zoom);
+  // Animated viewport values provided by parent for coordination
+  // const viewportX = useSharedValue(viewport.x);
+  // const viewportY = useSharedValue(viewport.y);
+  // const viewportZoom = useSharedValue(viewport.zoom);
 
   // Shared state for nodes to sync edges with gestures
   const sharedNodes = useSharedValue<Record<string, { position: Point; dimensions: ViewDimensions }>>({});
@@ -829,7 +836,7 @@ function getBezierPoint(
   };
 }
 
-import type { SharedValue } from 'react-native-reanimated';
+
 
 interface AnimatedEdgeProps {
   edge: VisualEdge;

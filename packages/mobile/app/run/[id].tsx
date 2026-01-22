@@ -13,7 +13,7 @@ import { PageLoader } from '@/components/PageLoader';
 import { Plus } from 'iconoir-react-native';
 import { colors, fontFamily, fontSize, radius, spacing } from '@/lib/theme';
 
-import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, withTiming, useSharedValue } from 'react-native-reanimated';
 
 export default function RunScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -24,7 +24,13 @@ export default function RunScreen() {
   const edgeCount = useGraphStore((s) => s.edges.length);
   const pendingCount = useGraphStore((s) => s.pendingApprovals.length);
   const inspectorOpen = useGraphStore((s) => s.inspectorOpen);
+  const currentViewport = useGraphStore((s) => s.viewport);
   const [newNodeModalVisible, setNewNodeModalVisible] = useState(false);
+
+  // Shared viewport state for smooth animations across components
+  const viewportX = useSharedValue(currentViewport.x);
+  const viewportY = useSharedValue(currentViewport.y);
+  const viewportZoom = useSharedValue(currentViewport.zoom);
 
   const handleOpenNewNodeModal = useCallback(() => {
     console.log('[RunScreen] Opening new node modal');
@@ -60,10 +66,18 @@ export default function RunScreen() {
 
   return (
     <View style={styles.container}>
-      <GraphCanvas />
+      <GraphCanvas 
+        viewportX={viewportX}
+        viewportY={viewportY}
+        viewportZoom={viewportZoom}
+      />
 
       {/* Floating minimap for navigation */}
-      <GraphMinimap />
+      <GraphMinimap 
+        viewportX={viewportX}
+        viewportY={viewportY}
+        viewportZoom={viewportZoom}
+      />
 
       {/* Floating approval queue */}
       <ApprovalQueue />

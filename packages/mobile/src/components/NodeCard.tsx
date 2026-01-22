@@ -58,6 +58,10 @@ export const NodeCard = memo(function NodeCard({
   const savedX = useSharedValue(position.x);
   const savedY = useSharedValue(position.y);
   const isDragging = useSharedValue(false);
+  
+  // Edge drag state
+  const draggingPortIndex = useSharedValue<number | null>(null);
+  const draggingPortStartPos = useSharedValue<Point | null>(null);
 
   // Calculate port positions relative to node
   const ports = useMemo(() => [
@@ -66,6 +70,19 @@ export const NodeCard = memo(function NodeCard({
     { x: dimensions.width / 2 - PORT_SIZE / 2, y: dimensions.height - PORT_SIZE / 2, index: 2 }, // bottom
     { x: -PORT_SIZE / 2, y: dimensions.height / 2 - PORT_SIZE / 2, index: 3 }, // left
   ], [dimensions.width, dimensions.height]);
+
+  // Port positions in local (node) coordinates for hit testing
+  // And calculation of world coordinates for drag start
+  const getPortWorldPos = useCallback((index: number) => {
+    'worklet';
+    const portPositions = [
+      { x: position.x + dimensions.width / 2, y: position.y }, // top
+      { x: position.x + dimensions.width, y: position.y + dimensions.height / 2 }, // right
+      { x: position.x + dimensions.width / 2, y: position.y + dimensions.height }, // bottom
+      { x: position.x, y: position.y + dimensions.height / 2 }, // left
+    ];
+    return portPositions[index] ?? portPositions[0]!;
+  }, [position.x, position.y, dimensions.width, dimensions.height]);
 
   // Sync position changes from store
   useEffect(() => {
@@ -91,58 +108,103 @@ export const NodeCard = memo(function NodeCard({
 
   const dragGesture = useMemo(() => Gesture.Pan()
     .maxPointers(1)
-    .onTouchesDown((event, stateManager) => {
+    .onStart((e) => {
       'worklet';
-      const touch = event?.changedTouches?.[0];
-      if (!touch) return;
+      // Check if we hit a port
       const hitRadius = PORT_SIZE / 2 + PORT_HIT_SLOP;
+      let hitPortIndex = -1;
+
       for (const port of ports) {
         const centerX = port.x + PORT_SIZE / 2;
         const centerY = port.y + PORT_SIZE / 2;
-        if (Math.abs(touch.x - centerX) <= hitRadius && Math.abs(touch.y - centerY) <= hitRadius) {
-          stateManager.fail();
-          return;
+        if (Math.abs(e.x - centerX) <= hitRadius && Math.abs(e.y - centerY) <= hitRadius) {
+          hitPortIndex = port.index;
+          break;
         }
       }
-    })
-    .onStart(() => {
-      isDragging.value = true;
-      activeDragNodeId.value = node.id;
-      savedX.value = translateX.value;
-      savedY.value = translateY.value;
+
+      if (hitPortIndex !== -1) {
+        // Edge drag start
+        draggingPortIndex.value = hitPortIndex;
+        const worldPos = getPortWorldPos(hitPortIndex);
+        draggingPortStartPos.value = worldPos;
+        runOnJS(onPortDragStart)(node.id, hitPortIndex, worldPos);
+      } else {
+        // Node drag start
+        isDragging.value = true;
+        activeDragNodeId.value = node.id;
+        savedX.value = translateX.value;
+        savedY.value = translateY.value;
+      }
     })
     .onUpdate((e) => {
-      const nextX = savedX.value + e.translationX / effectiveZoom;
-      const nextY = savedY.value + e.translationY / effectiveZoom;
-      translateX.value = nextX;
-      translateY.value = nextY;
-      
-      // Update shared state for edges
-      const current = sharedNodes.value;
-      const newNodeState = {
-        position: { x: nextX, y: nextY },
-        dimensions: { width: dimensions.width, height: dimensions.height },
-      };
-      // We must create a new object reference for the map or use modify?
-      // Reanimated shared values of objects usually require full replacement or use of .value modification if it's a proxy.
-      // For a large record, copying might be expensive but let's try shallow copy of the map first.
-      // Actually, sharedNodes.value is a frozen object on JS side, but on UI thread it's mutable if we update it?
-      // Best practice for Record<string, T> in SharedValue:
-      const nextNodes = { ...current };
-      nextNodes[node.id] = newNodeState;
-      sharedNodes.value = nextNodes;
-
-      // Don't sync to store during drag to avoid frequent re-renders and "replay" lag
-      // runOnJS(onDrag)(node.id, nextX, nextY);
+      'worklet';
+      if (draggingPortIndex.value !== null && draggingPortStartPos.value) {
+        // Edge drag update
+        const startPos = draggingPortStartPos.value;
+        const currentPos = {
+          x: startPos.x + e.translationX / effectiveZoom,
+          y: startPos.y + e.translationY / effectiveZoom,
+        };
+        runOnJS(onPortDragMove)(currentPos);
+      } else if (isDragging.value) {
+        // Node drag update
+        const nextX = savedX.value + e.translationX / effectiveZoom;
+        const nextY = savedY.value + e.translationY / effectiveZoom;
+        translateX.value = nextX;
+        translateY.value = nextY;
+        
+        // Update shared state for edges
+        const current = sharedNodes.value;
+        const newNodeState = {
+          position: { x: nextX, y: nextY },
+          dimensions: { width: dimensions.width, height: dimensions.height },
+        };
+        const nextNodes = { ...current };
+        nextNodes[node.id] = newNodeState;
+        sharedNodes.value = nextNodes;
+      }
     })
     .onEnd(() => {
-      activeDragNodeId.value = null;
-      runOnJS(handleDragEnd)(translateX.value, translateY.value);
+      'worklet';
+      if (draggingPortIndex.value !== null) {
+        // Edge drag end
+        draggingPortIndex.value = null;
+        draggingPortStartPos.value = null;
+        runOnJS(onPortDragEnd)(null, null);
+      } else if (isDragging.value) {
+        // Node drag end
+        activeDragNodeId.value = null;
+        isDragging.value = false;
+        runOnJS(handleDragEnd)(translateX.value, translateY.value);
+      }
     })
     .onFinalize(() => {
+      'worklet';
       isDragging.value = false;
       activeDragNodeId.value = null;
-    }), [node.id, effectiveZoom, ports, onDrag, handleDragEnd, isDragging, savedX, savedY, translateX, translateY, sharedNodes, activeDragNodeId, dimensions]);
+      draggingPortIndex.value = null;
+      draggingPortStartPos.value = null;
+    }), [
+      node.id, 
+      effectiveZoom, 
+      ports, 
+      draggingPortIndex, 
+      draggingPortStartPos, 
+      getPortWorldPos, 
+      onPortDragStart, 
+      onPortDragMove, 
+      onPortDragEnd, 
+      isDragging, 
+      activeDragNodeId, 
+      savedX, 
+      savedY, 
+      translateX, 
+      translateY, 
+      dimensions, 
+      sharedNodes, 
+      handleDragEnd
+    ]);
 
   const tapGesture = useMemo(() => Gesture.Tap().onEnd(() => {
     runOnJS(handlePress)();
@@ -162,6 +224,7 @@ export const NodeCard = memo(function NodeCard({
   return (
     <GestureDetector gesture={composedGesture}>
       <Animated.View
+        hitSlop={30}
         style={[
           styles.card,
           {
@@ -240,103 +303,20 @@ export const NodeCard = memo(function NodeCard({
 
         {/* Connection ports */}
         {ports.map((port) => (
-          <Port
+          <View
             key={port.index}
-            nodeId={node.id}
-            portIndex={port.index}
-            style={{ left: port.x, top: port.y }}
-            nodePosition={position}
-            nodeDimensions={dimensions}
-            viewportZoom={effectiveZoom}
-            onDragStart={onPortDragStart}
-            onDragMove={onPortDragMove}
-            onDragEnd={onPortDragEnd}
-          />
+            style={[
+              styles.port, 
+              { left: port.x, top: port.y }
+            ]}
+          >
+            <View style={styles.portInner} />
+          </View>
         ))}
       </Animated.View>
     </GestureDetector>
   );
 });
-
-interface PortProps {
-  nodeId: string;
-  portIndex: number;
-  style: { left: number; top: number };
-  nodePosition: Point;
-  nodeDimensions: { width: number; height: number };
-  viewportZoom: number;
-  onDragStart: (nodeId: string, portIndex: number, point: Point) => void;
-  onDragMove: (point: Point) => void;
-  onDragEnd: (targetNodeId: string | null, targetPortIndex: number | null) => void;
-}
-
-function Port({
-  nodeId,
-  portIndex,
-  style,
-  nodePosition,
-  nodeDimensions,
-  viewportZoom,
-  onDragStart,
-  onDragMove,
-  onDragEnd,
-}: PortProps) {
-  const getWorldPortPosition = useCallback((): Point => {
-    const portPositions: Point[] = [
-      { x: nodePosition.x + nodeDimensions.width / 2, y: nodePosition.y }, // top
-      { x: nodePosition.x + nodeDimensions.width, y: nodePosition.y + nodeDimensions.height / 2 }, // right
-      { x: nodePosition.x + nodeDimensions.width / 2, y: nodePosition.y + nodeDimensions.height }, // bottom
-      { x: nodePosition.x, y: nodePosition.y + nodeDimensions.height / 2 }, // left
-    ];
-    const position = portPositions[portIndex];
-    return position ?? portPositions[0]!;
-  }, [nodePosition, nodeDimensions, portIndex]);
-
-  const handleDragStart = useCallback(() => {
-    const worldPos = getWorldPortPosition();
-    onDragStart(nodeId, portIndex, worldPos);
-  }, [nodeId, portIndex, getWorldPortPosition, onDragStart]);
-
-  const handleDragMove = useCallback(
-    (translationX: number, translationY: number) => {
-      const worldPos = getWorldPortPosition();
-      onDragMove({
-        x: worldPos.x + translationX / viewportZoom,
-        y: worldPos.y + translationY / viewportZoom,
-      });
-    },
-    [getWorldPortPosition, onDragMove, viewportZoom]
-  );
-
-  const handleDragEnd = useCallback(() => {
-    // For now, just end without target detection
-    // Target detection will be handled by GraphCanvas
-    onDragEnd(null, null);
-  }, [onDragEnd]);
-
-  const portGesture = Gesture.Pan()
-    .maxPointers(1)
-    .onStart(() => {
-      runOnJS(handleDragStart)();
-    })
-    .onUpdate((e) => {
-      runOnJS(handleDragMove)(e.translationX, e.translationY);
-    })
-    .onEnd(() => {
-      runOnJS(handleDragEnd)();
-    });
-
-  return (
-    <GestureDetector gesture={portGesture}>
-      <View
-        style={[styles.port, style]}
-        hitSlop={{ top: PORT_HIT_SLOP, right: PORT_HIT_SLOP, bottom: PORT_HIT_SLOP, left: PORT_HIT_SLOP }}
-      >
-        <View style={styles.portInner} />
-      </View>
-    </GestureDetector>
-  );
-}
 
 const styles = StyleSheet.create({
   card: {
@@ -346,7 +326,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 12,
     paddingLeft: 15, // Extra padding for left border
-    overflow: 'hidden',
   },
   leftBorder: {
     position: 'absolute',
@@ -480,3 +459,4 @@ const styles = StyleSheet.create({
     borderColor: colors.borderStrong,
   },
 });
+

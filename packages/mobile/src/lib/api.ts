@@ -3,8 +3,14 @@ import {
   getWebSocketUrl as getWsUrl,
 } from '@vuhlp/shared';
 
-// Configure this via environment or settings screen
-const API_BASE = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000';
+// Production: set EXPO_PUBLIC_API_URL (e.g., https://api.vuhlp.com)
+// Development: derives from REACT_NATIVE_PACKAGER_HOSTNAME
+const API_BASE = process.env.EXPO_PUBLIC_API_URL
+  ?? (process.env.REACT_NATIVE_PACKAGER_HOSTNAME
+      ? `http://${process.env.REACT_NATIVE_PACKAGER_HOSTNAME}:4000`
+      : 'http://localhost:4000');
+
+console.log('[api] API_BASE:', API_BASE);
 
 export const api = createApiClient({ baseUrl: API_BASE });
 
