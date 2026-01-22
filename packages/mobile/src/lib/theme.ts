@@ -40,6 +40,11 @@ export const colors = {
   bgHighlight: 'rgba(255, 255, 255, 0.04)',
   bgShade: 'rgba(0, 0, 0, 0.4)',
 
+  // Glass effect backgrounds
+  glassBg: 'rgba(14, 14, 18, 0.85)',
+  glassHighlight: 'rgba(255, 255, 255, 0.05)',
+  accentSoft: 'rgba(143, 184, 168, 0.18)',
+
   // Semantic Status Colors (for status dots, badges)
   statusColors: {
     idle: '#5c5c64',

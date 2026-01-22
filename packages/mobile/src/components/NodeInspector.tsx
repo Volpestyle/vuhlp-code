@@ -11,6 +11,7 @@ import {
   ActionSheetIOS,
   Alert,
   Platform,
+  Clipboard,
   type KeyboardEvent,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -30,7 +31,7 @@ import Animated, {
   type EasingFunctionFactory,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Plus, Clock, ArrowUp } from 'iconoir-react-native';
+import { Plus, Clock, ArrowUp, MoreHoriz, Copy, Link as LinkIcon, Play, Pause } from 'iconoir-react-native';
 import {
   useGraphStore,
   type TurnStatusEvent,
@@ -41,7 +42,7 @@ import { useChatAutoScroll } from '@/lib/useChatAutoScroll';
 import { ThinkingSpinner } from '@vuhlp/spinners/native';
 import { MarkdownMessage } from '@/components/MarkdownMessage';
 import { MediaPickerDrawer } from '@/components/MediaPickerDrawer';
-import { colors, getStatusColor, fontFamily } from '@/lib/theme';
+import { colors, getStatusColor, getProviderColors, fontFamily } from '@/lib/theme';
 import { createLocalId } from '@/lib/ids';
 import {
   buildTimeline,
@@ -113,13 +114,18 @@ export function NodeInspector() {
 
   const run = useGraphStore((s) => s.run);
   const nodes = useGraphStore((s) => s.nodes);
+  const edges = useGraphStore((s) => s.edges);
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
+  const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId);
   const inspectorOpen = useGraphStore((s) => s.inspectorOpen);
   const chatMessages = useGraphStore((s) => s.chatMessages);
   const toolEvents = useGraphStore((s) => s.toolEvents);
   const turnStatusEvents = useGraphStore((s) => s.turnStatusEvents);
   const recentHandoffs = useGraphStore((s) => s.recentHandoffs);
-  const setInspectorOpen = useGraphStore((s) => s.setInspectorOpen);
+  const selectNode = useGraphStore((s) => s.selectNode);
+  const selectEdge = useGraphStore((s) => s.selectEdge);
+  const removeNode = useGraphStore((s) => s.removeNode);
+  const removeEdge = useGraphStore((s) => s.removeEdge);
   const addChatMessage = useGraphStore((s) => s.addChatMessage);
   const updateChatMessageStatus = useGraphStore((s) => s.updateChatMessageStatus);
   const clearNodeMessages = useGraphStore((s) => s.clearNodeMessages);
@@ -129,12 +135,41 @@ export function NodeInspector() {
   const [activeTab, setActiveTab] = useState<'chat' | 'details'>('chat');
   const [todosExpanded, setTodosExpanded] = useState(true);
   const todosIconRotation = useSharedValue(1); // 1 = expanded (90deg), 0 = collapsed (0deg)
+  const tabIndicatorPosition = useSharedValue(0); // 0 = chat, 1 = details
+  const [tabContainerWidth, setTabContainerWidth] = useState(0);
   const [mediaPickerVisible, setMediaPickerVisible] = useState(false);
+  const [processPending, setProcessPending] = useState<'start' | 'stop' | 'interrupt' | null>(null);
+  const [processError, setProcessError] = useState<string | null>(null);
 
   // Animated style for todos toggle icon rotation
   const todosIconAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${todosIconRotation.value * 90}deg` }],
   }));
+
+  // Animated style for tab indicator sliding animation
+  // Calculate indicator width (half the container minus padding on each side)
+  const indicatorWidth = tabContainerWidth > 0 ? (tabContainerWidth - 6) / 2 : 0;
+  const tabIndicatorAnimatedStyle = useAnimatedStyle(() => {
+    // Animate translateX: 0 for chat, indicatorWidth for details
+    const translateX = withSpring(tabIndicatorPosition.value * indicatorWidth, {
+      damping: 100,
+      stiffness: 700,
+    });
+    return {
+      transform: [{ translateX }],
+    };
+  }, [indicatorWidth]);
+
+  // Handle tab container layout to get width for animation
+  const handleTabContainerLayout = useCallback((event: { nativeEvent: { layout: { width: number } } }) => {
+    setTabContainerWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  // Handle tab change with animation
+  const handleTabChange = useCallback((tab: 'chat' | 'details') => {
+    tabIndicatorPosition.value = tab === 'chat' ? 0 : 1;
+    setActiveTab(tab);
+  }, [tabIndicatorPosition]);
 
   const handleTodosToggle = useCallback(() => {
     todosIconRotation.value = withSpring(todosExpanded ? 0 : 1, { damping: 100, stiffness: 700 });
@@ -157,33 +192,67 @@ export function NodeInspector() {
   const sendLongPressRef = useRef(false);
   const keyboardConfigWarnedRef = useRef(false);
 
-  const [displayNode, setDisplayNode] = useState(nodes.find((n) => n.selected) || null);
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
+    [nodes, selectedNodeId]
+  );
+  const selectedEdge = useMemo(
+    () => edges.find((edge) => edge.id === selectedEdgeId) ?? null,
+    [edges, selectedEdgeId]
+  );
+
+  const [displayNode, setDisplayNode] = useState(selectedNode);
+  const [displayEdge, setDisplayEdge] = useState(selectedEdge);
 
   // Preserve the resting safe-area inset so it doesn't collapse during keyboard transitions.
   useEffect(() => {
     setRestingInset((current) => (insets.bottom > current ? insets.bottom : current));
   }, [insets.bottom]);
 
-  // Sync display node with selection, but keep old one while closing
+  // Sync display node/edge with selection, but keep old ones while closing
   useEffect(() => {
-    const current = nodes.find((n) => n.id === selectedNodeId);
-    if (current) {
-      setDisplayNode(current);
+    if (selectedNode) {
+      setDisplayNode(selectedNode);
     }
-  }, [nodes, selectedNodeId]);
+  }, [selectedNode]);
 
-  const selectedNode = displayNode;
+  useEffect(() => {
+    if (selectedEdge) {
+      setDisplayEdge(selectedEdge);
+    }
+  }, [selectedEdge]);
+
+  const activeEdge = selectedEdge ?? (!selectedNodeId ? displayEdge : null);
+  const activeNode = activeEdge ? null : (selectedNode ?? displayNode);
   const isOrchestrator =
-    selectedNode?.roleTemplate.trim().toLowerCase() === 'orchestrator';
+    activeNode?.roleTemplate.trim().toLowerCase() === 'orchestrator';
   const isAutoMode = run?.mode === 'AUTO';
-  const nodeMessages = selectedNode?.id ? chatMessages[selectedNode.id] ?? [] : [];
+
+  // Compute connected edges for the active node
+  const connectedEdges = useMemo(() => {
+    if (!activeNode?.id) return [];
+    return edges.filter(
+      (edge) => edge.from === activeNode.id || edge.to === activeNode.id
+    );
+  }, [edges, activeNode?.id]);
+
+  const connectedNodes = useMemo(() => {
+    if (!activeNode?.id) return [];
+    const nodeIds = new Set<string>();
+    connectedEdges.forEach((edge) => {
+      if (edge.from === activeNode.id) nodeIds.add(edge.to);
+      if (edge.to === activeNode.id) nodeIds.add(edge.from);
+    });
+    return nodes.filter((node) => nodeIds.has(node.id));
+  }, [connectedEdges, nodes, activeNode?.id]);
+  const nodeMessages = activeNode?.id ? chatMessages[activeNode.id] ?? [] : [];
   const nodeToolEvents = useMemo(() => {
-    if (!selectedNode?.id) return [];
-    return toolEvents.filter((event) => event.nodeId === selectedNode.id);
-  }, [toolEvents, selectedNode?.id]);
+    if (!activeNode?.id) return [];
+    return toolEvents.filter((event) => event.nodeId === activeNode.id);
+  }, [toolEvents, activeNode?.id]);
   const incomingHandoffs = useMemo(
-    () => recentHandoffs.filter((handoff) => handoff.toNodeId === selectedNode?.id),
-    [recentHandoffs, selectedNode?.id]
+    () => activeNode?.id ? recentHandoffs.filter((handoff) => handoff.toNodeId === activeNode.id) : [],
+    [recentHandoffs, activeNode?.id]
   );
   const incomingHandoffTools = useMemo(
     () => incomingHandoffs.map((handoff) => buildReceiveHandoffToolEvent(handoff)),
@@ -206,14 +275,14 @@ export function NodeInspector() {
     [nodeToolEvents, incomingHandoffTools]
   );
   const nodeStatusEvents = useMemo(() => {
-    if (!selectedNode?.id) return [];
-    return turnStatusEvents.filter((event) => event.nodeId === selectedNode.id);
-  }, [turnStatusEvents, selectedNode?.id]);
+    if (!activeNode?.id) return [];
+    return turnStatusEvents.filter((event) => event.nodeId === activeNode.id);
+  }, [turnStatusEvents, activeNode?.id]);
   const timeline = useMemo(
     () => buildTimeline(nodeMessages, combinedToolEvents, nodeStatusEvents),
     [nodeMessages, combinedToolEvents, nodeStatusEvents]
   );
-  const isRunning = selectedNode?.status === 'running';
+  const isRunning = activeNode?.status === 'running';
   const isStreaming = useMemo(() => {
     const lastMessage = [...timeline].reverse().find((item) => item.type === 'message');
     return Boolean(
@@ -229,51 +298,56 @@ export function NodeInspector() {
   );
   const { handleScroll, onContentSizeChange, scrollToBottom } = useChatAutoScroll({
     scrollRef: scrollViewRef,
-    enabled: activeTab === 'chat',
+    enabled: activeTab === 'chat' && Boolean(activeNode),
     updateKey: autoScrollKey,
-    resetKey: selectedNode?.id ?? '',
+    resetKey: activeNode?.id ?? '',
   });
 
   // Animation values
   const translateY = useSharedValue(maxTranslateY); // Start collapsed
   const context = useSharedValue({ y: 0 });
   const isClosingRef = useRef(false);
-  const previousSelectedNodeId = useRef<string | null>(null);
+  const previousSelectionKey = useRef<string | null>(null);
   const previousInspectorOpen = useRef(inspectorOpen);
 
-  const selectNode = useGraphStore((s) => s.selectNode);
+  const activeSelectionKey = activeEdge
+    ? `edge:${activeEdge.id}`
+    : activeNode
+      ? `node:${activeNode.id}`
+      : null;
 
   const finalizeClose = useCallback(() => {
     isClosingRef.current = false;
     // Clear display node only after animation finishes
     if (!inspectorOpen) {
       setDisplayNode(null);
+      setDisplayEdge(null);
     }
   }, [inspectorOpen]);
 
   // Reset to collapsed state when node changes or opens.
   useEffect(() => {
     const wasOpen = previousInspectorOpen.current;
-    const nodeChanged = previousSelectedNodeId.current !== selectedNode?.id;
+    const selectionChanged = previousSelectionKey.current !== activeSelectionKey;
     previousInspectorOpen.current = inspectorOpen;
-    previousSelectedNodeId.current = selectedNode?.id ?? null;
+    previousSelectionKey.current = activeSelectionKey;
 
-    if (!selectedNode) {
+    if (!activeSelectionKey) {
       return;
     }
 
-    if (inspectorOpen && (nodeChanged || !wasOpen)) {
+    if (inspectorOpen && (selectionChanged || !wasOpen)) {
       isClosingRef.current = false;
       // Start from closed position and animate in
       translateY.value = closedTranslateY;
       translateY.value = withSpring(maxTranslateY, { damping: 50, stiffness: 200 });
     }
-  }, [inspectorOpen, selectedNode, maxTranslateY, closedTranslateY]);
+  }, [inspectorOpen, activeSelectionKey, maxTranslateY, closedTranslateY]);
 
   useEffect(() => {
     // If not open and no closing animation pending, do nothing
     // If it *was* open and now isn't, animate close
-    if (inspectorOpen || isClosingRef.current || !displayNode) {
+    if (inspectorOpen || isClosingRef.current || (!displayNode && !displayEdge)) {
       return;
     }
 
@@ -287,12 +361,19 @@ export function NodeInspector() {
         }
       }
     );
-  }, [closedTranslateY, finalizeClose, inspectorOpen, displayNode]);
+  }, [closedTranslateY, finalizeClose, inspectorOpen, displayNode, displayEdge]);
 
   useEffect(() => {
     setMessageText('');
     setMessageError(null);
-  }, [selectedNode?.id]);
+  }, [activeNode?.id]);
+
+  useEffect(() => {
+    if (selectedEdgeId) {
+      setActiveTab('details');
+      tabIndicatorPosition.value = 1;
+    }
+  }, [selectedEdgeId, tabIndicatorPosition]);
 
   const keyboard = useAnimatedKeyboard();
   const keyboardTarget = useSharedValue(0);
@@ -378,8 +459,12 @@ export function NodeInspector() {
     }
     Keyboard.dismiss();
     // Clear selection immediately when manually closing
-    selectNode(null);
-  }, [inspectorOpen, selectNode]);
+    if (selectedEdgeId) {
+      selectEdge(null);
+    } else {
+      selectNode(null);
+    }
+  }, [inspectorOpen, selectedEdgeId, selectEdge, selectNode]);
 
   // Gestures
   const dragGesture = Gesture.Pan()
@@ -435,12 +520,12 @@ export function NodeInspector() {
 
   const sendMessage = useCallback(
     async (messageId: string, content: string, interrupt: boolean) => {
-      if (!run || !selectedNode) {
+      if (!run || !activeNode) {
         const errorText = 'Start a run to send messages.';
         console.warn('[inspector] cannot send message without active run');
         setMessageError(errorText);
-        if (selectedNode) {
-          updateChatMessageStatus(selectedNode.id, messageId, {
+        if (activeNode) {
+          updateChatMessageStatus(activeNode.id, messageId, {
             pending: false,
             sendError: errorText,
           });
@@ -449,24 +534,24 @@ export function NodeInspector() {
       }
 
       try {
-        await api.sendMessage(run.id, selectedNode.id, content, interrupt);
-        updateChatMessageStatus(selectedNode.id, messageId, { pending: false });
+        await api.sendMessage(run.id, activeNode.id, content, interrupt);
+        updateChatMessageStatus(activeNode.id, messageId, { pending: false });
       } catch (err) {
         const errorText =
           err instanceof Error ? err.message : 'Failed to send message.';
         console.error('[inspector] failed to send message:', err);
-        updateChatMessageStatus(selectedNode.id, messageId, {
+        updateChatMessageStatus(activeNode.id, messageId, {
           pending: false,
           sendError: errorText,
         });
       }
     },
-    [run, selectedNode, updateChatMessageStatus] // selectedNodeId -> selectedNode
+    [run, activeNode, updateChatMessageStatus]
   );
 
   const handleResetContext = useCallback(() => {
-    if (!selectedNode?.id) return;
-    clearNodeMessages(selectedNode.id);
+    if (!activeNode?.id) return;
+    clearNodeMessages(activeNode.id);
     setMessageText('');
     setMessageError(null);
     if (!run) {
@@ -475,11 +560,11 @@ export function NodeInspector() {
       setMessageError(errorText);
       return;
     }
-    api.resetNode(run.id, selectedNode.id).catch((err) => {
+    api.resetNode(run.id, activeNode.id).catch((err) => {
       console.error('[inspector] failed to reset context:', err);
       setMessageError('Failed to reset context.');
     });
-  }, [clearNodeMessages, run, selectedNode]);
+  }, [clearNodeMessages, run, activeNode]);
 
   const handleOpenMediaPicker = useCallback(() => {
     Keyboard.dismiss();
@@ -508,9 +593,9 @@ export function NodeInspector() {
   const handleSendMessage = useCallback(
     (interrupt: boolean) => {
       const content = (messageText || '').trim();
-      if (!content || !selectedNode?.id) return;
+      if (!content || !activeNode?.id) return;
 
-      const resetCommands = selectedNode?.session?.resetCommands ?? ['/new', '/clear'];
+      const resetCommands = activeNode?.session?.resetCommands ?? ['/new', '/clear'];
       const normalized = content.toLowerCase();
       if (resetCommands.some((command) => command.toLowerCase() === normalized)) {
         handleResetContext();
@@ -527,7 +612,7 @@ export function NodeInspector() {
       const messageId = createLocalId();
       const message: ChatMessage = {
         id: messageId,
-        nodeId: selectedNode.id,
+        nodeId: activeNode.id,
         role: 'user',
         content,
         createdAt: new Date().toISOString(),
@@ -541,7 +626,7 @@ export function NodeInspector() {
       void sendMessage(messageId, content, interrupt);
       scrollToBottom();
     },
-    [messageText, selectedNode, run, addChatMessage, sendMessage, handleResetContext, scrollToBottom]
+    [messageText, activeNode, run, addChatMessage, sendMessage, handleResetContext, scrollToBottom]
   );
 
   const canSend = Boolean((messageText || '').trim());
@@ -596,18 +681,201 @@ export function NodeInspector() {
 
   const handleRetry = useCallback(
     (message: ChatMessage) => {
-      if (!selectedNode?.id) return;
-      updateChatMessageStatus(selectedNode.id, message.id, {
+      if (!activeNode?.id) return;
+      updateChatMessageStatus(activeNode.id, message.id, {
         pending: true,
         sendError: undefined,
       });
       setMessageError(null);
       void sendMessage(message.id, message.content, message.interrupt ?? true);
     },
-    [selectedNode, updateChatMessageStatus, sendMessage]
+    [activeNode, updateChatMessageStatus, sendMessage]
   );
 
-  if (!selectedNode) {
+  const headerDotColor = activeEdge
+    ? colors.accent
+    : getStatusColor(activeNode?.status ?? 'idle');
+
+  const edgeSourceLabel = activeEdge
+    ? nodes.find((node) => node.id === activeEdge.from)?.label ?? activeEdge.from
+    : '';
+  const edgeTargetLabel = activeEdge
+    ? nodes.find((node) => node.id === activeEdge.to)?.label ?? activeEdge.to
+    : '';
+
+  const handleDeleteNode = useCallback(() => {
+    if (!activeNode) {
+      return;
+    }
+    if (!run) {
+      console.warn('[inspector] cannot delete node without active run', { nodeId: activeNode.id });
+      Alert.alert('Delete node unavailable', 'Start a run to delete nodes.', [{ text: 'OK' }]);
+      return;
+    }
+    Alert.alert(
+      `Delete node "${activeNode.label}"?`,
+      'This will also remove any connected edges. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            api
+              .deleteNode(run.id, activeNode.id)
+              .then(() => removeNode(activeNode.id))
+              .catch((error) => {
+                console.error('[inspector] failed to delete node', error);
+                const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                Alert.alert('Delete failed', `Could not delete node: ${errorMessage}`, [{ text: 'OK' }]);
+              });
+          },
+        },
+      ]
+    );
+  }, [activeNode, removeNode, run]);
+
+  const handleCopyId = useCallback(() => {
+    const id = activeEdge?.id ?? activeNode?.id;
+    if (id) {
+      Clipboard.setString(id);
+    }
+  }, [activeEdge?.id, activeNode?.id]);
+
+  const handleDeleteEdge = useCallback(() => {
+    if (!activeEdge) {
+      return;
+    }
+    if (!run) {
+      console.warn('[inspector] cannot delete edge without active run', { edgeId: activeEdge.id });
+      Alert.alert('Delete edge unavailable', 'Start a run to delete edges.', [{ text: 'OK' }]);
+      return;
+    }
+    Alert.alert(
+      'Delete edge?',
+      `${edgeSourceLabel} ${activeEdge.bidirectional ? '<->' : '->'} ${edgeTargetLabel}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            api
+              .deleteEdge(run.id, activeEdge.id)
+              .then(() => removeEdge(activeEdge.id))
+              .catch((error) => {
+                console.error('[inspector] failed to delete edge', error);
+                const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                Alert.alert('Delete failed', `Could not delete edge: ${errorMessage}`, [{ text: 'OK' }]);
+              });
+          },
+        },
+      ]
+    );
+  }, [activeEdge, edgeSourceLabel, edgeTargetLabel, removeEdge, run]);
+
+  // Process control handlers
+  const handleStartProcess = useCallback(() => {
+    if (!run || !activeNode) {
+      setProcessError('Start a run to manage the process.');
+      console.warn('[inspector] cannot start process: no run or node');
+      return;
+    }
+    setProcessPending('start');
+    setProcessError(null);
+    console.log('[inspector] starting process', { nodeId: activeNode.id });
+    api.startNodeProcess(run.id, activeNode.id)
+      .then(() => {
+        console.log('[inspector] process started successfully');
+      })
+      .catch((error) => {
+        console.error('[inspector] failed to start process', error);
+        setProcessError(error instanceof Error ? error.message : 'Failed to start process.');
+      })
+      .finally(() => setProcessPending(null));
+  }, [run, activeNode]);
+
+  const handleStopProcess = useCallback(() => {
+    if (!run || !activeNode) {
+      setProcessError('Start a run to manage the process.');
+      console.warn('[inspector] cannot stop process: no run or node');
+      return;
+    }
+    setProcessPending('stop');
+    setProcessError(null);
+    console.log('[inspector] stopping process', { nodeId: activeNode.id });
+    api.stopNodeProcess(run.id, activeNode.id)
+      .then(() => {
+        console.log('[inspector] process stopped successfully');
+      })
+      .catch((error) => {
+        console.error('[inspector] failed to stop process', error);
+        setProcessError(error instanceof Error ? error.message : 'Failed to stop process.');
+      })
+      .finally(() => setProcessPending(null));
+  }, [run, activeNode]);
+
+  const handleInterruptProcess = useCallback(() => {
+    if (!run || !activeNode) {
+      setProcessError('Start a run to manage the process.');
+      console.warn('[inspector] cannot interrupt process: no run or node');
+      return;
+    }
+    setProcessPending('interrupt');
+    setProcessError(null);
+    console.log('[inspector] interrupting process', { nodeId: activeNode.id });
+    api.interruptNodeProcess(run.id, activeNode.id)
+      .then(() => {
+        console.log('[inspector] process interrupted successfully');
+      })
+      .catch((error) => {
+        console.error('[inspector] failed to interrupt process', error);
+        setProcessError(error instanceof Error ? error.message : 'Failed to interrupt process.');
+      })
+      .finally(() => setProcessPending(null));
+  }, [run, activeNode]);
+
+  const handleShowOverflowMenu = useCallback(() => {
+    const isEdge = Boolean(activeEdge);
+    const options = isEdge
+      ? ['Copy ID', 'Delete Edge', 'Cancel']
+      : ['Copy ID', 'Delete Node', 'Cancel'];
+    const destructiveIndex = 1;
+    const cancelIndex = 2;
+
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options,
+          destructiveButtonIndex: destructiveIndex,
+          cancelButtonIndex: cancelIndex,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 0) {
+            handleCopyId();
+          } else if (buttonIndex === 1) {
+            if (isEdge) {
+              handleDeleteEdge();
+            } else {
+              handleDeleteNode();
+            }
+          }
+        }
+      );
+    } else {
+      Alert.alert('Options', undefined, [
+        { text: 'Copy ID', onPress: handleCopyId },
+        {
+          text: isEdge ? 'Delete Edge' : 'Delete Node',
+          style: 'destructive',
+          onPress: isEdge ? handleDeleteEdge : handleDeleteNode,
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  }, [activeEdge, handleCopyId, handleDeleteEdge, handleDeleteNode]);
+
+  if (!activeNode && !activeEdge) {
     return null;
   }
 
@@ -631,42 +899,136 @@ export function NodeInspector() {
               <View
                 style={[
                   styles.statusDot,
-                  { backgroundColor: getStatusColor(selectedNode.status) },
+                  { backgroundColor: headerDotColor },
                 ]}
               />
               <Text style={styles.title} numberOfLines={1}>
-                {selectedNode.label}
+                {activeEdge
+                  ? activeEdge.label || 'Edge'
+                  : activeNode?.label ?? 'Node'}
               </Text>
             </View>
-            <Pressable onPress={handleClose} style={styles.closeButton}>
-              <Text style={styles.closeText}>×</Text>
-            </Pressable>
+            <View style={styles.headerRight}>
+              <Pressable
+                onPress={handleShowOverflowMenu}
+                style={styles.headerIconButton}
+                hitSlop={12}
+              >
+                <MoreHoriz width={22} height={22} color={colors.textSecondary} strokeWidth={2} />
+              </Pressable>
+              <Pressable
+                onPress={handleClose}
+                style={styles.headerIconButton}
+                hitSlop={12}
+              >
+                <Text style={styles.closeText}>×</Text>
+              </Pressable>
+            </View>
           </View>
 
-          {/* Tabs */}
-          <View style={styles.tabs}>
-            <Pressable
-              style={[styles.tab, activeTab === 'chat' && styles.tabActive]}
-              onPress={() => setActiveTab('chat')}
-            >
-              <Text style={[styles.tabText, activeTab === 'chat' && styles.tabTextActive]}>
-                Chat
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[styles.tab, activeTab === 'details' && styles.tabActive]}
-              onPress={() => setActiveTab('details')}
-            >
-              <Text style={[styles.tabText, activeTab === 'details' && styles.tabTextActive]}>
-                Details
-              </Text>
-            </Pressable>
-          </View>
+          {/* Segmented Tabs */}
+          {!activeEdge && (
+            <View style={styles.tabsContainer}>
+              <View style={styles.tabsSegmented} onLayout={handleTabContainerLayout}>
+                {/* Animated sliding indicator */}
+                <Animated.View
+                  style={[
+                    styles.tabIndicator,
+                    { width: indicatorWidth > 0 ? indicatorWidth : '50%' },
+                    tabIndicatorAnimatedStyle,
+                  ]}
+                />
+                <Pressable
+                  style={styles.tabSegment}
+                  onPress={() => handleTabChange('chat')}
+                >
+                  <Text style={[styles.tabSegmentText, activeTab === 'chat' && styles.tabSegmentTextActive]}>
+                    Chat
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={styles.tabSegment}
+                  onPress={() => handleTabChange('details')}
+                >
+                  <Text style={[styles.tabSegmentText, activeTab === 'details' && styles.tabSegmentTextActive]}>
+                    Details
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
         </Animated.View>
       </GestureDetector>
 
       {/* Content - outside gesture detector for text selection */}
-      {activeTab === 'chat' ? (
+      {activeEdge ? (
+        <ScrollView style={styles.detailsContainer} contentContainerStyle={styles.detailsContent}>
+          {/* Edge Info Card */}
+          <InfoCard>
+            <View style={styles.detailsStatusRow}>
+              <View style={styles.edgeTypeBadge}>
+                <Text style={styles.edgeTypeBadgeText}>{activeEdge.type}</Text>
+              </View>
+              <View style={[styles.edgeTypeBadge, styles.edgeDirectionBadge]}>
+                <Text style={styles.edgeTypeBadgeText}>
+                  {activeEdge.bidirectional ? '↔ Bidirectional' : '→ Directed'}
+                </Text>
+              </View>
+            </View>
+            <Pressable style={styles.idRow} onPress={handleCopyId}>
+              <Text style={styles.idLabel}>ID</Text>
+              <Text style={styles.idValue}>{activeEdge.id.slice(0, 8)}</Text>
+              <Copy width={14} height={14} color={colors.textMuted} strokeWidth={2} />
+            </Pressable>
+          </InfoCard>
+
+          {/* Connection Card */}
+          <InfoCard>
+            <Text style={styles.sectionLabel}>Connection</Text>
+            <View style={styles.edgeConnectionRow}>
+              <Pressable
+                style={styles.edgeNodeChip}
+                onPress={() => {
+                  const fromNode = nodes.find((n) => n.id === activeEdge.from);
+                  if (fromNode) selectNode(fromNode.id);
+                }}
+              >
+                <View
+                  style={[
+                    styles.connectedNodeDot,
+                    { backgroundColor: getStatusColor(nodes.find((n) => n.id === activeEdge.from)?.status ?? 'idle') },
+                  ]}
+                />
+                <Text style={styles.edgeNodeLabel}>{edgeSourceLabel}</Text>
+              </Pressable>
+              <Text style={styles.edgeArrow}>{activeEdge.bidirectional ? '↔' : '→'}</Text>
+              <Pressable
+                style={styles.edgeNodeChip}
+                onPress={() => {
+                  const toNode = nodes.find((n) => n.id === activeEdge.to);
+                  if (toNode) selectNode(toNode.id);
+                }}
+              >
+                <View
+                  style={[
+                    styles.connectedNodeDot,
+                    { backgroundColor: getStatusColor(nodes.find((n) => n.id === activeEdge.to)?.status ?? 'idle') },
+                  ]}
+                />
+                <Text style={styles.edgeNodeLabel}>{edgeTargetLabel}</Text>
+              </Pressable>
+            </View>
+          </InfoCard>
+
+          {/* Label Card (if exists) */}
+          {activeEdge.label && (
+            <InfoCard>
+              <Text style={styles.sectionLabel}>Label</Text>
+              <Text style={styles.summaryText}>{activeEdge.label}</Text>
+            </InfoCard>
+          )}
+        </ScrollView>
+      ) : activeTab === 'chat' ? (
         <View style={styles.chatContainer}>
           <ScrollView
             ref={scrollViewRef}
@@ -678,9 +1040,9 @@ export function NodeInspector() {
             keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled"
           >
-            {timeline.length === 0 && selectedNode.status !== 'running' ? (
+            {timeline.length === 0 && activeNode?.status !== 'running' ? (
               <Text style={styles.emptyText}>
-                Start a conversation with {selectedNode.label}
+                Start a conversation with {activeNode?.label ?? 'this node'}
               </Text>
             ) : (
               <>
@@ -710,7 +1072,7 @@ export function NodeInspector() {
           </ScrollView>
 
           {/* Collapsible Todos Panel */}
-          {selectedNode.todos && selectedNode.todos.length > 0 && (
+          {activeNode?.todos && activeNode.todos.length > 0 && (
             <Animated.View style={styles.todosPanel} layout={LinearTransition.springify().damping(100).stiffness(700)}>
               <GestureDetector gesture={todosSwipeGesture}>
                 <Pressable
@@ -721,20 +1083,20 @@ export function NodeInspector() {
                     ▶
                   </Animated.Text>
                   <Text style={styles.todosPanelToggleLabel}>
-                    Todos ({selectedNode.todos.length})
+                    Todos ({activeNode.todos.length})
                   </Text>
                   <View style={styles.todosPanelBadges}>
-                    {selectedNode.todos.filter(t => t.status === 'in_progress').length > 0 && (
+                    {activeNode.todos.filter(t => t.status === 'in_progress').length > 0 && (
                       <View style={styles.todosBadgeInProgress}>
                         <Text style={styles.todosBadgeText}>
-                          {selectedNode.todos.filter(t => t.status === 'in_progress').length} active
+                          {activeNode.todos.filter(t => t.status === 'in_progress').length} active
                         </Text>
                       </View>
                     )}
-                    {selectedNode.todos.filter(t => t.status === 'completed').length > 0 && (
+                    {activeNode.todos.filter(t => t.status === 'completed').length > 0 && (
                       <View style={styles.todosBadgeCompleted}>
                         <Text style={styles.todosBadgeTextCompleted}>
-                          {selectedNode.todos.filter(t => t.status === 'completed').length} done
+                          {activeNode.todos.filter(t => t.status === 'completed').length} done
                         </Text>
                       </View>
                     )}
@@ -747,7 +1109,7 @@ export function NodeInspector() {
                   entering={FadeIn.duration(80)}
                   exiting={FadeOut.duration(60)}
                 >
-                  {selectedNode.todos.map((todo, index) => (
+                  {activeNode.todos.map((todo, index) => (
                     <Animated.View
                       key={`${todo.content}-${index}`}
                       style={[
@@ -819,7 +1181,7 @@ export function NodeInspector() {
                       setMessageError(null);
                     }
                   }}
-                  placeholder={`Chat with ${selectedNode.label}`}
+                  placeholder={`Chat with ${activeNode?.label ?? 'node'}`}
                   placeholderTextColor={colors.textMuted}
                   multiline
                   maxLength={4000}
@@ -855,35 +1217,159 @@ export function NodeInspector() {
           <Animated.View style={bottomSpacerStyle} pointerEvents="none" />
         </View>
       ) : (
-        <ScrollView style={styles.detailsContainer}>
-          <DetailRow label="ID" value={selectedNode.id.slice(0, 8)} mono />
-          <DetailRow label="Status" value={selectedNode.status} />
-          <DetailRow label="Provider" value={selectedNode.provider} />
-          <DetailRow label="Role" value={selectedNode.roleTemplate} />
-          {isOrchestrator && (
-            <View style={styles.roleBadges}>
-              <Badge label="Orchestrator" />
-              {isAutoMode && <Badge label="Auto Loop" />}
-            </View>
-          )}
-          <DetailRow label="Summary" value={selectedNode.summary || 'No activity'} />
-          {selectedNode.inboxCount !== undefined && (
-            <DetailRow label="Inbox" value={`${selectedNode.inboxCount} messages`} />
-          )}
-          <View style={styles.capabilitiesSection}>
-            <Text style={styles.sectionTitle}>Capabilities</Text>
-            <View style={styles.capabilities}>
-              {selectedNode.capabilities?.edgeManagement && (
-                <Badge
-                  label={`Edges: ${selectedNode.capabilities.edgeManagement}`}
-                />
+        <ScrollView style={styles.detailsContainer} contentContainerStyle={styles.detailsContent}>
+          {activeNode && (
+            <>
+              {/* Status & Identity Card */}
+              <InfoCard>
+                <View style={styles.detailsStatusRow}>
+                  <StatusBadge status={activeNode.status} />
+                  <ProviderBadge provider={activeNode.provider} />
+                </View>
+                <View style={styles.identityRow}>
+                  <Text style={styles.roleLabel}>{activeNode.roleTemplate}</Text>
+                  {isOrchestrator && (
+                    <View style={styles.orchestratorBadge}>
+                      <Text style={styles.orchestratorBadgeText}>Orchestrator</Text>
+                    </View>
+                  )}
+                  {isAutoMode && (
+                    <View style={styles.autoLoopBadge}>
+                      <Text style={styles.autoLoopBadgeText}>Auto</Text>
+                    </View>
+                  )}
+                </View>
+                <Pressable style={styles.idRow} onPress={handleCopyId}>
+                  <Text style={styles.idLabel}>ID</Text>
+                  <Text style={styles.idValue}>{activeNode.id.slice(0, 8)}</Text>
+                  <Copy width={14} height={14} color={colors.textMuted} strokeWidth={2} />
+                </Pressable>
+              </InfoCard>
+
+              {/* Process Controls Card */}
+              <InfoCard>
+                <Text style={styles.sectionLabel}>Process Controls</Text>
+                <View style={styles.processControlsRow}>
+                  {/* Start button */}
+                  <Pressable
+                    style={[
+                      styles.processButton,
+                      styles.processButtonStart,
+                      (isRunning || processPending === 'start') && styles.processButtonDisabled,
+                    ]}
+                    onPress={handleStartProcess}
+                    disabled={isRunning || processPending !== null}
+                  >
+                    <Play width={16} height={16} color={isRunning ? colors.textMuted : colors.bgPrimary} strokeWidth={2} />
+                    <Text style={[styles.processButtonText, isRunning && styles.processButtonTextDisabled]}>
+                      {processPending === 'start' ? 'Starting...' : 'Start'}
+                    </Text>
+                  </Pressable>
+
+                  {/* Pause/Interrupt button */}
+                  <Pressable
+                    style={[
+                      styles.processButton,
+                      styles.processButtonPause,
+                      (!isRunning || processPending === 'interrupt') && styles.processButtonDisabled,
+                    ]}
+                    onPress={handleInterruptProcess}
+                    disabled={!isRunning || processPending !== null}
+                  >
+                    <Pause width={16} height={16} color={!isRunning ? colors.textMuted : colors.bgPrimary} strokeWidth={2} />
+                    <Text style={[styles.processButtonText, !isRunning && styles.processButtonTextDisabled]}>
+                      {processPending === 'interrupt' ? 'Pausing...' : 'Pause'}
+                    </Text>
+                  </Pressable>
+
+                  {/* Stop button */}
+                  <Pressable
+                    style={[
+                      styles.processButton,
+                      styles.processButtonStop,
+                      (activeNode.status === 'idle' || processPending === 'stop') && styles.processButtonDisabled,
+                    ]}
+                    onPress={handleStopProcess}
+                    disabled={activeNode.status === 'idle' || processPending !== null}
+                  >
+                    <View style={[styles.stopIconSmall, activeNode.status === 'idle' && styles.stopIconDisabled]} />
+                    <Text style={[styles.processButtonText, activeNode.status === 'idle' && styles.processButtonTextDisabled]}>
+                      {processPending === 'stop' ? 'Stopping...' : 'Stop'}
+                    </Text>
+                  </Pressable>
+                </View>
+                {processError && <Text style={styles.processErrorText}>{processError}</Text>}
+              </InfoCard>
+
+              {/* Summary Card */}
+              {activeNode.summary && (
+                <InfoCard>
+                  <Text style={styles.summaryLabel}>Summary</Text>
+                  <Text style={styles.summaryText}>{activeNode.summary}</Text>
+                </InfoCard>
               )}
-              {selectedNode.capabilities?.writeCode && <Badge label="Code" />}
-              {selectedNode.capabilities?.writeDocs && <Badge label="Docs" />}
-              {selectedNode.capabilities?.runCommands && <Badge label="Commands" />}
-              {selectedNode.capabilities?.delegateOnly && <Badge label="Delegate" />}
-            </View>
-          </View>
+
+              {/* Inbox Card */}
+              {activeNode.inboxCount !== undefined && activeNode.inboxCount > 0 && (
+                <InfoCard>
+                  <View style={styles.inboxRow}>
+                    <Text style={styles.inboxLabel}>Inbox</Text>
+                    <View style={styles.inboxBadge}>
+                      <Text style={styles.inboxBadgeText}>{activeNode.inboxCount}</Text>
+                    </View>
+                  </View>
+                </InfoCard>
+              )}
+
+              {/* Connected Nodes Card */}
+              {connectedNodes.length > 0 && (
+                <InfoCard>
+                  <Text style={styles.sectionLabel}>Connected Nodes</Text>
+                  <View style={styles.connectedNodesGrid}>
+                    {connectedNodes.map((node) => (
+                      <Pressable
+                        key={node.id}
+                        style={styles.connectedNodeChip}
+                        onPress={() => selectNode(node.id)}
+                      >
+                        <View
+                          style={[
+                            styles.connectedNodeDot,
+                            { backgroundColor: getStatusColor(node.status) },
+                          ]}
+                        />
+                        <Text style={styles.connectedNodeLabel} numberOfLines={1}>
+                          {node.label}
+                        </Text>
+                        <LinkIcon width={12} height={12} color={colors.textMuted} strokeWidth={2} />
+                      </Pressable>
+                    ))}
+                  </View>
+                </InfoCard>
+              )}
+
+              {/* Capabilities Card */}
+              <InfoCard>
+                <Text style={styles.sectionLabel}>Capabilities</Text>
+                <View style={styles.capabilitiesGrid}>
+                  {activeNode.capabilities?.edgeManagement && (
+                    <CapabilityBadge label={`Edges: ${activeNode.capabilities.edgeManagement}`} />
+                  )}
+                  {activeNode.capabilities?.writeCode && <CapabilityBadge label="Code" active />}
+                  {activeNode.capabilities?.writeDocs && <CapabilityBadge label="Docs" active />}
+                  {activeNode.capabilities?.runCommands && <CapabilityBadge label="Commands" active />}
+                  {activeNode.capabilities?.delegateOnly && <CapabilityBadge label="Delegate" />}
+                  {!activeNode.capabilities?.edgeManagement &&
+                    !activeNode.capabilities?.writeCode &&
+                    !activeNode.capabilities?.writeDocs &&
+                    !activeNode.capabilities?.runCommands &&
+                    !activeNode.capabilities?.delegateOnly && (
+                      <Text style={styles.noCapabilities}>No special capabilities</Text>
+                    )}
+                </View>
+              </InfoCard>
+            </>
+          )}
         </ScrollView>
       )}
     </Animated.View>
@@ -1106,6 +1592,44 @@ function Badge({ label }: { label: string }) {
   );
 }
 
+function InfoCard({ children }: { children: React.ReactNode }) {
+  return <View style={styles.infoCard}>{children}</View>;
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const color = getStatusColor(status);
+  return (
+    <View style={[styles.statusBadge, { backgroundColor: `${color}20`, borderColor: `${color}50` }]}>
+      <View style={[styles.statusBadgeDot, { backgroundColor: color }]} />
+      <Text style={[styles.statusBadgeText, { color }]}>{status}</Text>
+    </View>
+  );
+}
+
+function ProviderBadge({ provider }: { provider: string }) {
+  const providerColors = getProviderColors(provider);
+  return (
+    <View
+      style={[
+        styles.providerBadge,
+        { backgroundColor: providerColors.bg, borderColor: providerColors.border },
+      ]}
+    >
+      <Text style={[styles.providerBadgeText, { color: providerColors.text }]}>{provider}</Text>
+    </View>
+  );
+}
+
+function CapabilityBadge({ label, active }: { label: string; active?: boolean }) {
+  return (
+    <View style={[styles.capabilityBadge, active && styles.capabilityBadgeActive]}>
+      <Text style={[styles.capabilityBadgeText, active && styles.capabilityBadgeTextActive]}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
@@ -1155,13 +1679,11 @@ const styles = StyleSheet.create({
     fontFamily: fontFamily.semibold,
     flex: 1,
   },
-  closeButton: {
-    padding: 4,
-  },
   closeText: {
     color: colors.textSecondary,
-    fontSize: 24,
-    lineHeight: 24,
+    fontSize: 28,
+    lineHeight: 28,
+    fontWeight: '300',
   },
   tabs: {
     flexDirection: 'row',
@@ -1567,6 +2089,24 @@ const styles = StyleSheet.create({
   capabilitiesSection: {
     marginTop: 16,
   },
+  actionSection: {
+    marginTop: 16,
+  },
+  dangerButton: {
+    backgroundColor: colors.bgHover,
+    borderWidth: 1,
+    borderColor: colors.statusFailed,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  dangerButtonText: {
+    color: colors.statusFailed,
+    fontSize: 13,
+    fontFamily: fontFamily.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
   sectionTitle: {
     color: colors.textSecondary,
     fontSize: 12,
@@ -1693,5 +2233,371 @@ const styles = StyleSheet.create({
   todoContentCompleted: {
     textDecorationLine: 'line-through',
     color: colors.textMuted,
+  },
+  // Header improvements
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerIconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.bgHover,
+  },
+  // Segmented tabs
+  tabsContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  tabsSegmented: {
+    flexDirection: 'row',
+    backgroundColor: colors.bgElevated,
+    borderRadius: 10,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: colors.border,
+    position: 'relative',
+  },
+  tabIndicator: {
+    position: 'absolute',
+    top: 3,
+    bottom: 3,
+    left: 3,
+    backgroundColor: colors.bgSurface,
+    borderRadius: 8,
+  },
+  tabSegment: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 8,
+    zIndex: 1,
+  },
+  tabSegmentText: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontFamily: fontFamily.medium,
+  },
+  tabSegmentTextActive: {
+    color: colors.textPrimary,
+    fontFamily: fontFamily.semibold,
+  },
+  // Details content
+  detailsContent: {
+    padding: 12,
+    gap: 12,
+  },
+  // InfoCard
+  infoCard: {
+    backgroundColor: colors.bgElevated,
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 10,
+  },
+  // Status badge
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  statusBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusBadgeText: {
+    fontSize: 12,
+    fontFamily: fontFamily.semibold,
+    textTransform: 'capitalize',
+  },
+  // Provider badge
+  providerBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  providerBadgeText: {
+    fontSize: 12,
+    fontFamily: fontFamily.medium,
+    textTransform: 'capitalize',
+  },
+  // Status row in details
+  detailsStatusRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  // Identity row
+  identityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  roleLabel: {
+    color: colors.textPrimary,
+    fontSize: 15,
+    fontFamily: fontFamily.semibold,
+    textTransform: 'capitalize',
+  },
+  orchestratorBadge: {
+    backgroundColor: colors.accentSubtle,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  orchestratorBadgeText: {
+    color: colors.accent,
+    fontSize: 10,
+    fontFamily: fontFamily.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  autoLoopBadge: {
+    backgroundColor: 'rgba(196, 166, 122, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  autoLoopBadgeText: {
+    color: colors.statusBlocked,
+    fontSize: 10,
+    fontFamily: fontFamily.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  // ID row
+  idRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  idLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontFamily: fontFamily.medium,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  idValue: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontFamily: fontFamily.mono,
+    flex: 1,
+  },
+  // Summary
+  summaryLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontFamily: fontFamily.medium,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  summaryText: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  // Inbox
+  inboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  inboxLabel: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontFamily: fontFamily.medium,
+  },
+  inboxBadge: {
+    backgroundColor: colors.accentSubtle,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  inboxBadgeText: {
+    color: colors.accent,
+    fontSize: 13,
+    fontFamily: fontFamily.semibold,
+  },
+  // Section label
+  sectionLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontFamily: fontFamily.medium,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  // Connected nodes
+  connectedNodesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  connectedNodeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.bgHover,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  connectedNodeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  connectedNodeLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontFamily: fontFamily.medium,
+    maxWidth: 100,
+  },
+  // Capabilities
+  capabilitiesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  capabilityBadge: {
+    backgroundColor: colors.bgHover,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  capabilityBadgeActive: {
+    backgroundColor: colors.accentSubtle,
+    borderColor: colors.accentDim,
+  },
+  capabilityBadgeText: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontFamily: fontFamily.medium,
+  },
+  capabilityBadgeTextActive: {
+    color: colors.accent,
+  },
+  noCapabilities: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  // Process controls
+  processControlsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  processButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  processButtonStart: {
+    backgroundColor: colors.statusRunning,
+    borderColor: colors.statusRunning,
+  },
+  processButtonPause: {
+    backgroundColor: colors.statusBlocked,
+    borderColor: colors.statusBlocked,
+  },
+  processButtonStop: {
+    backgroundColor: colors.bgElevated,
+    borderColor: colors.statusFailed,
+  },
+  processButtonDisabled: {
+    opacity: 0.4,
+  },
+  processButtonText: {
+    color: colors.bgPrimary,
+    fontSize: 12,
+    fontFamily: fontFamily.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  processButtonTextDisabled: {
+    color: colors.textMuted,
+  },
+  stopIconSmall: {
+    width: 10,
+    height: 10,
+    borderRadius: 2,
+    backgroundColor: colors.statusFailed,
+  },
+  stopIconDisabled: {
+    backgroundColor: colors.textMuted,
+  },
+  processErrorText: {
+    color: colors.statusFailed,
+    fontSize: 12,
+    marginTop: 8,
+  },
+  // Edge styles
+  edgeTypeBadge: {
+    backgroundColor: colors.bgHover,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  edgeDirectionBadge: {
+    backgroundColor: colors.accentSubtle,
+    borderColor: colors.accentDim,
+  },
+  edgeTypeBadgeText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontFamily: fontFamily.medium,
+  },
+  edgeConnectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  edgeNodeChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.bgHover,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  edgeNodeLabel: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontFamily: fontFamily.medium,
+    flex: 1,
+  },
+  edgeArrow: {
+    color: colors.textMuted,
+    fontSize: 16,
   },
 });

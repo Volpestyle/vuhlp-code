@@ -81,10 +81,6 @@ export function GraphMinimap({
 
   const composedGesture = Gesture.Simultaneous(panGesture, tapGesture);
 
-  if (!bounds || !transform) {
-    return null;
-  }
-
   // Calculate visible viewport rectangle in minimap coords (derived value for smooth updates)
   const viewSize = {
       width: viewDimensions.width || screenDimensions.width,
@@ -120,6 +116,10 @@ export function GraphMinimap({
     const viewWorldTop = -viewportY.value / currentZoom;
     return (viewWorldBottom - viewWorldTop) * transform.scale;
   }, [bounds, transform, viewSize, viewportX, viewportY, viewportZoom]);
+
+  if (!bounds || !transform) {
+    return null;
+  }
 
   return (
     <View style={[styles.container, { width, height }]}>
@@ -171,9 +171,6 @@ export function GraphMinimap({
 
 const styles = StyleSheet.create({
   container: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
     backgroundColor: 'rgba(24, 24, 28, 0.95)', // colors.bgSurface with opacity
     borderRadius: 8,
     borderWidth: 1,

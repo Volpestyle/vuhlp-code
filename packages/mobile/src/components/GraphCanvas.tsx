@@ -1,16 +1,23 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, useWindowDimensions, LayoutChangeEvent, Alert } from 'react-native';
-import { Canvas, Path, Skia, Group, Line, Circle, vec } from '@shopify/react-native-skia';
+import { View, Text, StyleSheet, useWindowDimensions, LayoutChangeEvent, Alert, Platform, Pressable } from 'react-native';
+import { Canvas, Path, Skia, Group, Circle } from '@shopify/react-native-skia';
 import { useFrameCallback } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withSpring,
+  withTiming,
+  withDelay,
+  withSequence,
   runOnJS,
   useDerivedValue,
+  interpolateColor,
+  Easing,
 } from 'react-native-reanimated';
 import type { SharedValue } from 'react-native-reanimated';
+import { BlurView } from 'expo-blur';
+import { DragHandGesture, DesignPencil } from 'iconoir-react-native';
 import {
   useGraphStore,
   type VisualNode,
@@ -18,16 +25,132 @@ import {
   type Point,
 } from '@/stores/graph-store';
 import { api } from '@/lib/api';
-import { NodeCard } from './NodeCard';
-import { colors, fontFamily, fontSize, spacing } from '@/lib/theme';
+import { NodeCard, type GraphMode } from './NodeCard';
+import { colors, fontFamily, fontSize, spacing, radius } from '@/lib/theme';
 import { createUuid } from '@/lib/ids';
+
+// Liquid glass spring config - slightly bouncy for fluid feel
+const LIQUID_SPRING = { damping: 15, stiffness: 180, mass: 0.6 };
+const TOOLBAR_ICON_SIZE = 48;
+const TOOLBAR_PADDING = 4;
+const TOOLBAR_GAP = 4;
+
+interface GraphToolbarProps {
+  mode: GraphMode;
+  onChange: (m: GraphMode) => void;
+  panelHeight?: SharedValue<number>;
+}
+
+function GraphToolbar({ mode, onChange, panelHeight }: GraphToolbarProps) {
+  // 0 = Move (left), 1 = Draw (right)
+  const activeIndex = useSharedValue(mode === 'move' ? 0 : 1);
+  const labelOpacity = useSharedValue(0);
+  const [displayedMode, setDisplayedMode] = useState(mode);
+  const isFirstRender = useRef(true);
+
+  useEffect(() => {
+    activeIndex.value = withSpring(mode === 'move' ? 0 : 1, LIQUID_SPRING);
+
+    // Skip animation on first render
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+
+    // Update displayed mode and animate label
+    setDisplayedMode(mode);
+    labelOpacity.value = withSequence(
+      withTiming(1, { duration: 150, easing: Easing.out(Easing.ease) }),
+      withDelay(800, withTiming(0, { duration: 300, easing: Easing.in(Easing.ease) }))
+    );
+  }, [mode, activeIndex, labelOpacity]);
+
+  // Sliding indicator style - the liquid glass blob
+  const indicatorStyle = useAnimatedStyle(() => {
+    const translateX = activeIndex.value * (TOOLBAR_ICON_SIZE + TOOLBAR_GAP);
+    // Subtle morph during transition for liquid effect
+    const progress = activeIndex.value;
+    const midPoint = Math.abs(progress - 0.5) * 2;
+    const stretchFactor = 1 + (1 - midPoint) * 0.12;
+
+    return {
+      transform: [
+        { translateX },
+        { scaleX: stretchFactor },
+      ],
+    };
+  });
+
+  // Label fade animation
+  const labelStyle = useAnimatedStyle(() => ({
+    opacity: labelOpacity.value,
+    transform: [
+      { translateY: (1 - labelOpacity.value) * -4 },
+    ],
+  }));
+
+  // Animated top position based on controls panel height
+  const toolbarPositionStyle = useAnimatedStyle(() => ({
+    top: (panelHeight?.value ?? 40) + 12,
+  }));
+
+  return (
+    <Animated.View style={[styles.toolbarWrapper, toolbarPositionStyle]}>
+      <View style={styles.toolbarContainer}>
+        {/* Blur background */}
+        {Platform.OS === 'ios' ? (
+          <BlurView intensity={60} style={[StyleSheet.absoluteFill, styles.toolbarBlur]} tint="dark" />
+        ) : (
+          <View style={[StyleSheet.absoluteFill, styles.toolbarBlur, { backgroundColor: colors.glassBg }]} />
+        )}
+        {/* Dark overlay for contrast */}
+        <View style={[StyleSheet.absoluteFill, styles.toolbarOverlay]} />
+        {/* Top highlight edge */}
+        <View style={styles.toolbarHighlight} />
+
+        {/* Content wrapper */}
+        <View style={styles.toolbarContent}>
+          {/* Sliding liquid glass indicator */}
+          <Animated.View style={[styles.liquidIndicator, indicatorStyle]}>
+            <View style={styles.liquidIndicatorShimmer} />
+          </Animated.View>
+
+          {/* Move button */}
+          <Pressable onPress={() => onChange('move')} style={styles.toolbarIconBtn}>
+            <DragHandGesture
+              width={22}
+              height={22}
+              color={mode === 'move' ? colors.accent : colors.textMuted}
+              strokeWidth={1.5}
+            />
+          </Pressable>
+
+          {/* Draw button */}
+          <Pressable onPress={() => onChange('draw')} style={styles.toolbarIconBtn}>
+            <DesignPencil
+              width={22}
+              height={22}
+              color={mode === 'draw' ? colors.accent : colors.textMuted}
+              strokeWidth={1.5}
+            />
+          </Pressable>
+        </View>
+      </View>
+
+      {/* Mode label - fades in/out on change */}
+      <Animated.Text style={[styles.toolbarLabel, labelStyle]}>
+        {displayedMode === 'move' ? 'Move' : 'Draw'}
+      </Animated.Text>
+    </Animated.View>
+  );
+}
 
 const SPRING_CONFIG = {
   damping: 20,
   stiffness: 200,
 };
 
-const EDGE_SNAP_RADIUS = 30;
+const EDGE_SNAP_RADIUS = 60; // Larger snap radius for mobile touch precision
 const EDGE_HIT_RADIUS = 16;
 const EDGE_HIT_SAMPLES = 24;
 const HANDOFF_ANIMATION_DURATION_MS = 2000;
@@ -58,6 +181,8 @@ interface GraphCanvasProps {
   viewportX: SharedValue<number>;
   viewportY: SharedValue<number>;
   viewportZoom: SharedValue<number>;
+  /** Shared value tracking the controls panel height for toolbar positioning */
+  controlsPanelHeight?: SharedValue<number>;
 }
 
 export function GraphCanvas(props: GraphCanvasProps) {
@@ -76,9 +201,12 @@ export function GraphCanvas(props: GraphCanvasProps) {
   return <SkiaGraphCanvas {...props} />;
 }
 
-function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProps) {
+function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeight }: GraphCanvasProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [dimensions, setDimensions] = useState({ width: windowWidth, height: windowHeight });
+  const [canvasOffset, setCanvasOffset] = useState<Point>({ x: 0, y: 0 });
+  const [mode, setMode] = useState<GraphMode>('move');
+  const containerRef = useRef<View>(null);
 
   const run = useGraphStore((s) => s.run);
   const nodes = useGraphStore((s) => s.nodes);
@@ -96,6 +224,8 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
   const updateEdgeDrag = useGraphStore((s) => s.updateEdgeDrag);
   const endEdgeDrag = useGraphStore((s) => s.endEdgeDrag);
   const addEdge = useGraphStore((s) => s.addEdge);
+  const removeNode = useGraphStore((s) => s.removeNode);
+  const removeEdge = useGraphStore((s) => s.removeEdge);
   const recentHandoffs = useGraphStore((s) => s.recentHandoffs);
   const dragRafRef = useRef<number | null>(null);
   const pendingDragRef = useRef<{ id: string; x: number; y: number } | null>(null);
@@ -150,9 +280,15 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
 
   const onLayout = useCallback(
     (event: LayoutChangeEvent) => {
-      const { width, height } = event.nativeEvent.layout;
+      const { width, height, x, y } = event.nativeEvent.layout;
       setDimensions({ width, height });
       setViewDimensions({ width, height });
+      setCanvasOffset({ x, y });
+      requestAnimationFrame(() => {
+        containerRef.current?.measureInWindow((absX, absY) => {
+          setCanvasOffset({ x: absX, y: absY });
+        });
+      });
     },
     [setViewDimensions]
   );
@@ -165,6 +301,13 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
   // Shared state for nodes to sync edges with gestures
   const sharedNodes = useSharedValue<Record<string, { position: Point; dimensions: ViewDimensions }>>({});
   const activeDragNodeId = useSharedValue<string | null>(null);
+
+  // Shared values for edge drag preview (must update on UI thread for smooth Skia rendering)
+  const edgeDragActive = useSharedValue(false);
+  const edgeDragFromNodeId = useSharedValue<string | null>(null);
+  const edgeDragFromPortIndex = useSharedValue(0);
+  const edgeDragCurrentX = useSharedValue(0);
+  const edgeDragCurrentY = useSharedValue(0);
 
   // Sync shared nodes from store, but skip the node currently being dragged to avoid fighting
   useEffect(() => {
@@ -256,7 +399,7 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
       x: viewportX.value,
       y: viewportY.value,
       zoom: viewportZoom.value,
-    });
+      });
   }, [setViewport, viewportX, viewportY, viewportZoom]);
 
   const syncViewportFrame = useCallback(
@@ -267,7 +410,7 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
   );
 
   // Pinch gesture - always active, works simultaneously with other gestures
-  const pinchGesture = Gesture.Pinch()
+  const pinchGesture = useMemo(() => Gesture.Pinch()
     .onStart((e) => {
       isGestureActive.value = true;
       isPinching.value = true;
@@ -325,11 +468,12 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
       isPinching.value = false;
       lastPinchPointerCount.value = 0;
       isGestureActive.value = isPanning.value;
-    });
+    }), [viewportX, viewportY, viewportZoom, isGestureActive, isPinching, isPanning, panRebasePending, savedZoom, savedX, savedY, pinchWorldX, pinchWorldY, syncFrameCount, lastPinchPointerCount, panTranslationOffsetX, panTranslationOffsetY, logPinchHandoff, syncViewportFrame, syncViewport]);
 
   // Pan gesture - single finger allowed now
-  const panGesture = Gesture.Pan()
+  const panGesture = useMemo(() => Gesture.Pan()
     .maxPointers(1)
+    .minDistance(10) // Require movement before activating to allow long press for edge context menu
     .onStart((e) => {
       isGestureActive.value = true;
       isPanning.value = true;
@@ -377,7 +521,7 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
     .onFinalize(() => {
       isPanning.value = false;
       isGestureActive.value = isPinching.value;
-    });
+    }), [viewportX, viewportY, viewportZoom, isGestureActive, isPinching, isPanning, panRebasePending, savedX, savedY, panTranslationOffsetX, panTranslationOffsetY, lastPanTranslationX, lastPanTranslationY, syncFrameCount, syncViewportFrame, syncViewport]);
 
   // Fit to view helper
   const fitToView = useCallback(() => {
@@ -483,10 +627,136 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
       selectedNodeId,
     ]
   );
-  
+
+  // Platform-agnostic delete node handler (called by Context Menu or Alert)
+  const handleDeleteNode = useCallback(
+    (nodeId: string) => {
+      if (!run) return;
+      
+      api
+        .deleteNode(run.id, nodeId)
+        .then(() => removeNode(nodeId))
+        .catch((err) => {
+          console.error('[graph] failed to delete node:', err);
+          const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+          Alert.alert('Delete failed', `Could not delete node: ${errorMessage}`, [{ text: 'OK' }]);
+        });
+    },
+    [run, removeNode]
+  );
+
+  const handleNodeLongPress = useCallback(
+    (nodeId: string) => {
+      // On iOS, we use the ContextMenu, so this long press handler is only a fallback (or Android)
+      // If we are on iOS, we might want to ignore this if the ContextMenu handles it, 
+      // but ContextMenu usually intercepts the gesture.
+      if (Platform.OS === 'ios') return;
+
+      if (!run) {
+        console.warn('[graph] cannot delete node without active run', { nodeId });
+        Alert.alert('Delete node unavailable', 'Start a run to delete nodes.', [{ text: 'OK' }]);
+        return;
+      }
+      const node = nodesById[nodeId];
+      const label = node?.label ?? nodeId.slice(0, 8);
+      Alert.alert(
+        `Delete node "${label}"?`,
+        'This will also remove any connected edges. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () => handleDeleteNode(nodeId),
+          },
+        ]
+      );
+    },
+    [run, nodesById, handleDeleteNode]
+  );
+
+  // Handler for edge deletion - used by both context menu and long press (Android)
+  const handleEdgeDelete = useCallback(
+    (edgeId: string) => {
+      if (!run) {
+        console.warn('[graph] cannot delete edge without active run', { edgeId });
+        Alert.alert('Delete edge unavailable', 'Start a run to delete edges.', [{ text: 'OK' }]);
+        return;
+      }
+
+      api
+        .deleteEdge(run.id, edgeId)
+        .then(() => removeEdge(edgeId))
+        .catch((err) => {
+          console.error('[graph] failed to delete edge:', err);
+          const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+          Alert.alert('Delete failed', `Could not delete edge: ${errorMessage}`, [{ text: 'OK' }]);
+        });
+    },
+    [run, removeEdge]
+  );
+
+  const handleCanvasLongPress = useCallback(
+    (worldX: number, worldY: number, zoom: number) => {
+      if (edgeDrag) {
+        return;
+      }
+
+      // Skip if tapped on a node (nodes handle their own context menus)
+      const hitNode = nodes.some((node) => {
+        const { x, y } = node.position;
+        return (
+          worldX >= x &&
+          worldX <= x + node.dimensions.width &&
+          worldY >= y &&
+          worldY <= y + node.dimensions.height
+        );
+      });
+      if (hitNode) {
+        return;
+      }
+
+      // On iOS, edges use ContextMenuView overlays instead of this gesture
+      if (Platform.OS === 'ios') {
+        return;
+      }
+
+      // Android: use Alert for edge deletion
+      const hitRadius = EDGE_HIT_RADIUS / Math.max(zoom, 0.1);
+      const hitEdge = findEdgeNearPoint(
+        { x: worldX, y: worldY },
+        edges,
+        nodesById,
+        hitRadius
+      );
+      if (!hitEdge) {
+        return;
+      }
+
+      const fromLabel = nodesById[hitEdge.from]?.label ?? hitEdge.from.slice(0, 8);
+      const toLabel = nodesById[hitEdge.to]?.label ?? hitEdge.to.slice(0, 8);
+      const title = `${fromLabel} ${hitEdge.bidirectional ? '↔' : '→'} ${toLabel}`;
+
+      Alert.alert(
+        'Delete edge?',
+        title,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () => handleEdgeDelete(hitEdge.id),
+          },
+        ]
+      );
+    },
+    [edgeDrag, edges, nodes, nodesById, handleEdgeDelete]
+  );
+
+
   // Consolidated tap handler for both single and double taps
   // We manually detect double taps to ensure they are close together spatially
-  const tapGesture = Gesture.Tap()
+  const tapGesture = useMemo(() => Gesture.Tap()
     .maxDuration(250)
     .onEnd((event) => {
       if (isPanning.value || isPinching.value) return;
@@ -512,19 +782,45 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
         lastTapX.value = event.x;
         lastTapY.value = event.y;
       }
-    });
+    }), [fitToView, handleCanvasTap, isPanning, isPinching, lastTapTime, lastTapX, lastTapY, viewportX, viewportY, viewportZoom]);
+
+  const longPressGesture = useMemo(() => Gesture.LongPress()
+    .minDuration(450)
+    .maxDistance(12)
+    .onStart((event) => {
+      'worklet';
+      if (isPanning.value || isPinching.value) return;
+      const zoom = viewportZoom.value || 1;
+      const worldX = (event.x - viewportX.value) / zoom;
+      const worldY = (event.y - viewportY.value) / zoom;
+      runOnJS(handleCanvasLongPress)(worldX, worldY, zoom);
+    }), [isPanning, isPinching, viewportZoom, viewportX, viewportY, handleCanvasLongPress]);
 
   // Compose gestures:
   // - Pinch always works (simultaneous with pan for two-finger navigation)
   // - Pan is exclusive with tap gestures (dragging won't trigger tap)
-  const composedGesture = Gesture.Simultaneous(
-    pinchGesture,
-    Gesture.Exclusive(panGesture, tapGesture)
-  );
+  const composedGesture = useMemo(() => {
+    const exclusiveGesture = Platform.OS === 'ios'
+      ? Gesture.Exclusive(panGesture, tapGesture)
+      : Gesture.Exclusive(panGesture, longPressGesture, tapGesture);
+
+    return Gesture.Simultaneous(
+      pinchGesture,
+      exclusiveGesture
+    );
+  }, [pinchGesture, panGesture, longPressGesture, tapGesture]);
 
   // Port drag handlers
   const handlePortDragStart = useCallback(
     (nodeId: string, portIndex: number, point: Point) => {
+      console.debug('[graph] edge drag start', { nodeId, portIndex, point });
+      // Update shared values for smooth Skia preview rendering
+      edgeDragActive.value = true;
+      edgeDragFromNodeId.value = nodeId;
+      edgeDragFromPortIndex.value = portIndex;
+      edgeDragCurrentX.value = point.x;
+      edgeDragCurrentY.value = point.y;
+      // Also update store for state management
       startEdgeDrag(nodeId, portIndex, point);
     },
     [startEdgeDrag]
@@ -532,85 +828,108 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
 
   const handlePortDragMove = useCallback(
     (point: Point) => {
-      updateEdgeDrag(point);
+      // Update shared values directly for smooth preview
+      edgeDragCurrentX.value = point.x;
+      edgeDragCurrentY.value = point.y;
     },
-    [updateEdgeDrag]
+    []
   );
 
   // Find closest port to a point
   const findClosestPort = useCallback(
-    (point: Point, ignoreNodeId: string): { nodeId: string; portIndex: number } | null => {
+    (
+      point: Point,
+      ignoreNodeId: string,
+      radius: number
+    ): { nodeId: string; portIndex: number } | null => {
       let closest: { nodeId: string; portIndex: number; distance: number } | null = null;
 
       for (const node of nodes) {
         if (node.id === ignoreNodeId) continue;
 
-        const ports = [
-          { x: node.position.x + node.dimensions.width / 2, y: node.position.y, index: 0 },
-          { x: node.position.x + node.dimensions.width, y: node.position.y + node.dimensions.height / 2, index: 1 },
-          { x: node.position.x + node.dimensions.width / 2, y: node.position.y + node.dimensions.height, index: 2 },
-          { x: node.position.x, y: node.position.y + node.dimensions.height / 2, index: 3 },
-        ];
-
+        const ports = getNodePortPoints(node);
         for (const port of ports) {
           const distance = Math.hypot(point.x - port.x, point.y - port.y);
-          if (distance < EDGE_SNAP_RADIUS && (!closest || distance < closest.distance)) {
+          if (distance < radius && (!closest || distance < closest.distance)) {
             closest = { nodeId: node.id, portIndex: port.index, distance };
           }
         }
       }
 
-      return closest;
+      return closest ? { nodeId: closest.nodeId, portIndex: closest.portIndex } : null;
     },
     [nodes]
   );
 
-  // Focus on a specific node (expand/maximize)
-  const focusNode = useCallback(
-    (nodeId: string) => {
-      const node = nodes.find((n) => n.id === nodeId);
-      if (!node) return;
-
-      runOnJS(selectNode)(nodeId);
-
-      // Animation targets
-      const padding = 40;
-      const contentWidth = node.dimensions.width + padding * 2;
-      const contentHeight = node.dimensions.height + padding * 2;
-      
-      const scaleX = dimensions.width / contentWidth;
-      const scaleY = dimensions.height / contentHeight;
-      // Cap zoom at 1.5x or fit-to-screen
-      const targetZoom = Math.min(scaleX, scaleY, 1.5);
-
-      const contentCenterX = node.position.x + node.dimensions.width / 2;
-      const contentCenterY = node.position.y + node.dimensions.height / 2;
-
-      const targetVx = dimensions.width / 2 - contentCenterX * targetZoom;
-      const targetVy = dimensions.height / 2 - contentCenterY * targetZoom;
-
-      isGestureActive.value = true;
-      viewportX.value = withSpring(targetVx, SPRING_CONFIG);
-      viewportY.value = withSpring(targetVy, SPRING_CONFIG);
-      viewportZoom.value = withSpring(targetZoom, SPRING_CONFIG, (finished) => {
-        if (finished) {
-          isGestureActive.value = false;
-          runOnJS(syncViewport)();
-        }
-      });
-    },
-    [nodes, dimensions, selectNode, viewportX, viewportY, viewportZoom, isGestureActive, syncViewport]
-  );
-
-  const handlePortDragEnd = useCallback(() => {
+  const handlePortDragEnd = useCallback((finalPoint: Point) => {
     if (!edgeDrag || !run) {
+      console.debug('[graph] edge drag end: no active drag or run', {
+        hasEdgeDrag: !!edgeDrag,
+        hasRun: !!run
+      });
       endEdgeDrag();
       return;
     }
 
-    const target = findClosestPort(edgeDrag.currentPoint, edgeDrag.fromNodeId);
+    // Use the final point passed from the gesture handler to avoid race condition
+    // The store's edgeDrag.currentPoint may be stale due to async runOnJS updates
+    const dropPoint = finalPoint;
+
+    console.debug('[graph] edge drag end', {
+      fromNodeId: edgeDrag.fromNodeId,
+      fromPortIndex: edgeDrag.fromPortIndex,
+      finalPoint: dropPoint,
+      storePoint: edgeDrag.currentPoint,
+    });
+
+    const zoom = Math.max(viewportZoom.value || 1, 0.1);
+    const snapRadius = EDGE_SNAP_RADIUS / zoom;
+    let target = findClosestPort(dropPoint, edgeDrag.fromNodeId, snapRadius);
+
+    if (!target) {
+      const hitNode = findNodeAtPoint(dropPoint, nodes, edgeDrag.fromNodeId);
+      if (hitNode) {
+        target = findClosestPortOnNode(hitNode, dropPoint);
+        console.debug('[graph] edge drop: found node fallback', {
+          nodeId: hitNode.id,
+          targetPort: target
+        });
+      }
+    }
+
+    if (!target) {
+      // Log all available target ports for debugging
+      const availablePorts: Array<{ nodeId: string; label: string; ports: Array<{ index: number; x: number; y: number; distance: number }> }> = [];
+      for (const node of nodes) {
+        if (node.id === edgeDrag.fromNodeId) continue;
+        const ports = getNodePortPoints(node);
+        const portsWithDistance = ports.map(p => ({
+          index: p.index,
+          x: p.x,
+          y: p.y,
+          distance: Math.hypot(dropPoint.x - p.x, dropPoint.y - p.y)
+        }));
+        availablePorts.push({
+          nodeId: node.id.slice(0, 8),
+          label: node.label,
+          ports: portsWithDistance
+        });
+      }
+      console.debug('[graph] edge drop: no target found', {
+        fromNodeId: edgeDrag.fromNodeId.slice(0, 8),
+        dropPoint,
+        snapRadius,
+        availablePorts,
+      });
+    }
 
     if (target) {
+      console.debug('[graph] edge drop: found target', {
+        fromNodeId: edgeDrag.fromNodeId,
+        targetNodeId: target.nodeId,
+        targetPortIndex: target.portIndex,
+      });
+
       // Check if edge already exists
       const edgeExists = edges.some(
         (e) =>
@@ -618,7 +937,9 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
           (e.bidirectional && e.from === target.nodeId && e.to === edgeDrag.fromNodeId)
       );
 
-      if (!edgeExists) {
+      if (edgeExists) {
+        console.debug('[graph] edge already exists, skipping creation');
+      } else {
         const newEdge = {
           id: createUuid(),
           from: edgeDrag.fromNodeId,
@@ -628,10 +949,15 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
           label: '',
         };
 
+        console.debug('[graph] creating new edge', newEdge);
+
         // Create edge via API
         api
           .createEdge(run.id, newEdge)
-          .then((created) => addEdge(created))
+          .then((created) => {
+            console.debug('[graph] edge created successfully', { id: created.id });
+            addEdge(created);
+          })
           .catch((err) => {
             console.error('[graph] failed to create edge:', err);
             const errorMessage = err instanceof Error ? err.message : 'Unknown error';
@@ -644,30 +970,59 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
       }
     }
 
+    // Clear shared values for preview
+    edgeDragActive.value = false;
+    edgeDragFromNodeId.value = null;
     endEdgeDrag();
-  }, [edgeDrag, run, edges, findClosestPort, addEdge, endEdgeDrag]);
+  }, [edgeDrag, run, edges, findClosestPort, addEdge, endEdgeDrag, nodes, viewportZoom]);
 
-  // Edge preview path
-  const edgePreviewPath = useMemo(() => {
-    if (!edgeDrag) return null;
+  // Edge preview path using derived value for smooth Skia rendering
+  const edgePreviewSkiaPath = useDerivedValue(() => {
+    const path = Skia.Path.Make();
 
-    const sourceNode = nodes.find((n) => n.id === edgeDrag.fromNodeId);
-    if (!sourceNode) return null;
+    if (!edgeDragActive.value || !edgeDragFromNodeId.value) {
+      return path;
+    }
 
-    const portPositions = [
-      { x: sourceNode.position.x + sourceNode.dimensions.width / 2, y: sourceNode.position.y },
-      { x: sourceNode.position.x + sourceNode.dimensions.width, y: sourceNode.position.y + sourceNode.dimensions.height / 2 },
-      { x: sourceNode.position.x + sourceNode.dimensions.width / 2, y: sourceNode.position.y + sourceNode.dimensions.height },
-      { x: sourceNode.position.x, y: sourceNode.position.y + sourceNode.dimensions.height / 2 },
-    ];
+    const sourceNodeData = sharedNodes.value[edgeDragFromNodeId.value];
+    if (!sourceNodeData) {
+      return path;
+    }
 
-    const startPort = portPositions[edgeDrag.fromPortIndex] ?? portPositions[0];
+    const { position, dimensions } = sourceNodeData;
+    const portIndex = edgeDragFromPortIndex.value;
 
-    return {
-      start: startPort,
-      end: edgeDrag.currentPoint,
-    };
-  }, [edgeDrag, nodes]);
+    // Calculate port positions based on index
+    let startX: number;
+    let startY: number;
+
+    switch (portIndex) {
+      case 0: // top
+        startX = position.x + dimensions.width / 2;
+        startY = position.y;
+        break;
+      case 1: // right
+        startX = position.x + dimensions.width;
+        startY = position.y + dimensions.height / 2;
+        break;
+      case 2: // bottom
+        startX = position.x + dimensions.width / 2;
+        startY = position.y + dimensions.height;
+        break;
+      case 3: // left
+        startX = position.x;
+        startY = position.y + dimensions.height / 2;
+        break;
+      default:
+        startX = position.x + dimensions.width / 2;
+        startY = position.y;
+    }
+
+    path.moveTo(startX, startY);
+    path.lineTo(edgeDragCurrentX.value, edgeDragCurrentY.value);
+    return path;
+  }, []);
+
 
   // Calculate handoff packet positions for active animations
   const handoffPackets = useMemo(() => {
@@ -718,70 +1073,81 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
   });
 
   return (
-    <View style={styles.container} onLayout={onLayout}>
+    <View ref={containerRef} style={styles.container} onLayout={onLayout}>
       <View style={styles.canvasContainer}>
         <GestureDetector gesture={composedGesture}>
-          <View style={styles.gestureLayer}>
-            {/* Skia canvas for edges */}
-            <Canvas style={[styles.canvas, { width: dimensions.width, height: dimensions.height }]}>
-              <Group
-                matrix={groupTransform}
-              >
-                {edges.map((edge) => (
-                  <AnimatedEdge
-                    key={edge.id}
-                    edge={edge}
-                    sharedNodes={sharedNodes}
-                  />
-                ))}
+          {/* We wrap everything in a view to ensure gestures are captured over the entire area, including nodes */}
+          <View style={{ flex: 1 }}>
+            <View style={styles.gestureLayer}>
+              {/* Skia canvas for edges */}
+              <Canvas style={[styles.canvas, { width: dimensions.width, height: dimensions.height }]}>
+                <Group
+                  matrix={groupTransform}
+                >
+                  {edges.map((edge) => (
+                    <AnimatedEdge
+                      key={edge.id}
+                      edge={edge}
+                      sharedNodes={sharedNodes}
+                    />
+                  ))}
 
-                {/* Edge preview while dragging */}
-                {edgePreviewPath && edgePreviewPath.start && (
-                  <Line
-                    p1={vec(edgePreviewPath.start.x, edgePreviewPath.start.y)}
-                    p2={vec(edgePreviewPath.end.x, edgePreviewPath.end.y)}
+                  {/* Edge preview while dragging */}
+                  <Path
+                    path={edgePreviewSkiaPath}
                     color={colors.accent}
                     style="stroke"
-                    strokeWidth={2}
+                    strokeWidth={3}
                     strokeCap="round"
                   />
-                )}
 
-                {/* Handoff animation packets */}
-                {handoffPackets.map((packet) => (
-                  <Group key={packet.id}>
-                    {/* Outer glow */}
-                    <Circle cx={packet.x} cy={packet.y} r={8} color="#4287f5" opacity={0.4} />
-                    {/* Inner core */}
-                    <Circle cx={packet.x} cy={packet.y} r={4} color="#ffffff" />
-                  </Group>
-                ))}
-              </Group>
-            </Canvas>
+                  {/* Handoff animation packets */}
+                  {handoffPackets.map((packet) => (
+                    <Group key={packet.id}>
+                      {/* Outer glow */}
+                      <Circle cx={packet.x} cy={packet.y} r={8} color="#4287f5" opacity={0.4} />
+                      {/* Inner core */}
+                      <Circle cx={packet.x} cy={packet.y} r={4} color="#ffffff" />
+                    </Group>
+                  ))}
+                </Group>
+              </Canvas>
+            </View>
+
+            {/* Native views for nodes */}
+            <Animated.View
+              pointerEvents="box-none"
+              style={[styles.nodesContainer, nodesTransformStyle]}
+            >
+              {/* Node cards */}
+              {nodes.map((node) => (
+                <NodeCard
+                  key={node.id}
+                  node={node}
+                  mode={mode}
+                  viewportX={viewportX}
+                  viewportY={viewportY}
+                  viewportZoom={viewportZoom}
+                  canvasOffset={canvasOffset}
+                  onPress={selectNode}
+                  onLongPress={handleNodeLongPress}
+                  onDelete={handleDeleteNode}
+                  onDrag={updateNodePosition}
+                  onPortDragStart={handlePortDragStart}
+                  onPortDragMove={handlePortDragMove}
+                  onPortDragEnd={handlePortDragEnd}
+                  sharedNodes={sharedNodes}
+                  activeDragNodeId={activeDragNodeId}
+                  graphPinchGesture={pinchGesture}
+                  isPinching={isPinching}
+                />
+              ))}
+            </Animated.View>
           </View>
         </GestureDetector>
-
-        {/* Native views for nodes */}
-        <Animated.View
-          pointerEvents="box-none"
-          style={[styles.nodesContainer, nodesTransformStyle]}
-        >
-          {nodes.map((node) => (
-            <NodeCard
-              key={node.id}
-              node={node}
-              viewportZoom={viewport.zoom}
-              onPress={selectNode}
-              onDrag={updateNodePosition}
-              onPortDragStart={handlePortDragStart}
-              onPortDragMove={handlePortDragMove}
-              onPortDragEnd={handlePortDragEnd}
-              onExpand={focusNode}
-              sharedNodes={sharedNodes}
-              activeDragNodeId={activeDragNodeId}
-            />
-          ))}
-        </Animated.View>
+        
+        {/* Toolbar Overlay */}
+        <GraphToolbar mode={mode} onChange={setMode} panelHeight={controlsPanelHeight} />
       </View>
     </View>
   );
@@ -807,6 +1173,52 @@ function getNodePorts(layout: NodeLayout): Port[] {
     { x: x + width / 2, y: y + height, normal: { x: 0, y: 1 } }, // Bottom
     { x, y: y + height / 2, normal: { x: -1, y: 0 } }          // Left
   ];
+}
+
+function getNodePortPoints(node: VisualNode): Array<{ index: number; x: number; y: number }> {
+  return [
+    { index: 0, x: node.position.x + node.dimensions.width / 2, y: node.position.y }, // top
+    { index: 1, x: node.position.x + node.dimensions.width, y: node.position.y + node.dimensions.height / 2 }, // right
+    { index: 2, x: node.position.x + node.dimensions.width / 2, y: node.position.y + node.dimensions.height }, // bottom
+    { index: 3, x: node.position.x, y: node.position.y + node.dimensions.height / 2 }, // left
+  ];
+}
+
+function findNodeAtPoint(
+  point: Point,
+  nodes: VisualNode[],
+  ignoreNodeId: string
+): VisualNode | null {
+  for (const node of nodes) {
+    if (node.id === ignoreNodeId) continue;
+    const { x, y } = node.position;
+    if (
+      point.x >= x &&
+      point.x <= x + node.dimensions.width &&
+      point.y >= y &&
+      point.y <= y + node.dimensions.height
+    ) {
+      return node;
+    }
+  }
+  return null;
+}
+
+function findClosestPortOnNode(
+  node: VisualNode,
+  point: Point
+): { nodeId: string; portIndex: number } {
+  const ports = getNodePortPoints(node);
+  let closest = ports[0]!;
+  let closestDistance = Infinity;
+  for (const port of ports) {
+    const distance = Math.hypot(point.x - port.x, point.y - port.y);
+    if (distance < closestDistance) {
+      closest = port;
+      closestDistance = distance;
+    }
+  }
+  return { nodeId: node.id, portIndex: closest.index };
 }
 
 function getEdgeGeometry(source: NodeLayout, target: NodeLayout) {
@@ -1071,5 +1483,81 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
+  },
+  toolbarWrapper: {
+    position: 'absolute',
+    right: 16,
+    zIndex: 100,
+  },
+  toolbarContainer: {
+    flexDirection: 'row',
+    borderRadius: radius.full,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  toolbarBlur: {
+    borderRadius: radius.full,
+  },
+  toolbarOverlay: {
+    backgroundColor: colors.glassBg,
+    borderRadius: radius.full,
+  },
+  toolbarHighlight: {
+    position: 'absolute',
+    top: 0,
+    left: spacing.md,
+    right: spacing.md,
+    height: 1,
+    backgroundColor: colors.glassHighlight,
+    zIndex: 3,
+  },
+  toolbarContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: TOOLBAR_PADDING,
+    gap: TOOLBAR_GAP,
+    zIndex: 1,
+  },
+  liquidIndicator: {
+    position: 'absolute',
+    left: TOOLBAR_PADDING,
+    top: TOOLBAR_PADDING,
+    width: TOOLBAR_ICON_SIZE,
+    height: TOOLBAR_ICON_SIZE,
+    borderRadius: radius.full,
+    backgroundColor: colors.accentSoft,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    overflow: 'hidden',
+    shadowColor: colors.accent,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  liquidIndicatorShimmer: {
+    position: 'absolute',
+    top: 0,
+    left: '15%',
+    right: '15%',
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  toolbarIconBtn: {
+    width: TOOLBAR_ICON_SIZE,
+    height: TOOLBAR_ICON_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+  },
+  toolbarLabel: {
+    marginTop: spacing.sm,
+    textAlign: 'center',
+    fontSize: fontSize.xs,
+    fontFamily: fontFamily.medium,
+    color: colors.textMuted,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
 });

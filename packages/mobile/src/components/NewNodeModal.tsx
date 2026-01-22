@@ -60,7 +60,7 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
   // Reset form when modal opens
   useEffect(() => {
     if (!visible) return;
-    setLabel(`New Node ${nodeCount + 1}`);
+    setLabel(`New Agent ${nodeCount + 1}`);
     setRoleTemplate('implementer');
     setProvider('claude');
     setCapabilities(DEFAULT_CAPABILITIES);
@@ -184,7 +184,7 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
         <View style={styles.modal}>
           {/* Header */}
           <View style={styles.header}>
-            <Text style={styles.title}>New Node</Text>
+            <Text style={styles.title}>New Agent</Text>
             <TouchableOpacity onPress={onClose} style={styles.closeButton}>
               <Text style={styles.closeButtonText}>×</Text>
             </TouchableOpacity>

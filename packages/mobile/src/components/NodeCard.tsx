@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, memo } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { Gesture, GestureDetector, TouchableOpacity } from 'react-native-gesture-handler';
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
+import { View, Text, StyleSheet, Platform } from 'react-native';
+import ContextMenuView from 'react-native-context-menu-view';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -8,8 +9,11 @@ import Animated, {
 } from 'react-native-reanimated';
 import type { VisualNode, Point } from '@/stores/graph-store';
 import { colors, getStatusColor, getProviderColors, fontFamily } from '@/lib/theme';
-import { Expand } from 'iconoir-react-native';
 import { formatRelativeTime } from '@vuhlp/shared';
+import type { SharedValue } from 'react-native-reanimated';
+import type { GestureType } from 'react-native-gesture-handler';
+
+export type GraphMode = 'move' | 'draw';
 
 const PROVIDER_LABELS: Record<string, string> = {
   claude: 'Claude',
@@ -18,40 +22,56 @@ const PROVIDER_LABELS: Record<string, string> = {
   custom: 'Custom',
 };
 
-import type { SharedValue } from 'react-native-reanimated';
-
 interface NodeCardProps {
   node: VisualNode;
-  viewportZoom: number;
+  mode: GraphMode;
+  viewportX: SharedValue<number>;
+  viewportY: SharedValue<number>;
+  // ... (other props)
+  viewportZoom: SharedValue<number>;
+  canvasOffset: Point;
   onPress: (nodeId: string) => void;
+  onLongPress: (nodeId: string) => void;
+  onDelete: (nodeId: string) => void;
   onDrag: (nodeId: string, x: number, y: number) => void;
   onPortDragStart: (nodeId: string, portIndex: number, point: Point) => void;
   onPortDragMove: (point: Point) => void;
-  onPortDragEnd: (targetNodeId: string | null, targetPortIndex: number | null) => void;
-  onExpand: (nodeId: string) => void;
+  onPortDragEnd: (finalPoint: Point) => void;
+
   sharedNodes: SharedValue<Record<string, { position: Point; dimensions: { width: number; height: number } }>>;
   activeDragNodeId: SharedValue<string | null>;
+  graphPinchGesture?: GestureType;
+  isPinching?: SharedValue<boolean>;
 }
 
 const PORT_SIZE = 16;
-const PORT_HIT_SLOP = 12;
+const PORT_HIT_SLOP = 32;
 
 export const NodeCard = memo(function NodeCard({
   node,
+  mode,
+  viewportX,
+  viewportY,
   viewportZoom,
+  canvasOffset,
   onPress,
+  onLongPress,
+  onDelete,
   onDrag,
   onPortDragStart,
   onPortDragMove,
   onPortDragEnd,
-  onExpand,
   sharedNodes,
   activeDragNodeId,
+  graphPinchGesture,
+  isPinching,
 }: NodeCardProps) {
+  // ... (existing hooks)
   const { position, dimensions, status, label, summary, selected, provider, roleTemplate, lastActivityAt } = node;
-  const effectiveZoom = Math.max(0.1, viewportZoom);
 
   const providerColors = useMemo(() => getProviderColors(provider), [provider]);
+  const [debugPortHitIndex, setDebugPortHitIndex] = useState<number | null>(null);
+  const debugHitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const translateX = useSharedValue(position.x);
   const translateY = useSharedValue(position.y);
@@ -71,8 +91,7 @@ export const NodeCard = memo(function NodeCard({
     { x: -PORT_SIZE / 2, y: dimensions.height / 2 - PORT_SIZE / 2, index: 3 }, // left
   ], [dimensions.width, dimensions.height]);
 
-  // Port positions in local (node) coordinates for hit testing
-  // And calculation of world coordinates for drag start
+  // Port positions in local (node) coordinates
   const getPortWorldPos = useCallback((index: number) => {
     'worklet';
     const portPositions = [
@@ -84,12 +103,58 @@ export const NodeCard = memo(function NodeCard({
     return portPositions[index] ?? portPositions[0]!;
   }, [position.x, position.y, dimensions.width, dimensions.height]);
 
+  // Find closest port to a local point (for Draw mode)
+  const findClosestPortIndex = useCallback((localX: number, localY: number) => {
+    'worklet';
+    let closestIndex = 0;
+    let minDistance = Infinity;
+
+    // Center points of ports in local coords
+    const portCenters = [
+       { x: dimensions.width / 2, y: 0, index: 0 }, // top
+       { x: dimensions.width, y: dimensions.height / 2, index: 1 }, // right
+       { x: dimensions.width / 2, y: dimensions.height, index: 2 }, // bottom
+       { x: 0, y: dimensions.height / 2, index: 3 }, // left
+    ];
+
+    for (const p of portCenters) {
+      const dist = Math.hypot(localX - p.x, localY - p.y);
+      if (dist < minDistance) {
+        minDistance = dist;
+        closestIndex = p.index;
+      }
+    }
+    return closestIndex;
+  }, [dimensions.width, dimensions.height]);
+
+  // ... (debug helpers and effects) ...
+  const triggerPortHitFlash = useCallback((portIndex: number) => {
+    if (!__DEV__) return;
+    if (debugHitTimeoutRef.current) {
+      clearTimeout(debugHitTimeoutRef.current);
+      debugHitTimeoutRef.current = null;
+    }
+    setDebugPortHitIndex(portIndex);
+    debugHitTimeoutRef.current = setTimeout(() => {
+      setDebugPortHitIndex(null);
+      debugHitTimeoutRef.current = null;
+    }, 250);
+  }, []);
+
   // Sync position changes from store
   useEffect(() => {
     if (isDragging.value) return;
     translateX.value = position.x;
     translateY.value = position.y;
   }, [position.x, position.y, translateX, translateY, isDragging]);
+
+  useEffect(() => {
+    return () => {
+      if (debugHitTimeoutRef.current) {
+        clearTimeout(debugHitTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleDragEnd = useCallback(
     (x: number, y: number) => {
@@ -102,37 +167,33 @@ export const NodeCard = memo(function NodeCard({
     onPress(node.id);
   }, [onPress, node.id]);
 
-  const handleExpand = useCallback(() => {
-    onExpand(node.id);
-  }, [onExpand, node.id]);
 
   const dragGesture = useMemo(() => Gesture.Pan()
     .maxPointers(1)
+    .minDistance(10) // Require some movement before activating to allow context menu long press
     .onStart((e) => {
       'worklet';
-      // Check if we hit a port
-      const hitRadius = (PORT_SIZE / 2 + PORT_HIT_SLOP) / effectiveZoom;
-      const localX = e.x / effectiveZoom;
-      const localY = e.y / effectiveZoom;
-      let hitPortIndex = -1;
+      if (isPinching?.value) return;
 
-      for (const port of ports) {
-        const centerX = port.x + PORT_SIZE / 2;
-        const centerY = port.y + PORT_SIZE / 2;
-        if (Math.abs(localX - centerX) <= hitRadius && Math.abs(localY - centerY) <= hitRadius) {
-          hitPortIndex = port.index;
-          break;
-        }
-      }
+      const zoom = Math.max(0.1, viewportZoom.value || 1);
+      const worldX = (e.absoluteX - canvasOffset.x - viewportX.value) / zoom;
+      const worldY = (e.absoluteY - canvasOffset.y - viewportY.value) / zoom;
+      const localX = worldX - position.x;
+      const localY = worldY - position.y;
 
-      if (hitPortIndex !== -1) {
-        // Edge drag start
-        draggingPortIndex.value = hitPortIndex;
-        const worldPos = getPortWorldPos(hitPortIndex);
+      // Logic branch based on mode
+      if (mode === 'draw') {
+        // Find nearest port to start drawing from
+        const closestPortIndex = findClosestPortIndex(localX, localY);
+        
+        draggingPortIndex.value = closestPortIndex;
+        const worldPos = getPortWorldPos(closestPortIndex);
         draggingPortStartPos.value = worldPos;
-        runOnJS(onPortDragStart)(node.id, hitPortIndex, worldPos);
+        runOnJS(onPortDragStart)(node.id, closestPortIndex, worldPos);
+        runOnJS(triggerPortHitFlash)(closestPortIndex);
+
       } else {
-        // Node drag start
+        // Move mode - drag the node
         isDragging.value = true;
         activeDragNodeId.value = node.id;
         savedX.value = translateX.value;
@@ -141,18 +202,22 @@ export const NodeCard = memo(function NodeCard({
     })
     .onUpdate((e) => {
       'worklet';
+      if (isPinching?.value) return;
+
+      const zoom = Math.max(0.1, viewportZoom.value || 1);
+      
       if (draggingPortIndex.value !== null && draggingPortStartPos.value) {
-        // Edge drag update
-        const startPos = draggingPortStartPos.value;
+        // Edge drag update (Draw Mode)
         const currentPos = {
-          x: startPos.x + e.translationX / effectiveZoom,
-          y: startPos.y + e.translationY / effectiveZoom,
+          x: (e.absoluteX - canvasOffset.x - viewportX.value) / zoom,
+          y: (e.absoluteY - canvasOffset.y - viewportY.value) / zoom,
         };
         runOnJS(onPortDragMove)(currentPos);
+
       } else if (isDragging.value) {
-        // Node drag update
-        const nextX = savedX.value + e.translationX / effectiveZoom;
-        const nextY = savedY.value + e.translationY / effectiveZoom;
+        // Node drag update (Move Mode)
+        const nextX = savedX.value + e.translationX / zoom;
+        const nextY = savedY.value + e.translationY / zoom;
         translateX.value = nextX;
         translateY.value = nextY;
         
@@ -167,13 +232,20 @@ export const NodeCard = memo(function NodeCard({
         sharedNodes.value = nextNodes;
       }
     })
-    .onEnd(() => {
+    .onEnd((e) => {
       'worklet';
+      const zoom = Math.max(0.1, viewportZoom.value || 1);
+
       if (draggingPortIndex.value !== null) {
         // Edge drag end
+        const finalPoint = {
+          x: (e.absoluteX - canvasOffset.x - viewportX.value) / zoom,
+          y: (e.absoluteY - canvasOffset.y - viewportY.value) / zoom,
+        };
         draggingPortIndex.value = null;
         draggingPortStartPos.value = null;
-        runOnJS(onPortDragEnd)(null, null);
+        runOnJS(onPortDragEnd)(finalPoint);
+
       } else if (isDragging.value) {
         // Node drag end
         activeDragNodeId.value = null;
@@ -188,31 +260,73 @@ export const NodeCard = memo(function NodeCard({
       draggingPortIndex.value = null;
       draggingPortStartPos.value = null;
     }), [
-      node.id, 
-      effectiveZoom, 
-      ports, 
-      draggingPortIndex, 
-      draggingPortStartPos, 
-      getPortWorldPos, 
-      onPortDragStart, 
-      onPortDragMove, 
-      onPortDragEnd, 
-      isDragging, 
-      activeDragNodeId, 
-      savedX, 
-      savedY, 
-      translateX, 
-      translateY, 
-      dimensions, 
-      sharedNodes, 
-      handleDragEnd
+      node.id,
+      mode, // Dependency on mode
+      draggingPortIndex,
+      draggingPortStartPos,
+      getPortWorldPos,
+      findClosestPortIndex,
+      triggerPortHitFlash,
+      onPortDragStart,
+      onPortDragMove,
+      onPortDragEnd,
+      isDragging,
+      activeDragNodeId,
+      savedX,
+      savedY,
+      translateX,
+      translateY,
+      dimensions,
+      sharedNodes,
+      handleDragEnd,
+      viewportX,
+      viewportY,
+      viewportZoom,
+      canvasOffset,
+      position.x,
+      position.y
     ]);
+  
+  // Disable tap gesture in Draw mode to prevent accidental selections when trying to draw
+  // Or keep it available? User might want to select node to see context menu.
+  // Move mode: Tap OK. Draw mode: Tap OK. 
+  // Let's keep tap gesture enabled in both modes for selection.
+  const tapGesture = useMemo(() => Gesture.Tap()
+    .maxDuration(300) // Fail if held longer than 300ms (allow context menu to take over)
+    .onEnd(() => {
+      runOnJS(handlePress)();
+    }), [handlePress]);
 
-  const tapGesture = useMemo(() => Gesture.Tap().onEnd(() => {
-    runOnJS(handlePress)();
-  }), [handlePress]);
+  // Remove long press for edge creation since we have a dedicated mode now?
+  // Actually, user said "when line tool is selected, we only draw... when move is selected, we only move".
+  // So long press logic in NodeCard (which was for nothing really, maybe context menu) can stay or be removed. 
+  // The context menu is handled by the wrapper view on iOS.
+  // The existing longPressGesture was effectively specific to the node card logic.
+  // We'll keep it but it might be redundant with the mode switch.
+  const longPressGesture = useMemo(
+    () =>
+      Gesture.LongPress()
+        .minDuration(450)
+        .maxDistance(10)
+        .onStart((e) => {
+          'worklet';
+          // Long press behavior... usually for Context Menu on iOS which intercepts.
+          if (Platform.OS === 'ios') return; 
+          runOnJS(onLongPress)(node.id);
+        }),
+    [node.id, onLongPress]
+  );
 
-  const composedGesture = useMemo(() => Gesture.Race(dragGesture, tapGesture), [dragGesture, tapGesture]);
+  const composedGesture = useMemo(
+    () => {
+      const gesture = Gesture.Race(dragGesture, longPressGesture, tapGesture);
+      if (graphPinchGesture) {
+        return Gesture.Simultaneous(gesture, graphPinchGesture);
+      }
+      return gesture;
+    },
+    [dragGesture, longPressGesture, tapGesture, graphPinchGesture]
+  );
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [
@@ -222,6 +336,69 @@ export const NodeCard = memo(function NodeCard({
   }));
 
   const statusColor = getStatusColor(status);
+
+  const innerContent = (
+    <>
+      {/* Left border accent */}
+      <View style={[styles.leftBorder, { backgroundColor: statusColor }]} />
+
+      {/* Header: Provider badge + role */}
+      <View style={styles.header}>
+        <View
+          style={[
+            styles.providerBadge,
+            {
+              backgroundColor: providerColors.bg,
+              borderColor: providerColors.border,
+            },
+          ]}
+        >
+          <Text style={[styles.providerText, { color: providerColors.text }]}>
+            {PROVIDER_LABELS[provider] ?? 'Custom'}
+          </Text>
+        </View>
+        <Text style={styles.roleTemplate} numberOfLines={1}>
+          {roleTemplate}
+        </Text>
+      </View>
+
+      {/* Title */}
+      <Text style={styles.title} numberOfLines={1}>
+        {label}
+      </Text>
+
+      {/* Summary */}
+      <Text style={styles.summary} numberOfLines={2}>
+        {summary || 'Waiting...'}
+      </Text>
+
+      {/* Footer: Status badge + timestamp */}
+      <View style={styles.footer}>
+        <View style={styles.statusBadge}>
+          <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+          <Text style={[styles.statusText, status !== 'idle' && { color: statusColor }]}>
+            {status}
+          </Text>
+        </View>
+        <Text style={styles.timestamp}>{formatRelativeTime(lastActivityAt)}</Text>
+      </View>
+
+      {/* Streaming indicator */}
+      {node.connection?.streaming && (
+        <View style={styles.streamingIndicator}>
+          <View style={styles.streamingDot} />
+        </View>
+      )}
+
+      {/* Inbox badge */}
+      {node.inboxCount !== undefined && node.inboxCount > 0 && (
+        <View style={styles.inboxBadge}>
+          <Text style={styles.inboxText}>{node.inboxCount}</Text>
+        </View>
+      )}
+    </>
+  );
+
 
   return (
     <GestureDetector gesture={composedGesture}>
@@ -237,73 +414,7 @@ export const NodeCard = memo(function NodeCard({
           animatedStyle,
         ]}
       >
-        {/* Left border accent */}
-        <View style={[styles.leftBorder, { backgroundColor: statusColor }]} />
-
-        {/* Header: Provider badge + role */}
-        <View style={styles.header}>
-          <View
-            style={[
-              styles.providerBadge,
-              {
-                backgroundColor: providerColors.bg,
-                borderColor: providerColors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.providerText, { color: providerColors.text }]}>
-              {PROVIDER_LABELS[provider] ?? 'Custom'}
-            </Text>
-          </View>
-          <Text style={styles.roleTemplate} numberOfLines={1}>
-            {roleTemplate}
-          </Text>
-
-          <TouchableOpacity 
-            onPress={handleExpand}
-            hitSlop={8}
-            style={styles.expandButton}
-          >
-            <Expand width={14} height={14} color={colors.textMuted} />
-          </TouchableOpacity>
-        </View>
-
-        {/* Title */}
-        <Text style={styles.title} numberOfLines={1}>
-          {label}
-        </Text>
-
-        {/* Summary */}
-        <Text style={styles.summary} numberOfLines={2}>
-          {summary || 'Waiting...'}
-        </Text>
-
-        {/* Footer: Status badge + timestamp */}
-        <View style={styles.footer}>
-          <View style={styles.statusBadge}>
-            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-            <Text style={[styles.statusText, status !== 'idle' && { color: statusColor }]}>
-              {status}
-            </Text>
-          </View>
-          <Text style={styles.timestamp}>{formatRelativeTime(lastActivityAt)}</Text>
-        </View>
-
-        {/* Streaming indicator */}
-        {node.connection?.streaming && (
-          <View style={styles.streamingIndicator}>
-            <View style={styles.streamingDot} />
-          </View>
-        )}
-
-        {/* Inbox badge */}
-        {node.inboxCount !== undefined && node.inboxCount > 0 && (
-          <View style={styles.inboxBadge}>
-            <Text style={styles.inboxText}>{node.inboxCount}</Text>
-          </View>
-        )}
-
-        {/* Connection ports */}
+        {/* Connection ports - Outside ContextMenuView to align with border */}
         {ports.map((port) => (
           <View
             key={port.index}
@@ -311,10 +422,39 @@ export const NodeCard = memo(function NodeCard({
               styles.port, 
               { left: port.x, top: port.y }
             ]}
+            pointerEvents="none"
           >
-            <View style={styles.portInner} />
+            <View
+              style={[
+                styles.portInner,
+                __DEV__ && debugPortHitIndex === port.index && styles.portInnerHit
+              ]}
+            />
           </View>
         ))}
+
+        <ContextMenuView
+          title={label}
+          disabled={Platform.OS !== 'ios'}
+          style={styles.contextMenu}
+          actions={[
+            {
+              title: 'Delete',
+              destructive: true,
+              systemIcon: 'trash',
+            },
+          ]}
+          onPress={(e: any) => {
+            const { name } = e.nativeEvent;
+            if (name === 'Delete') {
+              runOnJS(onDelete)(node.id);
+            }
+          }}
+        >
+          <View style={styles.contentContainer}>
+            {innerContent}
+          </View>
+        </ContextMenuView>
       </Animated.View>
     </GestureDetector>
   );
@@ -326,8 +466,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bgElevated,
     borderRadius: 6,
     borderWidth: 1,
+    // Padding moved to contentContainer
+  },
+  contextMenu: {
+    flex: 1,
+  },
+  contentContainer: {
     padding: 12,
-    paddingLeft: 15, // Extra padding for left border
+    paddingLeft: 15,
   },
   leftBorder: {
     position: 'absolute',
@@ -363,10 +509,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1.8,
   },
-  expandButton: {
-    padding: 2,
-    opacity: 0.8,
-  },
+
   title: {
     color: colors.textPrimary,
     fontSize: 12,
@@ -459,5 +602,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bgElevated,
     borderWidth: 2,
     borderColor: colors.borderStrong,
+  },
+  portInnerHit: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accentGlow,
   },
 });

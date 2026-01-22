@@ -10,6 +10,7 @@ import { NodeInspector } from '@/components/NodeInspector';
 import { ApprovalQueue } from '@/components/ApprovalQueue';
 import { NewNodeModal } from '@/components/NewNodeModal';
 import { PageLoader } from '@/components/PageLoader';
+import { RunControlsPanel, RUN_CONTROLS_COLLAPSED_HEIGHT } from '@/components/RunControlsPanel';
 import { Plus } from 'iconoir-react-native';
 import { colors, fontFamily, fontSize, radius, spacing } from '@/lib/theme';
 
@@ -31,6 +32,9 @@ export default function RunScreen() {
   const viewportX = useSharedValue(currentViewport.x);
   const viewportY = useSharedValue(currentViewport.y);
   const viewportZoom = useSharedValue(currentViewport.zoom);
+
+  // Shared value for controls panel height - used by minimap and toolbar
+  const controlsPanelHeight = useSharedValue(RUN_CONTROLS_COLLAPSED_HEIGHT);
 
   const handleOpenNewNodeModal = useCallback(() => {
     console.log('[RunScreen] Opening new node modal');
@@ -56,6 +60,11 @@ export default function RunScreen() {
     };
   });
 
+  // Animated style for floating elements that need to be below the controls panel
+  const floatingTopStyle = useAnimatedStyle(() => ({
+    top: controlsPanelHeight.value + 12,
+  }));
+
   if (loading) {
     return <PageLoader />;
   }
@@ -66,24 +75,30 @@ export default function RunScreen() {
 
   return (
     <View style={styles.container}>
-      <GraphCanvas 
+      <GraphCanvas
         viewportX={viewportX}
         viewportY={viewportY}
         viewportZoom={viewportZoom}
+        controlsPanelHeight={controlsPanelHeight}
       />
 
-      {/* Floating minimap for navigation */}
-      <GraphMinimap 
-        viewportX={viewportX}
-        viewportY={viewportY}
-        viewportZoom={viewportZoom}
-      />
+      {/* Run controls panel - collapsible */}
+      <RunControlsPanel runId={id} panelHeight={controlsPanelHeight} />
+
+      {/* Floating minimap for navigation - positioned below controls */}
+      <Animated.View style={[styles.minimapContainer, floatingTopStyle]}>
+        <GraphMinimap
+          viewportX={viewportX}
+          viewportY={viewportY}
+          viewportZoom={viewportZoom}
+        />
+      </Animated.View>
 
       {/* Floating approval queue */}
       <ApprovalQueue />
 
       {/* Floating action button for new node */}
-      <Animated.View 
+      <Animated.View
         style={[styles.fabContainer, fabStyle]}
         pointerEvents={inspectorOpen ? 'none' : 'auto'}
       >
@@ -93,7 +108,7 @@ export default function RunScreen() {
           activeOpacity={0.8}
         >
           <Plus width={18} height={18} color={colors.bgPrimary} strokeWidth={2.5} />
-          <Text style={styles.fabLabel}>New Node</Text>
+          <Text style={styles.fabLabel}>New Agent</Text>
         </TouchableOpacity>
       </Animated.View>
 
@@ -125,6 +140,11 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bgPrimary,
+  },
+  minimapContainer: {
+    position: 'absolute',
+    left: spacing.lg,
+    zIndex: 10,
   },
   fabContainer: {
     position: 'absolute',

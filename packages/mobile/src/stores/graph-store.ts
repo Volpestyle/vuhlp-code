@@ -487,10 +487,12 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set((state) => {
       if (!state.run) return state;
       const { [edgeId]: _, ...remainingEdges } = state.run.edges;
+      const wasSelected = state.selectedEdgeId === edgeId;
       return {
         run: { ...state.run, edges: remainingEdges },
         edges: state.edges.filter((e) => e.id !== edgeId),
-        selectedEdgeId: state.selectedEdgeId === edgeId ? null : state.selectedEdgeId,
+        selectedEdgeId: wasSelected ? null : state.selectedEdgeId,
+        inspectorOpen: wasSelected ? state.selectedNodeId !== null : state.inspectorOpen,
       };
     });
   },
@@ -545,7 +547,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       selectedNodeId: edgeId ? null : state.selectedNodeId,
       nodes: state.nodes.map((n) => ({ ...n, selected: false })),
       edges: state.edges.map((e) => ({ ...e, selected: e.id === edgeId })),
-      inspectorOpen: edgeId ? false : state.inspectorOpen,
+      inspectorOpen: edgeId ? true : state.selectedNodeId !== null,
     }));
   },
 
