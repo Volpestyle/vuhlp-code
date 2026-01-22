@@ -1,7 +1,7 @@
 # Gestures and interaction
 
 ## Gesture mapping (current)
-- Pan viewport: one-finger pan on the canvas background.
+- Pan viewport: one-finger pan on the canvas background with inertial momentum on release.
 - Zoom: pinch gesture, centered on the pinch focal point.
 - Fit view: double tap on the canvas background.
 - Node drag: pan gesture on node cards.
@@ -14,6 +14,7 @@
 - Pan is exclusive with tap to avoid accidental selections while dragging.
 - Node drag fails immediately when a touch starts on a port hit zone.
 - Tap handlers bail out while panning or pinching.
+- Momentum cancels on new canvas or node gestures.
 
 ## Implementation notes
 - `GraphCanvas` owns the canvas-level gestures and viewport shared values.

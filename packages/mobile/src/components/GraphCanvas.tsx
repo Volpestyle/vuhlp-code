@@ -4,8 +4,10 @@ import { Canvas, Path, Skia, Group, Circle } from '@shopify/react-native-skia';
 import { useFrameCallback } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
+  cancelAnimation,
   useSharedValue,
   useAnimatedStyle,
+  withDecay,
   withSpring,
   withTiming,
   withDelay,
@@ -154,6 +156,16 @@ const EDGE_SNAP_RADIUS = 60; // Larger snap radius for mobile touch precision
 const EDGE_HIT_RADIUS = 16;
 const EDGE_HIT_SAMPLES = 24;
 const HANDOFF_ANIMATION_DURATION_MS = 2000;
+const MOMENTUM_DECELERATION = 0.997;
+const MOMENTUM_VELOCITY_THRESHOLD = 120;
+
+type MomentumStopReason =
+  | 'complete'
+  | 'pan-start'
+  | 'pinch-start'
+  | 'tap'
+  | 'node-gesture'
+  | 'programmatic';
 
 let skiaMissingLogged = false;
 let skiaAvailableCache: boolean | null = null;
@@ -354,6 +366,11 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
   const isPinching = useSharedValue(false);
   const isPanning = useSharedValue(false);
   const panRebasePending = useSharedValue(false);
+  const isMomentumActive = useSharedValue(false);
+  const momentumAxesRemaining = useSharedValue(0);
+  const momentumCancelled = useSharedValue(false);
+  const momentumFinalized = useSharedValue(false);
+  const momentumStopReason = useSharedValue<MomentumStopReason>('complete');
 
   useEffect(() => {
     if (!isGestureActive.value) {
@@ -369,12 +386,9 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
   const savedZoom = useSharedValue(1);
   const pinchWorldX = useSharedValue(0);
   const pinchWorldY = useSharedValue(0);
-  const syncFrameCount = useSharedValue(0);
   const lastPinchPointerCount = useSharedValue(0);
   const panTranslationOffsetX = useSharedValue(0);
   const panTranslationOffsetY = useSharedValue(0);
-  const lastPanTranslationX = useSharedValue(0);
-  const lastPanTranslationY = useSharedValue(0);
 
   // Manual double tap detection tracking
   const lastTapX = useSharedValue(0);
@@ -394,6 +408,25 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
     []
   );
 
+  const logMomentumStart = useCallback(
+    (payload: {
+      velocityX: number;
+      velocityY: number;
+      speed: number;
+      deceleration: number;
+    }) => {
+      console.debug('[graph] pan momentum start', payload);
+    },
+    []
+  );
+
+  const logMomentumStop = useCallback(
+    (payload: { reason: MomentumStopReason }) => {
+      console.debug('[graph] pan momentum stop', payload);
+    },
+    []
+  );
+
   const syncViewport = useCallback(() => {
     setViewport({
       x: viewportX.value,
@@ -402,16 +435,116 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
       });
   }, [setViewport, viewportX, viewportY, viewportZoom]);
 
-  const syncViewportFrame = useCallback(
-    (x: number, y: number, zoom: number) => {
-      setViewport({ x, y, zoom });
+  const finalizeMomentum = useCallback(() => {
+    'worklet';
+    if (momentumFinalized.value) return;
+    momentumFinalized.value = true;
+    isMomentumActive.value = false;
+    isGestureActive.value = isPinching.value || isPanning.value;
+    momentumAxesRemaining.value = 0;
+    const reason: MomentumStopReason = momentumCancelled.value
+      ? momentumStopReason.value
+      : 'complete';
+    runOnJS(syncViewport)();
+    runOnJS(logMomentumStop)({ reason });
+  }, [
+    isGestureActive,
+    isMomentumActive,
+    isPinching,
+    isPanning,
+    logMomentumStop,
+    momentumAxesRemaining,
+    momentumCancelled,
+    momentumFinalized,
+    momentumStopReason,
+    syncViewport,
+  ]);
+
+  const handleMomentumAxisEnd = useCallback(
+    (finished?: boolean) => {
+      'worklet';
+      if (finished === false) {
+        momentumCancelled.value = true;
+      }
+      const remaining = momentumAxesRemaining.value - 1;
+      momentumAxesRemaining.value = remaining;
+      if (remaining <= 0) {
+        finalizeMomentum();
+      }
     },
-    [setViewport]
+    [finalizeMomentum, momentumAxesRemaining, momentumCancelled]
   );
+
+  const startMomentum = useCallback(
+    (velocityX: number, velocityY: number) => {
+      'worklet';
+      momentumFinalized.value = false;
+      momentumCancelled.value = false;
+      momentumStopReason.value = 'complete';
+      momentumAxesRemaining.value = 2;
+      isMomentumActive.value = true;
+      isGestureActive.value = true;
+      runOnJS(logMomentumStart)({
+        velocityX,
+        velocityY,
+        speed: Math.hypot(velocityX, velocityY),
+        deceleration: MOMENTUM_DECELERATION,
+      });
+      viewportX.value = withDecay(
+        { velocity: velocityX, deceleration: MOMENTUM_DECELERATION },
+        handleMomentumAxisEnd
+      );
+      viewportY.value = withDecay(
+        { velocity: velocityY, deceleration: MOMENTUM_DECELERATION },
+        handleMomentumAxisEnd
+      );
+    },
+    [
+      handleMomentumAxisEnd,
+      isGestureActive,
+      isMomentumActive,
+      logMomentumStart,
+      momentumAxesRemaining,
+      momentumCancelled,
+      momentumFinalized,
+      momentumStopReason,
+      viewportX,
+      viewportY,
+    ]
+  );
+
+  const cancelMomentum = useCallback(
+    (reason: MomentumStopReason) => {
+      'worklet';
+      if (!isMomentumActive.value) return;
+      momentumStopReason.value = reason;
+      momentumCancelled.value = true;
+      cancelAnimation(viewportX);
+      cancelAnimation(viewportY);
+      if (momentumAxesRemaining.value <= 0) {
+        finalizeMomentum();
+      }
+    },
+    [
+      finalizeMomentum,
+      isMomentumActive,
+      momentumAxesRemaining,
+      momentumCancelled,
+      momentumStopReason,
+      viewportX,
+      viewportY,
+    ]
+  );
+
+  const cancelMomentumForNode = useCallback(() => {
+    'worklet';
+    cancelMomentum('node-gesture');
+  }, [cancelMomentum]);
 
   // Pinch gesture - always active, works simultaneously with other gestures
   const pinchGesture = useMemo(() => Gesture.Pinch()
     .onStart((e) => {
+      cancelMomentum('pinch-start');
       isGestureActive.value = true;
       isPinching.value = true;
       panRebasePending.value = false;
@@ -419,7 +552,6 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
       const zoom = viewportZoom.value || 1;
       pinchWorldX.value = (e.focalX - viewportX.value) / zoom;
       pinchWorldY.value = (e.focalY - viewportY.value) / zoom;
-      syncFrameCount.value = 0;
       lastPinchPointerCount.value = e.numberOfPointers;
     })
     .onUpdate((e) => {
@@ -443,14 +575,6 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
       viewportZoom.value = nextZoom;
       viewportX.value = focusX - pinchWorldX.value * nextZoom;
       viewportY.value = focusY - pinchWorldY.value * nextZoom;
-      syncFrameCount.value += 1;
-      if (syncFrameCount.value % 3 === 0) {
-        runOnJS(syncViewportFrame)(
-          viewportX.value,
-          viewportY.value,
-          viewportZoom.value
-        );
-      }
     })
     .onEnd(() => {
       isPinching.value = false;
@@ -459,42 +583,36 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
       if (isPanning.value) {
         savedX.value = viewportX.value;
         savedY.value = viewportY.value;
-        syncFrameCount.value = 0;
       }
-      isGestureActive.value = isPanning.value;
+      isGestureActive.value = isPanning.value || isMomentumActive.value;
       runOnJS(syncViewport)();
     })
     .onFinalize(() => {
       isPinching.value = false;
       lastPinchPointerCount.value = 0;
-      isGestureActive.value = isPanning.value;
-    }), [viewportX, viewportY, viewportZoom, isGestureActive, isPinching, isPanning, panRebasePending, savedZoom, savedX, savedY, pinchWorldX, pinchWorldY, syncFrameCount, lastPinchPointerCount, panTranslationOffsetX, panTranslationOffsetY, logPinchHandoff, syncViewportFrame, syncViewport]);
+      isGestureActive.value = isPanning.value || isMomentumActive.value;
+    }), [cancelMomentum, viewportX, viewportY, viewportZoom, isGestureActive, isMomentumActive, isPinching, isPanning, panRebasePending, savedZoom, savedX, savedY, pinchWorldX, pinchWorldY, lastPinchPointerCount, panTranslationOffsetX, panTranslationOffsetY, logPinchHandoff, syncViewport]);
 
   // Pan gesture - single finger allowed now
   const panGesture = useMemo(() => Gesture.Pan()
     .maxPointers(1)
     .minDistance(10) // Require movement before activating to allow long press for edge context menu
     .onStart((e) => {
+      cancelMomentum('pan-start');
       isGestureActive.value = true;
       isPanning.value = true;
       savedX.value = viewportX.value;
       savedY.value = viewportY.value;
       panTranslationOffsetX.value = e.translationX;
       panTranslationOffsetY.value = e.translationY;
-      lastPanTranslationX.value = e.translationX;
-      lastPanTranslationY.value = e.translationY;
-      syncFrameCount.value = 0;
     })
     .onUpdate((e) => {
-      lastPanTranslationX.value = e.translationX;
-      lastPanTranslationY.value = e.translationY;
       if (panRebasePending.value) {
         savedX.value = viewportX.value;
         savedY.value = viewportY.value;
         panTranslationOffsetX.value = e.translationX;
         panTranslationOffsetY.value = e.translationY;
         panRebasePending.value = false;
-        syncFrameCount.value = 0;
         return;
       }
       if (isPinching.value) {
@@ -504,24 +622,23 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
       const nextY = savedY.value + (e.translationY - panTranslationOffsetY.value);
       viewportX.value = nextX;
       viewportY.value = nextY;
-      syncFrameCount.value += 1;
-      if (syncFrameCount.value % 3 === 0) {
-        runOnJS(syncViewportFrame)(
-          viewportX.value,
-          viewportY.value,
-          viewportZoom.value
-        );
-      }
     })
-    .onEnd(() => {
+    .onEnd((e) => {
       isPanning.value = false;
-      isGestureActive.value = isPinching.value;
+      const velocityX = e.velocityX;
+      const velocityY = e.velocityY;
+      const speed = Math.hypot(velocityX, velocityY);
+      if (!isPinching.value && speed > MOMENTUM_VELOCITY_THRESHOLD) {
+        startMomentum(velocityX, velocityY);
+        return;
+      }
+      isGestureActive.value = isPinching.value || isMomentumActive.value;
       runOnJS(syncViewport)();
     })
     .onFinalize(() => {
       isPanning.value = false;
-      isGestureActive.value = isPinching.value;
-    }), [viewportX, viewportY, viewportZoom, isGestureActive, isPinching, isPanning, panRebasePending, savedX, savedY, panTranslationOffsetX, panTranslationOffsetY, lastPanTranslationX, lastPanTranslationY, syncFrameCount, syncViewportFrame, syncViewport]);
+      isGestureActive.value = isPinching.value || isMomentumActive.value;
+    }), [cancelMomentum, startMomentum, viewportX, viewportY, viewportZoom, isGestureActive, isMomentumActive, isPinching, isPanning, panRebasePending, savedX, savedY, panTranslationOffsetX, panTranslationOffsetY, syncViewport]);
 
   // Fit to view helper
   const fitToView = useCallback(() => {
@@ -760,6 +877,10 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
     .maxDuration(250)
     .onEnd((event) => {
       if (isPanning.value || isPinching.value) return;
+      if (isMomentumActive.value) {
+        cancelMomentum('tap');
+        return;
+      }
 
       const now = Date.now();
       const timeDiff = now - lastTapTime.value;
@@ -782,7 +903,7 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
         lastTapX.value = event.x;
         lastTapY.value = event.y;
       }
-    }), [fitToView, handleCanvasTap, isPanning, isPinching, lastTapTime, lastTapX, lastTapY, viewportX, viewportY, viewportZoom]);
+    }), [cancelMomentum, fitToView, handleCanvasTap, isMomentumActive, isPanning, isPinching, lastTapTime, lastTapX, lastTapY, viewportX, viewportY, viewportZoom]);
 
   const longPressGesture = useMemo(() => Gesture.LongPress()
     .minDuration(450)
@@ -790,11 +911,15 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
     .onStart((event) => {
       'worklet';
       if (isPanning.value || isPinching.value) return;
+      if (isMomentumActive.value) {
+        cancelMomentum('tap');
+        return;
+      }
       const zoom = viewportZoom.value || 1;
       const worldX = (event.x - viewportX.value) / zoom;
       const worldY = (event.y - viewportY.value) / zoom;
       runOnJS(handleCanvasLongPress)(worldX, worldY, zoom);
-    }), [isPanning, isPinching, viewportZoom, viewportX, viewportY, handleCanvasLongPress]);
+    }), [cancelMomentum, isMomentumActive, isPanning, isPinching, viewportZoom, viewportX, viewportY, handleCanvasLongPress]);
 
   // Compose gestures:
   // - Pinch always works (simultaneous with pan for two-finger navigation)
@@ -1138,6 +1263,7 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
                   onPortDragEnd={handlePortDragEnd}
                   sharedNodes={sharedNodes}
                   activeDragNodeId={activeDragNodeId}
+                  onCanvasGestureStart={cancelMomentumForNode}
                   graphPinchGesture={pinchGesture}
                   isPinching={isPinching}
                 />

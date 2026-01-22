@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
-import ContextMenuView from 'react-native-context-menu-view';
+import { View, Text, StyleSheet, Platform, NativeSyntheticEvent } from 'react-native';
+import ContextMenuView, { type ContextMenuOnPressNativeEvent } from 'react-native-context-menu-view';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   useSharedValue,
@@ -33,6 +33,7 @@ interface NodeCardProps {
   onPress: (nodeId: string) => void;
   onLongPress: (nodeId: string) => void;
   onDelete: (nodeId: string) => void;
+  onCanvasGestureStart?: () => void;
   onDrag: (nodeId: string, x: number, y: number) => void;
   onPortDragStart: (nodeId: string, portIndex: number, point: Point) => void;
   onPortDragMove: (point: Point) => void;
@@ -57,6 +58,7 @@ export const NodeCard = memo(function NodeCard({
   onPress,
   onLongPress,
   onDelete,
+  onCanvasGestureStart,
   onDrag,
   onPortDragStart,
   onPortDragMove,
@@ -173,6 +175,7 @@ export const NodeCard = memo(function NodeCard({
     .minDistance(10) // Require some movement before activating to allow context menu long press
     .onStart((e) => {
       'worklet';
+      onCanvasGestureStart?.();
       if (isPinching?.value) return;
 
       const zoom = Math.max(0.1, viewportZoom.value || 1);
@@ -270,6 +273,7 @@ export const NodeCard = memo(function NodeCard({
       onPortDragStart,
       onPortDragMove,
       onPortDragEnd,
+      onCanvasGestureStart,
       isDragging,
       activeDragNodeId,
       savedX,
@@ -444,7 +448,7 @@ export const NodeCard = memo(function NodeCard({
               systemIcon: 'trash',
             },
           ]}
-          onPress={(e: any) => {
+          onPress={(e: NativeSyntheticEvent<ContextMenuOnPressNativeEvent>) => {
             const { name } = e.nativeEvent;
             if (name === 'Delete') {
               runOnJS(onDelete)(node.id);
