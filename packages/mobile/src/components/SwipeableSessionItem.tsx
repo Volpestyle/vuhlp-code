@@ -43,7 +43,7 @@ export function SwipeableSessionItem({ item, onDelete }: SwipeableSessionItemPro
   return (
     <Swipeable renderRightActions={renderRightActions}>
       <Pressable
-        style={styles.card}
+        style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
         onPress={() => router.push(`/run/${item.id}`)}
       >
         <View style={styles.cardHeader}>
@@ -89,6 +89,9 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.border,
+  },
+  cardPressed: {
+    backgroundColor: colors.bgElevated,
   },
   cardHeader: {
     flexDirection: 'row',

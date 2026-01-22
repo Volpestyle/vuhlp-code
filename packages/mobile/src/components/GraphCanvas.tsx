@@ -2,11 +2,12 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, useWindowDimensions, LayoutChangeEvent, Alert, Platform, Pressable } from 'react-native';
 import { Canvas, Path, Skia, Group, Circle } from '@shopify/react-native-skia';
 import { useFrameCallback } from 'react-native-reanimated';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, GestureType } from 'react-native-gesture-handler';
 import Animated, {
   cancelAnimation,
   useSharedValue,
   useAnimatedStyle,
+  useAnimatedReaction,
   withDecay,
   withSpring,
   withTiming,
@@ -165,6 +166,7 @@ type MomentumStopReason =
   | 'pinch-start'
   | 'tap'
   | 'node-gesture'
+  | 'minimap-gesture'
   | 'programmatic';
 
 let skiaMissingLogged = false;
@@ -193,6 +195,7 @@ interface GraphCanvasProps {
   viewportX: SharedValue<number>;
   viewportY: SharedValue<number>;
   viewportZoom: SharedValue<number>;
+  externalGestureActive?: SharedValue<boolean>;
   /** Shared value tracking the controls panel height for toolbar positioning */
   controlsPanelHeight?: SharedValue<number>;
 }
@@ -213,7 +216,13 @@ export function GraphCanvas(props: GraphCanvasProps) {
   return <SkiaGraphCanvas {...props} />;
 }
 
-function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeight }: GraphCanvasProps) {
+function SkiaGraphCanvas({
+  viewportX,
+  viewportY,
+  viewportZoom,
+  externalGestureActive,
+  controlsPanelHeight,
+}: GraphCanvasProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [dimensions, setDimensions] = useState({ width: windowWidth, height: windowHeight });
   const [canvasOffset, setCanvasOffset] = useState<Point>({ x: 0, y: 0 });
@@ -541,8 +550,20 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
     cancelMomentum('node-gesture');
   }, [cancelMomentum]);
 
-  // Pinch gesture - always active, works simultaneously with other gestures
+  useAnimatedReaction(
+    () => (externalGestureActive ? externalGestureActive.value : false),
+    (current, previous) => {
+      if (current && !previous) {
+        cancelMomentum('minimap-gesture');
+      }
+    },
+    [externalGestureActive, cancelMomentum]
+  );
+
+  const pinchRef = useRef<GestureType | undefined>(undefined);
+
   const pinchGesture = useMemo(() => Gesture.Pinch()
+    .withRef(pinchRef)
     .onStart((e) => {
       cancelMomentum('pinch-start');
       isGestureActive.value = true;
@@ -596,7 +617,13 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
   // Pan gesture - single finger allowed now
   const panGesture = useMemo(() => Gesture.Pan()
     .maxPointers(1)
-    .minDistance(10) // Require movement before activating to allow long press for edge context menu
+    .minDistance(10)
+    .onTouchesDown((e, state) => {
+      'worklet';
+      if (e.allTouches.length > 0 && e.allTouches[0]!.absoluteX < 50) {
+        state.fail();
+      }
+    })
     .onStart((e) => {
       cancelMomentum('pan-start');
       isGestureActive.value = true;
@@ -875,6 +902,12 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
   // We manually detect double taps to ensure they are close together spatially
   const tapGesture = useMemo(() => Gesture.Tap()
     .maxDuration(250)
+    .onTouchesDown((e, state) => {
+      'worklet';
+      if (e.allTouches.length > 0 && e.allTouches[0].absoluteX < 50) {
+        state.fail();
+      }
+    })
     .onEnd((event) => {
       if (isPanning.value || isPinching.value) return;
       if (isMomentumActive.value) {
@@ -908,6 +941,12 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
   const longPressGesture = useMemo(() => Gesture.LongPress()
     .minDuration(450)
     .maxDistance(12)
+    .onTouchesDown((e, state) => {
+      'worklet';
+      if (e.allTouches.length > 0 && e.allTouches[0].absoluteX < 50) {
+        state.fail();
+      }
+    })
     .onStart((event) => {
       'worklet';
       if (isPanning.value || isPinching.value) return;
@@ -1264,7 +1303,7 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom, controlsPanelHeig
                   sharedNodes={sharedNodes}
                   activeDragNodeId={activeDragNodeId}
                   onCanvasGestureStart={cancelMomentumForNode}
-                  graphPinchGesture={pinchGesture}
+                  graphPinchRef={pinchRef}
                   isPinching={isPinching}
                 />
               ))}

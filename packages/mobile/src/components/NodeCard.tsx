@@ -41,7 +41,7 @@ interface NodeCardProps {
 
   sharedNodes: SharedValue<Record<string, { position: Point; dimensions: { width: number; height: number } }>>;
   activeDragNodeId: SharedValue<string | null>;
-  graphPinchGesture?: GestureType;
+  graphPinchRef?: React.RefObject<any>;
   isPinching?: SharedValue<boolean>;
 }
 
@@ -65,7 +65,7 @@ export const NodeCard = memo(function NodeCard({
   onPortDragEnd,
   sharedNodes,
   activeDragNodeId,
-  graphPinchGesture,
+  graphPinchRef,
   isPinching,
 }: NodeCardProps) {
   // ... (existing hooks)
@@ -170,7 +170,8 @@ export const NodeCard = memo(function NodeCard({
   }, [onPress, node.id]);
 
 
-  const dragGesture = useMemo(() => Gesture.Pan()
+  const dragGesture = useMemo(() => {
+    const baseDrag = Gesture.Pan()
     .maxPointers(1)
     .minDistance(10) // Require some movement before activating to allow context menu long press
     .onStart((e) => {
@@ -262,9 +263,15 @@ export const NodeCard = memo(function NodeCard({
       activeDragNodeId.value = null;
       draggingPortIndex.value = null;
       draggingPortStartPos.value = null;
-    }), [
+    });
+
+    if (graphPinchRef) {
+      (baseDrag as any).simultaneousWithExternalGesture(graphPinchRef);
+    }
+    return baseDrag;
+  }, [
       node.id,
-      mode, // Dependency on mode
+      mode, 
       draggingPortIndex,
       draggingPortStartPos,
       getPortWorldPos,
@@ -288,7 +295,8 @@ export const NodeCard = memo(function NodeCard({
       viewportZoom,
       canvasOffset,
       position.x,
-      position.y
+      position.y,
+      graphPinchRef // Added dependency
     ]);
   
   // Disable tap gesture in Draw mode to prevent accidental selections when trying to draw
@@ -322,14 +330,8 @@ export const NodeCard = memo(function NodeCard({
   );
 
   const composedGesture = useMemo(
-    () => {
-      const gesture = Gesture.Race(dragGesture, longPressGesture, tapGesture);
-      if (graphPinchGesture) {
-        return Gesture.Simultaneous(gesture, graphPinchGesture);
-      }
-      return gesture;
-    },
-    [dragGesture, longPressGesture, tapGesture, graphPinchGesture]
+    () => Gesture.Race(dragGesture, longPressGesture, tapGesture),
+    [dragGesture, longPressGesture, tapGesture]
   );
 
   const animatedStyle = useAnimatedStyle(() => ({

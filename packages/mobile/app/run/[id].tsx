@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, Stack } from 'expo-router';
 import { useGraphStore } from '@/stores/graph-store';
 import { useRunConnection } from '@/lib/useRunConnection';
 import { useLayoutPersistence } from '@/lib/useLayoutPersistence';
@@ -32,6 +32,7 @@ export default function RunScreen() {
   const viewportX = useSharedValue(currentViewport.x);
   const viewportY = useSharedValue(currentViewport.y);
   const viewportZoom = useSharedValue(currentViewport.zoom);
+  const minimapGestureActive = useSharedValue(false);
 
   // Shared value for controls panel height - used by minimap and toolbar
   const controlsPanelHeight = useSharedValue(RUN_CONTROLS_COLLAPSED_HEIGHT);
@@ -75,10 +76,12 @@ export default function RunScreen() {
 
   return (
     <View style={styles.container}>
+      <Stack.Screen options={{ gestureEnabled: true }} />
       <GraphCanvas
         viewportX={viewportX}
         viewportY={viewportY}
         viewportZoom={viewportZoom}
+        externalGestureActive={minimapGestureActive}
         controlsPanelHeight={controlsPanelHeight}
       />
 
@@ -91,6 +94,7 @@ export default function RunScreen() {
           viewportX={viewportX}
           viewportY={viewportY}
           viewportZoom={viewportZoom}
+          gestureActive={minimapGestureActive}
         />
       </Animated.View>
 

@@ -177,6 +177,7 @@ export function NodeInspector() {
   }, [todosExpanded, todosIconRotation]);
 
   const todosSwipeGesture = Gesture.Pan()
+    .maxPointers(1)
     .onEnd((event) => {
       const threshold = 20;
       // Swipe up to expand, swipe down to collapse
@@ -468,6 +469,7 @@ export function NodeInspector() {
 
   // Gestures
   const dragGesture = Gesture.Pan()
+    .maxPointers(1)
     .onStart(() => {
       context.value = { y: translateY.value };
     })
