@@ -63,6 +63,11 @@ if (envPath) {
 }
 
 const port = Number(process.env.VUHLP_PORT ?? 4000);
+const bindHostEnv = process.env.VUHLP_BIND_HOST ?? process.env.VUHLP_HOST;
+const bindHost = bindHostEnv?.trim() || "0.0.0.0";
+if (bindHostEnv !== undefined && bindHostEnv.trim().length === 0) {
+  logger.warn("empty bind host env; falling back to 0.0.0.0");
+}
 const dataDir = process.env.VUHLP_DATA_DIR
   ? path.resolve(process.env.VUHLP_DATA_DIR)
   : path.resolve(process.cwd(), "data");
@@ -88,8 +93,13 @@ const server = createServer(runtime);
 
 const start = async (): Promise<void> => {
   await runtime.start();
-  server.listen(port, "0.0.0.0", () => {
-    logger.info(`vuhlp daemon listening on http://0.0.0.0:${port}`, { port });
+  server.on("error", (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("daemon server error", { message });
+    process.exit(1);
+  });
+  server.listen(port, bindHost, () => {
+    logger.info(`vuhlp daemon listening on http://${bindHost}:${port}`, { port, host: bindHost });
   });
 };
 
