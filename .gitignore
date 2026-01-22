@@ -9,3 +9,4 @@ coverage
 /data
 packages/daemon/data
 typecheck_output.txt
+/sandbox
