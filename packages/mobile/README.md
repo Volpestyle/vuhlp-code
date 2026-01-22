@@ -4,9 +4,10 @@ Mobile companion app for the Vuhlp agent orchestration platform.
 
 ## Tech Stack
 
-- **Expo** (SDK 52) with dev client
-- **React Native** 0.76
-- **@shopify/react-native-skia** for graph edge rendering
+- **Expo** (SDK 54) with dev client
+- **React Native** 0.81
+- **React** 19.1
+- **@shopify/react-native-skia** for graph rendering
 - **react-native-gesture-handler** for touch interactions
 - **react-native-reanimated** for smooth animations
 - **zustand** for state management
@@ -16,7 +17,7 @@ Mobile companion app for the Vuhlp agent orchestration platform.
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 25+
 - pnpm 9+
 - Xcode 16+ (for iOS)
 - iOS 17+ device or simulator
@@ -41,14 +42,14 @@ cp .env.example .env
 Edit `.env` to point to your daemon:
 
 ```
-EXPO_PUBLIC_API_URL=http://192.168.1.100:4000
+EXPO_PUBLIC_API_URL=http://your-machine-ip:4000
 ```
 
 > **Note:** Use your machine's local IP address, not `localhost`, for device testing.
 
 ### Run on Device
 
-Build the dev client and run on a connected device:
+Build the dev client and run on a connected device (update the device ID in `package.json` if needed):
 
 ```bash
 cd packages/mobile
@@ -74,13 +75,17 @@ packages/mobile/
 │   └── run/[id].tsx       # Graph view screen
 ├── src/
 │   ├── components/        # UI components
-│   │   ├── GraphCanvas.tsx   # Skia-based graph renderer
-│   │   └── NodeCard.tsx      # Draggable node card
+│   │   ├── GraphCanvas.tsx   # Skia edges + gestures
+│   │   ├── GraphMinimap.tsx  # Minimap navigation
+│   │   ├── NodeCard.tsx      # Draggable node card + ports
+│   │   ├── NodeInspector.tsx # Bottom sheet inspector
+│   │   └── ApprovalQueue.tsx # Pending approvals
 │   ├── stores/            # Zustand stores
-│   │   └── graph-store.ts    # Graph state management
+│   │   └── graph-store.ts    # Graph + UI state
 │   └── lib/               # Utilities
 │       ├── api.ts            # REST API client
-│       └── useRunConnection.ts # WebSocket hook
+│       ├── useRunConnection.ts # WebSocket hook
+│       └── useLayoutPersistence.ts # Layout save
 ├── assets/                # App icons and images
 ├── docs/                  # Architecture documentation
 └── app.json              # Expo configuration
@@ -88,25 +93,22 @@ packages/mobile/
 
 ## Features
 
-### Phase 1 (Current)
-- [x] Expo project setup
-- [x] GraphStore with Zustand
-- [x] API client for daemon
-- [x] WebSocket real-time events
-- [x] Basic graph rendering with Skia
-- [x] Node cards with drag support
-- [x] Pan and pinch zoom gestures
+### Current
+- [x] Run list + run screen
+- [x] WebSocket event stream + REST hydration
+- [x] Skia edge rendering + handoff animations
+- [x] Node cards with drag + selection + port handles
+- [x] Edge creation with snap radius
+- [x] Minimap navigation
+- [x] Node inspector (chat + tool timeline)
+- [x] Approval queue actions
+- [x] Layout persistence back to the daemon
 
-### Phase 2 (Planned)
-- [ ] Edge creation via port drag
-- [ ] Node selection and inspector
-- [ ] Chat interface per node
-- [ ] Approval queue UI
-
-### Phase 3 (Planned)
+### Planned
+- [ ] Edge selection + deletion
+- [ ] Multi-select + box select
+- [ ] Node actions (duplicate, delete)
 - [ ] Visual parity with web UI
-- [ ] Performance optimization
-- [ ] Dark/light theme support
 
 ## Architecture
 

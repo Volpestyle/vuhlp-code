@@ -2,14 +2,14 @@
 
 ## Tooling choice
 - Use Expo dev client to support Skia and native modules.
-- If you prefer React Native CLI, mirror the same dependencies and configs.
+- React Native CLI is possible, but the repo is tuned for Expo.
 
-## Dependencies to add
-- Core: `react`, `react-native`, `expo` (if using Expo)
+## Current dependencies
+- Core: `react`, `react-native`, `expo`
 - Rendering: `@shopify/react-native-skia`
 - Gestures: `react-native-gesture-handler`
 - Animations: `react-native-reanimated`
-- State: `zustand` (or preferred state layer)
+- State: `zustand`
 - Shared types: `@vuhlp/contracts`
 
 ## Configuration notes
@@ -18,8 +18,6 @@
 - Skia: follow platform setup for iOS (pods) and Android (gradle).
 
 ## Suggested next steps
-1. Bootstrap the app (Expo dev client recommended).
-2. Wire `GraphStore`, `GraphViewport`, and `GraphController`.
-3. Implement `GraphCanvas` edges + edge preview in Skia.
-4. Port node cards into `GraphNodesOverlay` and align transforms.
-5. Validate parity checklist and iterate.
+1. Keep parity checklist up to date.
+2. Fill gaps (edge selection, node actions, run controls).
+3. Add perf checks as node counts grow.

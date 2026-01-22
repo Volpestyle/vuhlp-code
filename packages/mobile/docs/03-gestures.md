@@ -1,19 +1,21 @@
 # Gestures and interaction
 
-## Gesture mapping
-- Pan viewport: one-finger pan gesture on the canvas background.
-- Zoom: pinch gesture, centered on pinch focal point.
+## Gesture mapping (current)
+- Pan viewport: one-finger pan on the canvas background.
+- Zoom: pinch gesture, centered on the pinch focal point.
+- Fit view: double tap on the canvas background.
 - Node drag: pan gesture on node cards.
-- Edge creation: pan gesture on ports, updates edge preview.
-- Tap select: tap gesture on nodes/edges/background.
+- Edge creation: drag from a node port; snaps when near another node port.
+- Tap select: tap node to select; tap empty canvas to clear selection.
+- Minimap: tap or drag to re-center the viewport.
 
 ## Conflict rules
-- Port drag has priority over node drag.
-- Node drag has priority over viewport pan.
-- Pinch zoom disables pan during active pinch.
-- Tapping while dragging does nothing (avoid accidental selection).
+- Pinch and pan are simultaneous for two-finger navigation.
+- Pan is exclusive with tap to avoid accidental selections while dragging.
+- Node drag fails immediately when a touch starts on a port hit zone.
+- Tap handlers bail out while panning or pinching.
 
 ## Implementation notes
-- Use `react-native-gesture-handler` with simultaneous gesture support.
-- Drive viewport transforms with Reanimated shared values.
-- Keep JS hit testing minimal; prefer cached bounds for nodes and ports.
+- `GraphCanvas` owns the canvas-level gestures and viewport shared values.
+- `NodeCard` handles drag/tap and delegates port drag to the canvas.
+- Edge snapping uses a fixed radius in world-space.
