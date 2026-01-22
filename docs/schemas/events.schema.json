@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VuhlpEvent",
+  "description": "Base event shape for v0. Type-specific fields vary by event type.",
+  "type": "object",
+  "required": ["id", "runId", "ts", "type"],
+  "properties": {
+    "id": { "type": "string" },
+    "runId": { "type": "string" },
+    "ts": { "type": "string" },
+    "type": { "type": "string" }
+  },
+  "additionalProperties": true
+}

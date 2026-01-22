@@ -1,31 +1,11 @@
-# Suggested Stack
+# Stack
 
-This is a short recommendation for the optimal stack to build vuhlp from scratch.
+Current implementation stack:
 
-## Recommended default
-**Daemon:** Node.js 25 + TypeScript
-- Best fit for CLI process spawning and streaming output parsing.
-- Fast iteration for runtime + provider adapters.
+- **Daemon:** Node.js 25 + TypeScript
+- **HTTP/WS:** Express + `ws`
+- **State:** JSON snapshots + JSONL event logs on disk
+- **UI:** React + Vite + Cytoscape
+- **Schemas:** TypeScript types + JSON Schema
 
-**Transport:** REST + WebSocket
-- Simple, stable contract for UI and future iOS client.
-
-**State:** SQLite + filesystem
-- SQLite for runs, events, indexes.
-- Filesystem for artifacts (diffs, logs, prompts, transcripts).
-
-**UI:** React + Vite + custom WebGL renderer
-- WebGL is required for fluid graph motion and edge routing.
-- Custom renderer ensures port snapping and smooth re-routing.
-
-**Schemas:** JSON Schema + TypeScript types
-- Keep the contract authoritative and portable.
-
-## Alternatives (supported if tested)
-- **Bun runtime:** Faster startup, but verify CLI streaming, signals, and stdio stability.
-- **Go daemon:** Strong reliability and single-binary distribution; slower iteration than TS.
-
-## Why this is optimal
-- The product is I/O bound, not CPU bound.
-- CLI session continuity and streaming are the hardest parts; Node is proven here.
-- A stable WS/REST contract allows future SwiftUI iOS control without backend changes.
+This stack is optimized for fast iteration and local-first workflows.

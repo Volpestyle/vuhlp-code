@@ -22,8 +22,8 @@ Build a local-first, graph-based orchestration harness for multiple coding agent
 - Automated merge/conflict resolution. Agents must be prompted to edit in harmony; orchestrator reviews outcomes.
 - Hidden agent behavior. Every action should be observable.
 
-## Future enhancements (not required now)
-- Remote control from a native iPhone app.
+## Mobile companion
+- v0 includes a mobile companion (Expo / React Native) for run monitoring, approvals, and node inspection.
 
 ## Core concepts (product-level)
 - Run: A single orchestration session with a graph of nodes and edges.

@@ -1,6 +1,6 @@
 # Shared Contract (Build Alignment)
 
-Use this as the single source of truth for runtime ↔ provider ↔ UI integration. If anything conflicts, this contract wins.
+Use this as the single source of truth for runtime ↔ provider ↔ UI integration.
 
 ## Versioning
 - `contractVersion = "1"` (required in run state).
@@ -12,6 +12,7 @@ Use this as the single source of truth for runtime ↔ provider ↔ UI integrati
 
 ## Event envelope (shared)
 Every event must include these fields:
+
 ```json
 {
   "id": "event-uuid",
@@ -21,25 +22,31 @@ Every event must include these fields:
   "nodeId": "optional-node-uuid"
 }
 ```
-Event logs are append-only JSONL files, ordered by write time.
+
+Event logs are append-only JSONL files at `dataDir/runs/<runId>/events.jsonl`.
 
 ## Run state (minimum fields)
+
 ```json
 {
   "id": "run-uuid",
   "contractVersion": "1",
-  "status": "queued | running | paused | completed | failed",
+  "status": "queued | running | paused | stopped | completed | failed",
   "mode": "AUTO | INTERACTIVE",
   "globalMode": "PLANNING | IMPLEMENTATION",
   "createdAt": "2026-01-01T00:00:00Z",
   "updatedAt": "2026-01-01T00:00:00Z",
   "nodes": { "nodeId": { "...": "..." } },
+  "nodeConfigs": { "nodeId": { "...": "..." } },
   "edges": { "edgeId": { "...": "..." } },
   "artifacts": { "artifactId": { "...": "..." } }
 }
 ```
 
+Run snapshots are stored at `dataDir/runs/<runId>/state.json`.
+
 ## Node state
+
 ```json
 {
   "id": "node-uuid",
@@ -64,22 +71,12 @@ Event logs are append-only JSONL files, ordered by write time.
   "session": {
     "sessionId": "provider-session-id",
     "resetCommands": ["/new", "/clear"]
-  },
-  "connection": {
-    "status": "connected | idle | disconnected",
-    "streaming": true,
-    "lastHeartbeatAt": "2026-01-01T00:00:00Z",
-    "lastOutputAt": "2026-01-01T00:00:00Z"
-  },
-  "inboxCount": 0
+  }
 }
 ```
 
-Optional node fields are recommended for UI responsiveness:
-- `connection` describes live provider state.
-- `inboxCount` shows queued inputs.
-
 ## Edge state
+
 ```json
 {
   "id": "edge-uuid",
@@ -96,6 +93,7 @@ Defaults:
 - Node -> orchestrator: `type = report`, `label = "report"`.
 
 ## Envelope (handoff payload)
+
 ```json
 {
   "kind": "handoff",
@@ -111,44 +109,12 @@ Defaults:
     ],
     "status": { "ok": true, "reason": "tests-pass" },
     "response": { "expectation": "optional", "replyTo": "node-a" }
-  },
-  "contextRef": "contextpack://pack/789"
+  }
 }
 ```
 
-### Artifact reference scheme
-- Use `artifact://<artifactId>` for all artifact references.
-- The UI resolves artifacts to local paths for preview/download.
+## Artifacts
 
-## Inbox semantics
-- Inputs are queued per node and consumed on the next turn.
-- No interruption by default.
-- User can explicitly interrupt or queue.
- - `send_handoff` requires an edge between the sender and receiver.
-
-## User message record (if stored)
-```json
-{
-  "id": "msg-uuid",
-  "runId": "run-uuid",
-  "nodeId": "optional-node-uuid",
-  "role": "user | assistant | system",
-  "content": "message text",
-  "interrupt": true,
-  "createdAt": "2026-01-01T00:00:00Z"
-}
-```
-
-## Prompting contract
-- First turn or after reset/provider switch: full prompt is sent.
-- Subsequent turns: delta prompt sent; session continuity assumed.
-- Full effective prompt is always reconstructed and logged.
-
-### Prompt artifacts (required)
-- `prompt.full.txt` (full effective prompt)
-- `prompt.blocks.json` (system/role/mode/task/override split)
-
-## Artifacts (non-negotiable)
 ```json
 {
   "id": "artifact-uuid",
@@ -161,18 +127,14 @@ Defaults:
 }
 ```
 
-- Every completed turn must emit a diff artifact (empty or "no changes" allowed).
-- Node inspector must show per-node diffs.
+Prompt artifacts are required per turn:
+- `prompt.full.txt`
+- `prompt.blocks.json`
 
-### Diff artifact metadata (recommended)
-```json
-{
-  "filesChanged": ["path/a.ts", "path/b.ts"],
-  "summary": "short change summary"
-}
-```
+Diff artifacts are emitted when available.
 
 ## Tool event payloads (minimum)
+
 ```json
 {
   "type": "tool.proposed",
@@ -180,6 +142,7 @@ Defaults:
   "tool": { "id": "tool-uuid", "name": "command", "args": { "cmd": "..." } }
 }
 ```
+
 ```json
 {
   "type": "tool.completed",
@@ -192,12 +155,10 @@ Defaults:
 
 ## Approval contract
 - `cliPermissionsMode = skip | gated`
-- Gated mode: provider pauses -> approval event -> UI -> user -> response forwarded.
-- Agent management approvals (spawn_node, create_edge):
-  - Non-orchestrator nodes always require approval.
-  - Orchestrator approval is policy-controlled (`agentManagementRequiresApproval`).
+- `agentManagementRequiresApproval` applies to `spawn_node` and `create_edge`.
 
 ### Approval event payloads (minimum)
+
 ```json
 {
   "type": "approval.requested",
@@ -207,6 +168,7 @@ Defaults:
   "context": "optional"
 }
 ```
+
 ```json
 {
   "type": "approval.resolved",
@@ -216,29 +178,31 @@ Defaults:
 ```
 
 ## Loop safety contract
-- Stall detection on repeated output hash / diff hash / verification failures.
-- On stall: pause orchestration + emit `run.stalled` with evidence.
+- Stall detection on repeated output/diff/verification signals.
+- On stall: pause run and emit `run.stalled` with evidence.
 
 ## Event stream (WS)
 Consumers must support:
 - `run.patch`, `run.mode`, `run.stalled`
-- `node.patch`, `node.progress`
+- `node.patch`, `node.progress`, `node.heartbeat`, `node.log`, `node.deleted`, `turn.status`
 - `edge.created`, `edge.deleted`
 - `handoff.sent`
 - `message.user`, `message.assistant.delta`, `message.assistant.final`
+- `message.assistant.thinking.delta`, `message.assistant.thinking.final`
 - `tool.proposed`, `tool.started`, `tool.completed`
 - `approval.requested`, `approval.resolved`
 - `artifact.created`
+- `telemetry.usage`
 
 ## Minimal REST endpoints
-- `POST /api/runs` -> create run
-- `GET /api/runs` -> list runs
-- `GET /api/runs/:id` -> run snapshot
-- `GET /api/runs/:id/events` -> event history
-- `DELETE /api/runs/:id` -> delete run
-- `POST /api/runs/:id/nodes` -> create node
-- `PATCH /api/runs/:id/nodes/:nodeId` -> update node
-- `POST /api/runs/:id/edges` -> create edge
+- `POST /api/runs`
+- `GET /api/runs` / `GET /api/runs/:id`
+- `PATCH /api/runs/:id` / `DELETE /api/runs/:id`
+- `GET /api/runs/:id/events`
+- `POST /api/runs/:id/nodes`
+- `PATCH /api/runs/:id/nodes/:nodeId`
+- `DELETE /api/runs/:id/nodes/:nodeId`
+- `POST /api/runs/:id/edges`
 - `DELETE /api/runs/:id/edges/:edgeId`
-- `POST /api/runs/:id/chat` -> interrupt/queue
+- `POST /api/runs/:id/chat`
 - `GET /api/approvals` / `POST /api/approvals/:id/resolve`

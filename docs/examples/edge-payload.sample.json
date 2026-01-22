@@ -1,0 +1,13 @@
+{
+  "kind": "handoff",
+  "fromNodeId": "node-a",
+  "toNodeId": "node-b",
+  "payload": {
+    "message": "Tests failing in src/ws/retry.ts",
+    "structured": { "failedTests": 2 },
+    "artifacts": [
+      { "type": "log", "ref": "artifact://logs/test-failures.txt" }
+    ],
+    "status": { "ok": false, "reason": "tests_failed" }
+  }
+}

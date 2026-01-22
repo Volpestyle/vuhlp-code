@@ -1,6 +1,6 @@
 # vuhlp docs
 
-This folder is the source‑of‑truth spec for rebuilding the application from scratch with improved behavior and clarity.
+These docs are the source of truth for the current implementation in `packages/daemon` and `packages/ui`.
 
 ## Doc order
 1. `docs/00-shared-contract.md`
@@ -12,15 +12,15 @@ This folder is the source‑of‑truth spec for rebuilding the application from 
 7. `docs/06-orchestration-modes-and-loop-safety.md`
 8. `docs/07-ui-spec.md`
 9. `docs/08-stack.md`
+10. `docs/09-ui-graph.md`
+11. `docs/10-config.md`
+12. `docs/12-api.md`
 
-## Templates
-- `docs/templates/orchestrator.md`
-- `docs/templates/planner.md`
-- `docs/templates/implementer.md`
-- `docs/templates/reviewer.md`
-- `docs/templates/investigator.md`
+## Role templates
+- Repo overrides (optional): `docs/templates/<template>.md`
+- System defaults: `packages/daemon/docs/templates/<template>.md`
 
 ## Notes
-- This is a redesign: improved behavior is specified even if a prior implementation differs.
-- Local‑first only: no cloud or multi‑tenant concerns.
-- Full visibility is mandatory: prompts, diffs, and events must be logged.
+- Local-first only: no cloud or multi-tenant concerns.
+- Event logs and artifacts are stored under the configured `dataDir` (default `data`).
+- Prompts, tool events, and artifacts are logged for auditability.
