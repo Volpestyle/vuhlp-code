@@ -85,13 +85,13 @@ const GraphEdgeComponent: React.FC<GraphEdgeProps> = ({ edge, sourceNode, target
 
     const dist = getDistance(start, end);
     // Control point offset based on distance, clamped
-    const offset = Math.min(dist * 0.5, 150); 
+    const offset = Math.min(dist * 0.5, 150);
 
     const cp1 = {
       x: start.x + start.normal.x * offset,
       y: start.y + start.normal.y * offset
     };
-    
+
     const cp2 = {
       x: end.x + end.normal.x * offset,
       y: end.y + end.normal.y * offset

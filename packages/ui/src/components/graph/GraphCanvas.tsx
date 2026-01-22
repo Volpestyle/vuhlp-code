@@ -110,7 +110,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
 
   useEffect(() => {
     viewportRef.current = viewport;
-    
+
     // Sync refs with state when state changes (e.g. initial load, buttons, external updates)
     if (domLayerRef.current) {
       domLayerRef.current.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
@@ -712,12 +712,11 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <Application 
-        width={Math.max(1, dimensions.width)} 
-        height={Math.max(1, dimensions.height)} 
+      <Application
+        width={Math.max(1, dimensions.width)}
+        height={Math.max(1, dimensions.height)}
         backgroundAlpha={0}
         antialias={true}
-        resolution={deviceResolution}
         autoStart={true}
         sharedTicker={true}
         eventMode="static"
@@ -728,24 +727,24 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
           eventMode="static"
           onPointerDown={onCanvasPointerDown}
         />
-        <pixiContainer 
+        <pixiContainer
           ref={pixiContainerRef}
-          x={viewport.x} 
-          y={viewport.y} 
+          x={viewport.x}
+          y={viewport.y}
           scale={{ x: viewport.zoom, y: viewport.zoom }}
         >
-          {/* Draw Edges first */}
+          {/* Draw Edges inside transformed container using world coordinates */}
           {edges.map(edge => {
             const source = nodesById.get(edge.from);
             const target = nodesById.get(edge.to);
             if (source && target) {
               return (
-                <GraphEdge 
-                  key={edge.id} 
-                  edge={edge} 
-                  sourceNode={source} 
-                  targetNode={target} 
-                  resolution={deviceResolution}
+                <GraphEdge
+                  key={edge.id}
+                  edge={edge}
+                  sourceNode={source}
+                  targetNode={target}
+                  resolution={1}
                   onSelect={handleEdgeSelect}
                   onContextMenu={handleEdgeContextMenu}
                 />
@@ -755,8 +754,6 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
           })}
 
           {edgePreview && <pixiGraphics draw={drawEdgePreview} eventMode="none" />}
-
-          {/* Nodes are rendered in the DOM layer for richer interaction */}
         </pixiContainer>
       </Application>
       <GraphDomNodes
