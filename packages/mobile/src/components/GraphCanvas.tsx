@@ -28,6 +28,8 @@ const SPRING_CONFIG = {
 };
 
 const EDGE_SNAP_RADIUS = 30;
+const EDGE_HIT_RADIUS = 16;
+const EDGE_HIT_SAMPLES = 24;
 const HANDOFF_ANIMATION_DURATION_MS = 2000;
 
 let skiaMissingLogged = false;
@@ -82,11 +84,13 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
   const nodes = useGraphStore((s) => s.nodes);
   const edges = useGraphStore((s) => s.edges);
   const viewport = useGraphStore((s) => s.viewport);
+  const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
+  const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId);
   const edgeDrag = useGraphStore((s) => s.edgeDrag);
   const setViewport = useGraphStore((s) => s.setViewport);
   const setViewDimensions = useGraphStore((s) => s.setViewDimensions);
   const selectNode = useGraphStore((s) => s.selectNode);
-  const setInspectorOpen = useGraphStore((s) => s.setInspectorOpen);
+  const selectEdge = useGraphStore((s) => s.selectEdge);
   const updateNodePosition = useGraphStore((s) => s.updateNodePosition);
   const startEdgeDrag = useGraphStore((s) => s.startEdgeDrag);
   const updateEdgeDrag = useGraphStore((s) => s.updateEdgeDrag);
@@ -99,6 +103,14 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
   // Track animation frame time for handoff animations
   const [animationTime, setAnimationTime] = useState(Date.now());
   const animationActiveUntil = useSharedValue(0);
+
+  const nodesById = useMemo(() => {
+    const lookup: Record<string, VisualNode> = {};
+    for (const node of nodes) {
+      lookup[node.id] = node;
+    }
+    return lookup;
+  }, [nodes]);
 
   // Update animation end time when handoffs change
   useEffect(() => {
@@ -420,8 +432,12 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
 
   // Double tap to reset view
   const handleCanvasTap = useCallback(
-    (worldX: number, worldY: number) => {
-      const hitNode = nodes.some((node) => {
+    (worldX: number, worldY: number, zoom: number) => {
+      if (edgeDrag) {
+        return;
+      }
+
+      const hitNode = nodes.find((node) => {
         const { x, y } = node.position;
         return (
           worldX >= x &&
@@ -431,11 +447,41 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
         );
       });
 
-      if (!hitNode) {
+      if (hitNode) {
+        selectNode(hitNode.id);
+        return;
+      }
+
+      const hitRadius = EDGE_HIT_RADIUS / Math.max(zoom, 0.1);
+      const hitEdge = findEdgeNearPoint(
+        { x: worldX, y: worldY },
+        edges,
+        nodesById,
+        hitRadius
+      );
+
+      if (hitEdge) {
+        selectEdge(hitEdge.id === selectedEdgeId ? null : hitEdge.id);
+        return;
+      }
+
+      if (selectedEdgeId !== null) {
+        selectEdge(null);
+      }
+      if (selectedNodeId !== null) {
         selectNode(null);
       }
     },
-    [nodes, selectNode]
+    [
+      edgeDrag,
+      nodes,
+      edges,
+      nodesById,
+      selectNode,
+      selectEdge,
+      selectedEdgeId,
+      selectedNodeId,
+    ]
   );
   
   // Consolidated tap handler for both single and double taps
@@ -459,7 +505,7 @@ function SkiaGraphCanvas({ viewportX, viewportY, viewportZoom }: GraphCanvasProp
         const zoom = viewportZoom.value || 1;
         const worldX = (event.x - viewportX.value) / zoom;
         const worldY = (event.y - viewportY.value) / zoom;
-        runOnJS(handleCanvasTap)(worldX, worldY);
+        runOnJS(handleCanvasTap)(worldX, worldY, zoom);
 
         // Record this tap for potential double tap
         lastTapTime.value = now;
@@ -834,6 +880,77 @@ function getBezierPoint(
     x: bezier(t, start.x, cp1.x, cp2.x, end.x),
     y: bezier(t, start.y, cp1.y, cp2.y, end.y),
   };
+}
+
+function distanceToSegment(point: Point, start: Point, end: Point): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) {
+    return Math.hypot(point.x - start.x, point.y - start.y);
+  }
+  const t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSq;
+  const clamped = Math.max(0, Math.min(1, t));
+  const projX = start.x + clamped * dx;
+  const projY = start.y + clamped * dy;
+  return Math.hypot(point.x - projX, point.y - projY);
+}
+
+function getEdgeDistanceToPoint(
+  point: Point,
+  source: NodeLayout,
+  target: NodeLayout,
+  samples: number
+): number {
+  const { start, end, cp1, cp2 } = getEdgeGeometry(source, target);
+  const steps = Math.max(6, samples);
+  let minDistance = Infinity;
+  let prev = { x: start.x, y: start.y };
+
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    const curr = {
+      x: bezier(t, start.x, cp1.x, cp2.x, end.x),
+      y: bezier(t, start.y, cp1.y, cp2.y, end.y),
+    };
+    const distance = distanceToSegment(point, prev, curr);
+    if (distance < minDistance) {
+      minDistance = distance;
+    }
+    prev = curr;
+  }
+
+  return minDistance;
+}
+
+function findEdgeNearPoint(
+  point: Point,
+  edges: VisualEdge[],
+  nodesById: Record<string, VisualNode>,
+  hitRadius: number
+): VisualEdge | null {
+  let closestEdge: VisualEdge | null = null;
+  let closestDistance = Infinity;
+
+  for (const edge of edges) {
+    const sourceNode = nodesById[edge.from];
+    const targetNode = nodesById[edge.to];
+    if (!sourceNode || !targetNode) continue;
+
+    const distance = getEdgeDistanceToPoint(
+      point,
+      { position: sourceNode.position, dimensions: sourceNode.dimensions },
+      { position: targetNode.position, dimensions: targetNode.dimensions },
+      EDGE_HIT_SAMPLES
+    );
+
+    if (distance <= hitRadius && distance < closestDistance) {
+      closestDistance = distance;
+      closestEdge = edge;
+    }
+  }
+
+  return closestEdge;
 }
 
 

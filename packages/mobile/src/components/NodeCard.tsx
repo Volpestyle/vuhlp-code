@@ -111,13 +111,15 @@ export const NodeCard = memo(function NodeCard({
     .onStart((e) => {
       'worklet';
       // Check if we hit a port
-      const hitRadius = PORT_SIZE / 2 + PORT_HIT_SLOP;
+      const hitRadius = (PORT_SIZE / 2 + PORT_HIT_SLOP) / effectiveZoom;
+      const localX = e.x / effectiveZoom;
+      const localY = e.y / effectiveZoom;
       let hitPortIndex = -1;
 
       for (const port of ports) {
         const centerX = port.x + PORT_SIZE / 2;
         const centerY = port.y + PORT_SIZE / 2;
-        if (Math.abs(e.x - centerX) <= hitRadius && Math.abs(e.y - centerY) <= hitRadius) {
+        if (Math.abs(localX - centerX) <= hitRadius && Math.abs(localY - centerY) <= hitRadius) {
           hitPortIndex = port.index;
           break;
         }
@@ -459,4 +461,3 @@ const styles = StyleSheet.create({
     borderColor: colors.borderStrong,
   },
 });
-
