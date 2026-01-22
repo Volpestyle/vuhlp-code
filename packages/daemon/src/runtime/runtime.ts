@@ -1624,7 +1624,14 @@ export class Runtime {
   }
 
   emitEvent(runId: UUID, event: EventEnvelope): void {
-    const record = this.requireRun(runId);
+    const record = this.store.getRun(runId);
+    if (!record) {
+      this.logger.debug("ignoring event for missing run", {
+        runId,
+        type: event.type
+      });
+      return;
+    }
     let usagePatch: { nodeId?: UUID; nodeUsage?: UsageTotals; runUsage?: UsageTotals; ts: string } | null = null;
 
     if (event.type === "telemetry.usage") {
