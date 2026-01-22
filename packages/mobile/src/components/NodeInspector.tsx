@@ -748,31 +748,19 @@ export function NodeInspector() {
     }
     if (!run) {
       console.warn('[inspector] cannot delete edge without active run', { edgeId: activeEdge.id });
-      Alert.alert('Delete edge unavailable', 'Start a run to delete edges.', [{ text: 'OK' }]);
       return;
     }
-    Alert.alert(
-      'Delete edge?',
-      `${edgeSourceLabel} ${activeEdge.bidirectional ? '<->' : '->'} ${edgeTargetLabel}`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            api
-              .deleteEdge(run.id, activeEdge.id)
-              .then(() => removeEdge(activeEdge.id))
-              .catch((error) => {
-                console.error('[inspector] failed to delete edge', error);
-                const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-                Alert.alert('Delete failed', `Could not delete edge: ${errorMessage}`, [{ text: 'OK' }]);
-              });
-          },
-        },
-      ]
-    );
-  }, [activeEdge, edgeSourceLabel, edgeTargetLabel, removeEdge, run]);
+    console.log('[inspector] deleting edge', { edgeId: activeEdge.id });
+    api
+      .deleteEdge(run.id, activeEdge.id)
+      .then(() => {
+        console.log('[inspector] edge deleted successfully', { edgeId: activeEdge.id });
+        removeEdge(activeEdge.id);
+      })
+      .catch((error) => {
+        console.error('[inspector] failed to delete edge', error);
+      });
+  }, [activeEdge, removeEdge, run]);
 
   // Process control handlers
   const handleStartProcess = useCallback(() => {
