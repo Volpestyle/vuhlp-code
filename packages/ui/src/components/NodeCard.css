@@ -66,6 +66,28 @@
   color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.18em;
+  letter-spacing: 0.18em;
+}
+
+.node-card__expand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  opacity: 0.6;
+}
+
+.node-card__expand:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+  opacity: 1;
 }
 
 /* Title */

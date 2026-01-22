@@ -13,6 +13,7 @@ import { useRunStore } from '../stores/runStore';
 import { StatusBadge } from './StatusBadge';
 import { ProviderBadge } from './ProviderBadge';
 import { formatRelativeTime } from '@vuhlp/shared';
+import { Expand } from 'iconoir-react';
 import './NodeCard.css';
 
 interface NodeCardProps {
@@ -31,6 +32,14 @@ export function NodeCard({ node, collapsed = false, interactive = true }: NodeCa
   const handleClick = () => {
     if (!interactive) return;
     selectNode(isSelected ? null : node.id);
+  };
+
+  const setViewMode = useRunStore((s) => s.setViewMode);
+
+  const handleExpand = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    selectNode(node.id);
+    setViewMode('fullscreen');
   };
 
   if (collapsed) {
@@ -69,6 +78,13 @@ export function NodeCard({ node, collapsed = false, interactive = true }: NodeCa
       <div className="node-card__header">
         <ProviderBadge provider={node.provider} size="sm" />
         <span className="node-card__role">{node.roleTemplate}</span>
+        <button 
+          className="node-card__expand"
+          onClick={handleExpand}
+          title="Fullscreen"
+        >
+          <Expand width={14} height={14} />
+        </button>
       </div>
 
       {/* Title */}

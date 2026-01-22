@@ -144,6 +144,9 @@ importers:
       expo-asset:
         specifier: ~12.0.12
         version: 12.0.12(expo@54.0.31)(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0))(react@19.1.0)
+      expo-blur:
+        specifier: ~15.0.8
+        version: 15.0.8(expo@54.0.31)(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0))(react@19.1.0)
       expo-crypto:
         specifier: ~15.0.8
         version: 15.0.8(expo@54.0.31)
@@ -177,6 +180,9 @@ importers:
       react-native:
         specifier: 0.81.5
         version: 0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0)
+      react-native-context-menu-view:
+        specifier: ^1.21.0
+        version: 1.21.0(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0))(react@19.1.0)
       react-native-gesture-handler:
         specifier: ~2.28.0
         version: 2.28.0(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0))(react@19.1.0)
@@ -195,6 +201,9 @@ importers:
       react-native-svg:
         specifier: 15.12.1
         version: 15.12.1(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0))(react@19.1.0)
+      react-native-worklets:
+        specifier: ^0.7.2
+        version: 0.7.2(@babel/core@7.28.6)(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0))(react@19.1.0)
       three:
         specifier: ^0.182.0
         version: 0.182.0
@@ -2885,6 +2894,13 @@ packages:
       react: 19.1.0
       react-native: '*'
 
+  expo-blur@15.0.8:
+    resolution: {integrity: sha512-rWyE1NBRZEu9WD+X+5l7gyPRszw7n12cW3IRNAb5i6KFzaBp8cxqT5oeaphJapqURvcqhkOZn2k5EtBSbsuU7w==}
+    peerDependencies:
+      expo: '*'
+      react: 19.1.0
+      react-native: '*'
+
   expo-constants@18.0.13:
     resolution: {integrity: sha512-FnZn12E1dRYKDHlAdIyNFhBurKTS3F9CrfrBDJI5m3D7U17KBHMQ6JEfYlSj7LG7t+Ulr+IKaj58L1k5gBwTcQ==}
     peerDependencies:
@@ -4300,6 +4316,12 @@ packages:
     peerDependencies:
       '@types/react': '>=18'
       react: 19.1.0
+
+  react-native-context-menu-view@1.21.0:
+    resolution: {integrity: sha512-GVQckdDxKyM4BYqWqiApnfzzk56vLEMWiVLsvs95mPhJJYvzRXx+Ev3T6DVEasWCZxk6PbgtcZaWi9jnXGdhCQ==}
+    peerDependencies:
+      react: 19.1.0
+      react-native: '>=0.60.0-rc.0 <1.0.x'
 
   react-native-fit-image@1.5.5:
     resolution: {integrity: sha512-Wl3Vq2DQzxgsWKuW4USfck9zS7YzhvLNPpkwUUCF90bL32e1a0zOVQ3WsJILJOwzmPdHfzZmWasiiAUNBkhNkg==}
@@ -8130,6 +8152,12 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  expo-blur@15.0.8(expo@54.0.31)(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0))(react@19.1.0):
+    dependencies:
+      expo: 54.0.31(@babel/core@7.28.6)(@expo/metro-runtime@6.1.2)(expo-router@6.0.21)(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0))(react@19.1.0)
+      react: 19.1.0
+      react-native: 0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0)
+
   expo-constants@18.0.13(expo@54.0.31)(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0)):
     dependencies:
       '@expo/config': 12.0.13
@@ -9915,6 +9943,11 @@ snapshots:
       vfile: 6.0.3
     transitivePeerDependencies:
       - supports-color
+
+  react-native-context-menu-view@1.21.0(react-native@0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0))(react@19.1.0):
+    dependencies:
+      react: 19.1.0
+      react-native: 0.81.5(@babel/core@7.28.6)(@types/react@19.2.8)(react@19.1.0)
 
   react-native-fit-image@1.5.5:
     dependencies:

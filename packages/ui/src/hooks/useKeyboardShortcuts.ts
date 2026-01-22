@@ -65,7 +65,7 @@ export function useKeyboardShortcuts() {
       // shift+n: New node
       if (key === 'n' && isShift && run) {
         void createNode(run.id, {
-          label: `New Node ${Object.keys(run.nodes).length + 1}`,
+          label: `New Agent ${Object.keys(run.nodes).length + 1}`,
           roleTemplate: 'implementer',
           provider: 'claude',
           capabilities: {

@@ -47,7 +47,7 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
 
   useEffect(() => {
     if (!open) return;
-    setLabel(`New Node ${nodeCount + 1}`);
+    setLabel(`New Agent ${nodeCount + 1}`);
     setRoleTemplate('implementer');
     setProvider('claude');
     setCapabilities(DEFAULT_CAPABILITIES);
@@ -108,7 +108,7 @@ export function NewNodeModal({ open, onClose }: NewNodeModalProps) {
       <div className="new-node-modal" role="dialog" aria-modal="true" aria-labelledby="new-node-title">
         <header className="new-node-modal__header">
           <h2 className="new-node-modal__title" id="new-node-title">
-            New Node
+            New Agent 
           </h2>
           <button className="new-node-modal__close" onClick={onClose} type="button">
             &times;

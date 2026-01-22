@@ -18,6 +18,8 @@ interface WebSocketClientOptions {
 const DEFAULT_WS_URL = 'ws://localhost:4000';
 const DEBUG_WS = import.meta.env.VITE_DEBUG_WS === 'true';
 
+type WsUrlSource = 'env:VITE_WS_URL' | 'env:VITE_API_URL' | 'window' | 'default';
+
 const debugLog = (...args: unknown[]) => {
   if (DEBUG_WS) {
     console.log(...args);
@@ -29,6 +31,44 @@ const debugWarn = (...args: unknown[]) => {
     console.warn(...args);
   }
 };
+
+function resolveEnvUrl(value: string | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function getBrowserOrigin(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const origin = window.location?.origin;
+  if (!origin || origin === 'null') {
+    return null;
+  }
+  return origin;
+}
+
+function resolveWsBaseUrl(): { url: string; source: WsUrlSource } {
+  const envWsUrl = resolveEnvUrl(import.meta.env.VITE_WS_URL);
+  if (envWsUrl) {
+    return { url: envWsUrl, source: 'env:VITE_WS_URL' };
+  }
+  const envApiUrl = resolveEnvUrl(import.meta.env.VITE_API_URL);
+  if (envApiUrl) {
+    return { url: envApiUrl, source: 'env:VITE_API_URL' };
+  }
+  const origin = getBrowserOrigin();
+  if (origin) {
+    return { url: origin, source: 'window' };
+  }
+  console.error('[ws] unable to resolve WebSocket base URL; falling back to default', {
+    fallback: DEFAULT_WS_URL,
+  });
+  return { url: DEFAULT_WS_URL, source: 'default' };
+}
 
 function normalizeWsUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, '');
@@ -154,11 +194,9 @@ export function connectToRun(
     wsClient.disconnect();
   }
 
-  const wsUrl = normalizeWsUrl(
-    (import.meta.env.VITE_WS_URL as string | undefined) ??
-      (import.meta.env.VITE_API_URL as string | undefined) ??
-      DEFAULT_WS_URL
-  );
+  const resolved = resolveWsBaseUrl();
+  const wsUrl = normalizeWsUrl(resolved.url);
+  debugLog('[ws] resolved base URL', { source: resolved.source, url: wsUrl });
   wsClient = new WebSocketClient({
     url: wsUrl,
     runId,

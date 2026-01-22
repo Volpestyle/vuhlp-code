@@ -142,6 +142,7 @@ const GraphEdgeComponent: React.FC<GraphEdgeProps> = ({ edge, sourceNode, target
     const lineAlpha = edge.selected ? 0.95 : 0.8;
     const lineWidth = edge.selected ? 3 : 2;
 
+    g.beginPath();
     g.moveTo(start.x, start.y);
     g.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, end.x, end.y);
     g.stroke({ width: lineWidth, color: lineColor, alpha: lineAlpha });
@@ -165,6 +166,7 @@ const GraphEdgeComponent: React.FC<GraphEdgeProps> = ({ edge, sourceNode, target
         y: end.y - arrowLength * Math.sin(angle) + arrowWidth * Math.cos(angle)
       };
       
+      g.beginPath();
       g.poly([tip.x, tip.y, left.x, left.y, right.x, right.y]);
       g.fill({ color: lineColor });
     }
@@ -184,6 +186,7 @@ const GraphEdgeComponent: React.FC<GraphEdgeProps> = ({ edge, sourceNode, target
         x: start.x - arrowLength * Math.cos(angle) - arrowWidth * Math.sin(angle),
         y: start.y - arrowLength * Math.sin(angle) + arrowWidth * Math.cos(angle)
       };
+      g.beginPath();
       g.poly([tip.x, tip.y, left.x, left.y, right.x, right.y]);
       g.fill({ color: lineColor });
     }
@@ -204,10 +207,12 @@ const GraphEdgeComponent: React.FC<GraphEdgeProps> = ({ edge, sourceNode, target
                    Math.pow(t, 3) * end.y;
 
       // Glow (Outer)
+      g.beginPath();
       g.circle(packetX, packetY, 8);
       g.fill({ color: 0x4287f5, alpha: 0.4 });
 
       // Core (Inner)
+      g.beginPath();
       g.circle(packetX, packetY, 4);
       g.fill({ color: 0xffffff, alpha: 1 });
     }

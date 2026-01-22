@@ -11,11 +11,14 @@ import {
   normalizeBaseUrl,
 } from "@vuhlp/shared";
 
-const DEFAULT_API_URL = "http://localhost:4000";
+const DEFAULT_API_URL = "";
 
 function getApiBaseUrl(): string {
-  const envUrl = import.meta.env.VITE_API_URL as string | undefined;
-  return normalizeBaseUrl(envUrl ?? DEFAULT_API_URL);
+  const envUrl = import.meta.env.VITE_API_URL;
+  if (typeof envUrl === "string" && envUrl.trim().length > 0) {
+    return normalizeBaseUrl(envUrl);
+  }
+  return normalizeBaseUrl(DEFAULT_API_URL);
 }
 
 const client = createApiClient({ baseUrl: getApiBaseUrl() });

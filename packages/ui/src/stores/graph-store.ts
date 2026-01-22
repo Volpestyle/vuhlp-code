@@ -122,7 +122,7 @@ export const useGraphStore = create<GraphState>((set) => ({
         : false;
       const shouldApplyLayout = incomingLayout
         ? runChanged ||
-          isLayoutNewer(incomingLayout, state.layoutUpdatedAt) ||
+          (!state.layoutDirty && isLayoutNewer(incomingLayout, state.layoutUpdatedAt)) ||
           (state.layoutDirty && layoutMatchesLocal)
         : false;
       const runNodes = Object.values(run.nodes);

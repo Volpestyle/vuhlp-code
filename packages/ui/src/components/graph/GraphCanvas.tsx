@@ -143,12 +143,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     }
   }, [edgeMenu, selectedEdgeId]);
 
-  const getPixiPoint = (event: PIXI.FederatedPointerEvent | null | undefined) => {
-    if (!event) return null;
-    return { x: event.global.x, y: event.global.y };
-  };
-
-  const getCanvasPoint = useCallback((event: PointerEvent | WheelEvent) => {
+  const getCanvasPoint = useCallback((event: PointerEvent | WheelEvent | PIXI.FederatedPointerEvent) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return null;
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -306,16 +301,17 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
   );
 
   const GraphRenderSync: React.FC<{ renderKey: string }> = ({ renderKey }) => {
-    const { app } = useApplication();
+    const { app, isInitialised } = useApplication();
 
     useLayoutEffect(() => {
-      if (!app) return;
+      if (!isInitialised || !app.renderer || !app.stage) return;
       let rafId: number | null = null;
       try {
-        app.render();
+        app.renderer.render(app.stage);
         rafId = requestAnimationFrame(() => {
           try {
-            app.render();
+            if (!app.renderer || !app.stage) return;
+            app.renderer.render(app.stage);
           } catch (error) {
             console.error('[graph] pixi render failed', error);
           }
@@ -328,7 +324,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
           cancelAnimationFrame(rafId);
         }
       };
-    }, [app, renderKey]);
+    }, [app, isInitialised, renderKey]);
 
     return null;
   };
@@ -488,7 +484,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
           zoom: newZoom
         };
         viewportRef.current = nextViewport;
-        setViewport(nextViewport, viewMode !== 'fullscreen');
+        setViewport(nextViewport, false);
         lastPanPosition.current = { x: point.x, y: point.y };
       }
     };
@@ -566,6 +562,9 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       } else if (isPanning.current && !hasPanned.current) {
         selectNode(null);
         setEdgeMenu(null);
+      }
+      if (isPanning.current && hasPanned.current) {
+        setViewport(viewportRef.current, true);
       }
       isPanning.current = false;
       hasPanned.current = false;
@@ -669,7 +668,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
     if (draggedNodeIdRef.current || edgeDragRef.current) return;
     setEdgeMenu(null);
     
-    const point = getPixiPoint(event);
+    const point = getCanvasPoint(event);
     if (!point) return;
     isPanning.current = true;
     hasPanned.current = false;
@@ -698,6 +697,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
       // V7: g.lineStyle(...) ...
       // V8: g.moveTo(..).lineTo(..).stroke({ width: 2, color: 0x666666, alpha: 0.6 });
       
+      g.beginPath();
       g.moveTo(start.x, start.y);
       g.lineTo(edgePreview.to.x, edgePreview.to.y);
       g.stroke({ width: 2, color: 0x666666, alpha: 0.6 });
@@ -813,10 +813,10 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({ onOpenNewNode }) => {
             className="graph-canvas__control-btn"
             onClick={onOpenNewNode}
             disabled={!run}
-            title="Create new node (shift+n)"
+            title="Create new Agent(shift+n)"
           >
             <Plus width={20} height={20} />
-            <span className="graph-canvas__control-label">New Node</span>
+            <span className="graph-canvas__control-label">New Agent</span>
           </button>
         )}
       </div>
