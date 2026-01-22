@@ -1,0 +1,135 @@
+.vuhlp-file-explorer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.vuhlp-file-explorer--empty,
+.vuhlp-file-explorer--loading,
+.vuhlp-file-explorer--error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.vuhlp-file-explorer__empty-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--vuhlp-space-2);
+  color: var(--vuhlp-text-tertiary);
+  text-align: center;
+  padding: var(--vuhlp-space-4);
+}
+
+.vuhlp-file-explorer__empty-icon {
+  font-size: 2rem;
+  opacity: 0.5;
+}
+
+.vuhlp-file-explorer__empty-message p {
+  margin: 0;
+  font-size: var(--vuhlp-text-sm);
+}
+
+.vuhlp-file-explorer__loading,
+.vuhlp-file-explorer__error {
+  color: var(--vuhlp-text-tertiary);
+  font-size: var(--vuhlp-text-sm);
+  padding: var(--vuhlp-space-4);
+}
+
+.vuhlp-file-explorer__error {
+  color: var(--vuhlp-status-failed);
+}
+
+.vuhlp-file-explorer__header {
+  padding: var(--vuhlp-space-2) var(--vuhlp-space-3);
+  border-bottom: 1px solid var(--vuhlp-border);
+  background: var(--vuhlp-panel2);
+  flex-shrink: 0;
+}
+
+.vuhlp-file-explorer__path {
+  font-size: var(--vuhlp-text-xs);
+  font-weight: 600;
+  color: var(--vuhlp-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vuhlp-file-explorer__tree {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--vuhlp-space-1) 0;
+}
+
+.vuhlp-file-explorer__empty-dir {
+  padding: var(--vuhlp-space-3);
+  color: var(--vuhlp-text-tertiary);
+  font-size: var(--vuhlp-text-xs);
+  font-style: italic;
+}
+
+.vuhlp-file-explorer__item-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.vuhlp-file-explorer__item {
+  display: flex;
+  align-items: center;
+  gap: var(--vuhlp-space-1);
+  width: 100%;
+  padding: 4px 12px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-size: var(--vuhlp-text-xs);
+  color: var(--vuhlp-text);
+  cursor: pointer;
+  transition: background var(--vuhlp-transition-fast);
+}
+
+.vuhlp-file-explorer__item:hover {
+  background: var(--vuhlp-hover);
+}
+
+.vuhlp-file-explorer__item--directory .vuhlp-file-explorer__name {
+  font-weight: 500;
+}
+
+.vuhlp-file-explorer__chevron {
+  width: 12px;
+  font-size: 8px;
+  color: var(--vuhlp-text-tertiary);
+  flex-shrink: 0;
+}
+
+.vuhlp-file-explorer__file-icon {
+  width: 24px;
+  font-size: 8px;
+  font-weight: 600;
+  color: var(--vuhlp-text-tertiary);
+  background: var(--vuhlp-panel2);
+  padding: 1px 2px;
+  border-radius: var(--vuhlp-radius-xs);
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.vuhlp-file-explorer__name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vuhlp-file-explorer__children {
+  display: flex;
+  flex-direction: column;
+}
