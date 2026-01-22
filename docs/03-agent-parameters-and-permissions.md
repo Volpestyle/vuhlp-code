@@ -105,4 +105,4 @@ The UI can reset a node:
 - Otherwise starts a fresh session.
 
 ## Open questions
-- None. Update as new node capabilities are introduced.
+- None. Update as new agent capabilities are introduced.

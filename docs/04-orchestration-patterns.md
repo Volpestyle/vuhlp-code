@@ -22,7 +22,7 @@ Use a bidirectional edge between two nodes. Each completion can send a handoff t
 
 ## 4. Orchestrator fan-out
 
-The orchestrator can spawn new nodes via tool_call JSON:
+The orchestrator can spawn new agents/nodes via tool_call JSON:
 
 ```json
 {"tool_call":{"id":"spawn-1","name":"spawn_node","args":{"roleTemplate":"implementer","label":"Frontend Builder","instructions":"Build UI components"}}}

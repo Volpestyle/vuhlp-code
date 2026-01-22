@@ -137,7 +137,7 @@ const TOOL_REGISTRY: ReadonlyArray<CanonicalTool> = [
     },
     {
         name: "spawn_node",
-        description: "Create a new node in the current run for delegation.",
+        description: "Create a new agent/node in the current run for delegation.",
         kind: "vuhlp-only",
         protocolSchema:
             "spawn_node: { label: string, alias?: string, roleTemplate: string, instructions?: string, input?: object, provider?: string, capabilities?: object, permissions?: object, session?: object, customSystemPrompt?: string }",
