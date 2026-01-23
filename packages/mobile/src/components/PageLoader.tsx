@@ -5,10 +5,10 @@ import { colors, fontFamily, fontSize, spacing, radius } from '@/lib/theme';
 interface PageLoaderProps {
   error?: string | null;
   onRetry?: () => void;
-  size?: 'sm' | 'lg';
+  size?: 'sm' | 'lg' | 'xl';
 }
 
-export function PageLoader({ error, onRetry, size = 'lg' }: PageLoaderProps) {
+export function PageLoader({ error, onRetry, size = 'xl' }: PageLoaderProps) {
   console.log('[PageLoader] Rendering with error:', error);
 
   return (
@@ -52,7 +52,6 @@ const styles = StyleSheet.create({
   spinnerContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    transform: [{ scale: 2.5 }],
   },
   errorContainer: {
     alignItems: 'center',
