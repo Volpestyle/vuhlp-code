@@ -52,7 +52,7 @@ const styles = StyleSheet.create({
   spinnerContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    transform: [{ scale: 1.3 }],
+    transform: [{ scale: 2.5 }],
   },
   errorContainer: {
     alignItems: 'center',

@@ -382,6 +382,8 @@ export function useRunConnection(runId: string | undefined, refreshKey = 0): Con
 
   // Initial fetch + WebSocket connection
   useEffect(() => {
+    let isMounted = true;
+
     if (!runId) {
       setState({ loading: false, error: 'No run ID', connected: false });
       return;
@@ -392,37 +394,50 @@ export function useRunConnection(runId: string | undefined, refreshKey = 0): Con
     setState({ loading: true, error: null, connected: false });
 
     Promise.all([api.getRun(runId), api.getRunEvents(runId)])
-      .then(([run, events]) => {
+      .then(async ([run, events]) => {
+        if (!isMounted) return;
         setRun(run);
 
         // Replay history (messages, tools, etc)
         // We skip patches because getRun() already returns the latest state
-        for (const event of events) {
-          switch (event.type) {
-            case 'message.user':
-            case 'message.assistant.delta':
-            case 'message.assistant.final':
-            case 'message.assistant.thinking.delta':
-            case 'message.assistant.thinking.final':
-            case 'tool.proposed':
-            case 'tool.started':
-            case 'tool.completed':
-            case 'turn.status':
-            case 'approval.requested':
-            case 'approval.resolved':
-              handleEvent(event);
-              break;
+        // Process in chunks to avoid blocking the UI thread
+        const CHUNK_SIZE = 50;
+        for (let i = 0; i < events.length; i += CHUNK_SIZE) {
+          if (!isMounted) return;
+          const chunk = events.slice(i, i + CHUNK_SIZE);
+          for (const event of chunk) {
+            switch (event.type) {
+              case 'message.user':
+              case 'message.assistant.delta':
+              case 'message.assistant.final':
+              case 'message.assistant.thinking.delta':
+              case 'message.assistant.thinking.final':
+              case 'tool.proposed':
+              case 'tool.started':
+              case 'tool.completed':
+              case 'turn.status':
+              case 'approval.requested':
+              case 'approval.resolved':
+                handleEvent(event);
+                break;
+            }
           }
+          // Yield to main thread to let animation frame pass
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
+        if (!isMounted) return;
         setState((s) => ({ ...s, loading: false }));
         connect();
       })
       .catch((err: Error) => {
-        setState({ loading: false, error: err.message, connected: false });
+        if (isMounted) {
+          setState({ loading: false, error: err.message, connected: false });
+        }
       });
 
     return () => {
+      isMounted = false;
       resetConnection('cleanup');
     };
   }, [runId, refreshKey, setRun, reset, connect, resetConnection]);
