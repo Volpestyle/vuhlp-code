@@ -7,7 +7,7 @@ v0 supports these providers:
 - `gemini`
 - `custom`
 
-Adapters live in `packages/providers` and are configured via environment variables (see `docs/10-config.md`).
+Adapters live in `packages/providers` and are configured via environment variables (see [docs/10-config.md](10-config.md)).
 
 ## CLI defaults
 

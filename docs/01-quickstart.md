@@ -66,7 +66,7 @@ VUHLP_CLAUDE_API_KEY=...
 VUHLP_CLAUDE_MODEL=claude-3-5-sonnet-latest
 ```
 
-See `docs/10-config.md` for the full env list.
+See [docs/10-config.md](10-config.md) for the full env list.
 
 ---
 
@@ -128,6 +128,6 @@ Then add nodes (via the UI) to start provider sessions.
 
 ## Next steps
 
-- `docs/02-concepts.md`
-- `docs/03-architecture.md`
-- `docs/12-api.md`
+- [docs/02-concepts.md](02-concepts.md)
+- [docs/03-architecture.md](03-architecture.md)
+- [docs/12-api.md](12-api.md)

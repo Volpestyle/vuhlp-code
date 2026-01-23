@@ -58,12 +58,12 @@ To support true multi-turn streaming, Vuhlp uses local forks:
 - **Codex**: `packages/providers/codex` (submodule) with `codex vuhlp` JSONL stdin/stdout.
 - **Gemini**: `packages/providers/gemini-cli` (submodule) with stream-json stdin.
 
-See `docs/09-cli-patches.md` for details and maintenance notes.
+See [docs/09-cli-patches.md](docs/09-cli-patches.md) for details and maintenance notes.
 
 ## Documentation
 
 The `docs/` folder is the canonical spec for the current implementation. Start here:
 
-1. `docs/01-product-spec.md`
-2. `docs/05-graph-rules-and-scheduling.md`
-3. `docs/12-api.md`
+1. [docs/01-product-spec.md](docs/01-product-spec.md)
+2. [docs/05-graph-rules-and-scheduling.md](docs/05-graph-rules-and-scheduling.md)
+3. [docs/12-api.md](docs/12-api.md)

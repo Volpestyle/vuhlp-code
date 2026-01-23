@@ -52,8 +52,8 @@ The task payload includes:
 ## Template resolution
 Templates are loaded in this order:
 
-1. Repo overrides: `docs/templates/<template>.md`
-2. System defaults: `packages/daemon/docs/templates/<template>.md`
+1. Repo overrides: [docs/templates/<template>.md](templates/)
+2. System defaults: [packages/daemon/docs/templates/<template>.md](../packages/daemon/docs/templates/)
 
 ## Default templates
 - `orchestrator`

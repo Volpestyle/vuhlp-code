@@ -54,4 +54,4 @@ Session IDs are captured from provider adapters when available. CLI adapters kee
 
 ## API reference
 
-See `docs/12-api.md` for REST + WS details.
+See [docs/12-api.md](12-api.md) for REST + WS details.
