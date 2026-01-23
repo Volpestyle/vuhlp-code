@@ -133,6 +133,14 @@
   text-align: center;
 }
 
+.app__loader-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: scale(1.4);
+  transform-origin: center;
+}
+
 .app__loader-error {
   display: flex;
   flex-direction: column;

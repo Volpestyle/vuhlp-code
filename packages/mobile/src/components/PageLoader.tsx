@@ -1,20 +1,22 @@
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { AsciiSpinner } from '@vuhlp/spinners/native';
+import { ThinkingSpinner } from '@vuhlp/spinners/native';
 import { colors, fontFamily, fontSize, spacing, radius } from '@/lib/theme';
 
 interface PageLoaderProps {
   error?: string | null;
   onRetry?: () => void;
-  size?: number;
+  size?: 'sm' | 'lg';
 }
 
-export function PageLoader({ error, onRetry, size = 280 }: PageLoaderProps) {
+export function PageLoader({ error, onRetry, size = 'lg' }: PageLoaderProps) {
   console.log('[PageLoader] Rendering with error:', error);
 
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        <AsciiSpinner size={size} color={colors.accent} resolution="medium" />
+        <View style={styles.spinnerContainer}>
+          <ThinkingSpinner size={size} variant="assemble" color={colors.accent} />
+        </View>
         {error ? (
           <View style={styles.errorContainer}>
             <Text style={styles.errorTitle}>UNABLE TO LOAD SESSION</Text>
@@ -46,6 +48,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: spacing['3xl'],
+  },
+  spinnerContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    transform: [{ scale: 1.3 }],
   },
   errorContainer: {
     alignItems: 'center',
