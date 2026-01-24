@@ -92,6 +92,14 @@ interface StallState {
   timestamp: ISO8601 | null;
 }
 
+interface EventHistoryState {
+  loading: boolean;
+  error: string | null;
+  hasMore: boolean;
+  oldestCursor: string | null;
+  loadingOlder: boolean;
+}
+
 interface RunStore {
   // Run state
   run: RunState | null;
@@ -103,6 +111,7 @@ interface RunStore {
   turnStatusEvents: TurnStatusEvent[];
   nodeLogs: Record<UUID, NodeLogEntry[]>;
   stall: StallState;
+  eventHistory: EventHistoryState;
 
   // UI state
   ui: UIState;
@@ -172,6 +181,8 @@ interface RunStore {
   setStall: (evidence: StallEvidence) => void;
   clearStall: () => void;
   resetEventState: () => void;
+  setEventHistory: (patch: Partial<EventHistoryState>) => void;
+  resetEventHistory: () => void;
 
   // Actions - UI
   setViewMode: (mode: ViewMode) => void;
@@ -199,9 +210,53 @@ const initialStallState: StallState = {
   timestamp: null,
 };
 
+const initialEventHistoryState: EventHistoryState = {
+  loading: false,
+  error: null,
+  hasMore: false,
+  oldestCursor: null,
+  loadingOlder: false,
+};
+
 const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
 const EMPTY_LOGS: NodeLogEntry[] = [];
 const LOG_TAIL_LIMIT = 50;
+const CHAT_HISTORY_LIMIT = 500;
+const TOOL_EVENT_LIMIT = 500;
+const STATUS_EVENT_LIMIT = 500;
+const STREAM_MESSAGE_PREFIX = 'stream-';
+const THINKING_STREAM_PREFIX = 'thinking-stream-';
+
+const isStreamMessage = (message: ChatMessage): boolean =>
+  message.id.startsWith(STREAM_MESSAGE_PREFIX) || message.id.startsWith(THINKING_STREAM_PREFIX);
+
+const sortByCreatedAt = (a: ChatMessage, b: ChatMessage): number =>
+  new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+
+const trimChatHistory = (messages: ChatMessage[]): ChatMessage[] => {
+  if (messages.length <= CHAT_HISTORY_LIMIT) {
+    return messages;
+  }
+  const streamMessages = messages.filter(isStreamMessage);
+  const normalMessages = messages.filter((message) => !isStreamMessage(message));
+  if (normalMessages.length <= CHAT_HISTORY_LIMIT) {
+    return [...normalMessages, ...streamMessages];
+  }
+  const sorted = [...normalMessages].sort(sortByCreatedAt);
+  const trimmed = sorted.slice(-CHAT_HISTORY_LIMIT);
+  return [...trimmed, ...streamMessages];
+};
+
+const sortByTimestamp = <T extends { timestamp: ISO8601 }>(a: T, b: T): number =>
+  new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+
+const trimByTimestamp = <T extends { timestamp: ISO8601 }>(items: T[], limit: number): T[] => {
+  if (items.length <= limit) {
+    return items;
+  }
+  const sorted = [...items].sort(sortByTimestamp);
+  return sorted.slice(-limit);
+};
 
 const SIDEBAR_STORAGE_KEY = 'vuhlp-sidebar-open';
 
@@ -239,6 +294,7 @@ export const useRunStore = create<RunStore>()(
     turnStatusEvents: [],
     nodeLogs: {},
     stall: initialStallState,
+    eventHistory: initialEventHistoryState,
     ui: initialUIState,
 
     // Run actions
@@ -520,7 +576,7 @@ export const useRunStore = create<RunStore>()(
           return {
             chatMessages: {
               ...state.chatMessages,
-              [nodeId]: next,
+              [nodeId]: trimChatHistory(next),
             },
           };
         }
@@ -541,17 +597,17 @@ export const useRunStore = create<RunStore>()(
             const next = [...messages];
             next[matchIndex] = { ...message };
             return {
-              chatMessages: {
-                ...state.chatMessages,
-                [nodeId]: next,
-              },
-            };
-          }
+            chatMessages: {
+              ...state.chatMessages,
+              [nodeId]: trimChatHistory(next),
+            },
+          };
         }
+      }
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: [...messages, message],
+            [nodeId]: trimChatHistory([...messages, message]),
           },
         };
       }),
@@ -567,7 +623,7 @@ export const useRunStore = create<RunStore>()(
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: next,
+            [nodeId]: trimChatHistory(next),
           },
         };
       }),
@@ -578,7 +634,7 @@ export const useRunStore = create<RunStore>()(
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: appendAssistantDelta(messages, nodeId, delta, timestamp),
+            [nodeId]: trimChatHistory(appendAssistantDelta(messages, nodeId, delta, timestamp)),
           },
         };
       }),
@@ -589,7 +645,7 @@ export const useRunStore = create<RunStore>()(
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: finalizeAssistantMessage(messages, nodeId, content, timestamp, status, id),
+            [nodeId]: trimChatHistory(finalizeAssistantMessage(messages, nodeId, content, timestamp, status, id)),
           },
         };
       }),
@@ -600,7 +656,7 @@ export const useRunStore = create<RunStore>()(
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: appendAssistantThinkingDelta(messages, nodeId, delta, timestamp),
+            [nodeId]: trimChatHistory(appendAssistantThinkingDelta(messages, nodeId, delta, timestamp)),
           },
         };
       }),
@@ -611,7 +667,7 @@ export const useRunStore = create<RunStore>()(
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: finalizeAssistantThinking(messages, nodeId, content, timestamp),
+            [nodeId]: trimChatHistory(finalizeAssistantThinking(messages, nodeId, content, timestamp)),
           },
         };
       }),
@@ -622,7 +678,7 @@ export const useRunStore = create<RunStore>()(
         return {
           chatMessages: {
             ...state.chatMessages,
-            [nodeId]: finalizeNodeMessages(messages, timestamp),
+            [nodeId]: trimChatHistory(finalizeNodeMessages(messages, timestamp)),
           },
         };
       }),
@@ -635,7 +691,7 @@ export const useRunStore = create<RunStore>()(
     // Tool Events
     addToolEvent: (event) =>
       set((state) => ({
-        toolEvents: [...state.toolEvents, event].slice(-100), // Keep last 100
+        toolEvents: trimByTimestamp([...state.toolEvents, event], TOOL_EVENT_LIMIT),
       })),
 
     updateToolEvent: (toolId, update) =>
@@ -647,7 +703,7 @@ export const useRunStore = create<RunStore>()(
 
     addTurnStatusEvent: (event) =>
       set((state) => ({
-        turnStatusEvents: [...state.turnStatusEvents, event].slice(-200),
+        turnStatusEvents: trimByTimestamp([...state.turnStatusEvents, event], STATUS_EVENT_LIMIT),
       })),
 
     addNodeLog: (entry) =>
@@ -678,6 +734,17 @@ export const useRunStore = create<RunStore>()(
         turnStatusEvents: [],
         nodeLogs: {},
         stall: initialStallState,
+        eventHistory: initialEventHistoryState,
+      })),
+
+    setEventHistory: (patch) =>
+      set((state) => ({
+        eventHistory: { ...state.eventHistory, ...patch },
+      })),
+
+    resetEventHistory: () =>
+      set(() => ({
+        eventHistory: initialEventHistoryState,
       })),
 
     // UI actions

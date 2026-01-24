@@ -9,7 +9,7 @@ interface ApplyEventOptions {
   allowDuplicateHandoffAnimation?: boolean;
 }
 
-const SEEN_EVENT_LIMIT = 2000;
+const SEEN_EVENT_LIMIT = 5000;
 const seenEventIds = new Set<string>();
 const seenEventOrder: string[] = [];
 

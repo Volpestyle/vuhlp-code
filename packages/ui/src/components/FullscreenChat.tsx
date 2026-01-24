@@ -18,6 +18,7 @@ import { TimelineItem } from './TimelineItem';
 import { ThinkingSpinner } from '@vuhlp/spinners';
 import { SendDiagonal } from 'iconoir-react';
 import { useChatAutoScroll } from '../hooks/useChatAutoScroll';
+import { useEventHistoryPaging } from '../hooks/useEventHistoryPaging';
 import './FullscreenChat.css';
 
 type ChatVariant = 'full' | 'mid';
@@ -41,6 +42,7 @@ export function FullscreenChat({
   const [isStreaming, setIsStreaming] = useState(false);
   const [chatFilter, setChatFilter] = useState<ChatFilter>('all');
   const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const autoLoadRef = useRef(0);
   const runId = useRunStore((s) => s.run?.id);
   const addChatMessage = useRunStore((s) => s.addChatMessage);
   const updateChatMessageStatus = useRunStore((s) => s.updateChatMessageStatus);
@@ -49,6 +51,7 @@ export function FullscreenChat({
   const toolEvents = useRunStore((s) => s.toolEvents);
   const turnStatusEvents = useRunStore((s) => s.turnStatusEvents);
   const wsConnectionStatus = useRunStore((s) => s.ui.wsConnectionStatus);
+  const { hasMore, loadingOlder, error: historyError, loadOlder } = useEventHistoryPaging();
   const nodeToolEvents = useMemo(
     () => toolEvents.filter((event) => event.nodeId === node.id),
     [toolEvents, node.id]
@@ -122,6 +125,25 @@ export function FullscreenChat({
       timelineCount: filteredTimeline.length,
     });
   }, [combinedToolEvents.length, filteredTimeline.length, node.id, showToolFallback]);
+
+  useEffect(() => {
+    const container = messagesScrollRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      if (!hasMore || loadingOlder) return;
+      if (container.scrollTop > 120) return;
+      const now = Date.now();
+      if (now - autoLoadRef.current < 750) return;
+      autoLoadRef.current = now;
+      void loadOlder();
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+    };
+  }, [hasMore, loadingOlder, loadOlder]);
 
   const sendMessage = useCallback(
     async (messageId: string, content: string) => {
@@ -229,6 +251,25 @@ export function FullscreenChat({
 
       {/* Messages */}
       <div className="fullscreen-chat__messages" ref={messagesScrollRef}>
+        {hasMore && (
+          <div className="fullscreen-chat__load-older">
+            <button
+              className="fullscreen-chat__load-older-button"
+              type="button"
+              onClick={() => {
+                void loadOlder();
+              }}
+              disabled={loadingOlder}
+            >
+              {loadingOlder ? 'Loading earlier…' : 'Load earlier'}
+            </button>
+          </div>
+        )}
+        {historyError && (
+          <div className="fullscreen-chat__load-older-error" role="alert">
+            Failed to load older events: {historyError}
+          </div>
+        )}
         {timeline.length > 0 && (
           <div className="fullscreen-chat__filters">
             <button
@@ -249,7 +290,10 @@ export function FullscreenChat({
             </button>
           </div>
         )}
-        {filteredTimeline.length === 0 && node.status !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true' ? (
+        {filteredTimeline.length === 0 &&
+        !hasMore &&
+        node.status !== 'running' &&
+        import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true' ? (
           <div className="fullscreen-chat__empty">
             <p className="fullscreen-chat__empty-text">
               {chatFilter === 'handoffs' ? 'No handoffs yet' : `Start a conversation with ${node.label}`}

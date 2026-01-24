@@ -38,6 +38,7 @@ import {
 import { useRunStore, type NodeLogEntry, type TimelineEvent } from '../stores/runStore';
 import type { ChatMessage } from '@vuhlp/contracts';
 import { useChatAutoScroll } from '../hooks/useChatAutoScroll';
+import { useEventHistoryPaging } from '../hooks/useEventHistoryPaging';
 import { TimelineItem } from './TimelineItem';
 import {
   createEdge,
@@ -900,6 +901,8 @@ function ChatTab({
     [nodeStatus, isStreaming, filter]
   );
   const { scrollToBottom } = useChatAutoScroll({ scrollRef, timeline, updateKey: autoScrollKey, resetKey: nodeId });
+  const { hasMore, loadingOlder, error: historyError, loadOlder } = useEventHistoryPaging();
+  const autoLoadRef = useRef(0);
 
   // Expose scrollToBottom to parent via ref
   useEffect(() => {
@@ -909,7 +912,26 @@ function ChatTab({
     };
   }, [scrollToBottom, scrollToBottomRef]);
 
-  if (allCount === 0 && nodeStatus !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true') {
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      if (!hasMore || loadingOlder) return;
+      if (container.scrollTop > 120) return;
+      const now = Date.now();
+      if (now - autoLoadRef.current < 750) return;
+      autoLoadRef.current = now;
+      void loadOlder();
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+    };
+  }, [scrollRef, hasMore, loadingOlder, loadOlder]);
+
+  if (allCount === 0 && !hasMore && nodeStatus !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true') {
      return (
       <div className="inspector__empty">
         <span className="inspector__empty-text">Start a conversation with {nodeLabel}</span>
@@ -917,7 +939,11 @@ function ChatTab({
     );
   }
 
-  const showEmpty = timeline.length === 0 && nodeStatus !== 'running' && import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true';
+  const showEmpty =
+    timeline.length === 0 &&
+    !hasMore &&
+    nodeStatus !== 'running' &&
+    import.meta.env.VITE_TEST_CUBE_SPINNER !== 'true';
 
   return (
     <div className="inspector__section inspector__chat">
@@ -948,6 +974,25 @@ function ChatTab({
         </div>
       ) : (
         <>
+          {hasMore && (
+            <div className="inspector__load-older">
+              <button
+                className="inspector__load-older-button"
+                type="button"
+                onClick={() => {
+                  void loadOlder();
+                }}
+                disabled={loadingOlder}
+              >
+                {loadingOlder ? 'Loading earlier…' : 'Load earlier'}
+              </button>
+            </div>
+          )}
+          {historyError && (
+            <div className="inspector__load-older-error" role="alert">
+              Failed to load older events: {historyError}
+            </div>
+          )}
           {timeline.map((item) => (
             <TimelineItem key={`${item.type}-${item.data.id}`} item={item} />
           ))}
