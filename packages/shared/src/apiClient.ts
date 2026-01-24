@@ -22,8 +22,10 @@ import type {
   EdgeState,
   GetArtifactResponse,
   GetRoleTemplateResponse,
+  GetRunEventsQuery,
   GetRunEventsResponse,
   GetRunResponse,
+  EventEnvelope,
   ListDirectoryResponse,
   ListRunsResponse,
   ListTemplatesResponse,
@@ -130,9 +132,39 @@ export function createApiClient(config: ApiClientConfig) {
       return response.run;
     },
 
-    getRunEvents: async (runId: string): Promise<GetRunEventsResponse['events']> => {
-      const response = await fetchJson<GetRunEventsResponse>(baseUrl, `/api/runs/${runId}/events`);
-      return response.events;
+    getRunEvents: async (
+      runId: string,
+      query?: GetRunEventsQuery
+    ): Promise<GetRunEventsResponse> => {
+      const queryParts: string[] = [];
+      if (typeof query?.limit === 'number') {
+        queryParts.push(`limit=${encodeURIComponent(String(query.limit))}`);
+      }
+      if (typeof query?.before === 'string' && query.before.length > 0) {
+        queryParts.push(`before=${encodeURIComponent(query.before)}`);
+      }
+      const qs = queryParts.length > 0 ? queryParts.join('&') : '';
+      const path = qs.length > 0 ? `/api/runs/${runId}/events?${qs}` : `/api/runs/${runId}/events`;
+      const response = await fetchJson<GetRunEventsResponse | EventEnvelope[]>(baseUrl, path);
+      if (Array.isArray(response)) {
+        console.warn('[api] legacy run events response detected; paging disabled', {
+          runId,
+          count: response.length,
+        });
+        return {
+          events: response,
+          page: { nextCursor: null, hasMore: false },
+        };
+      }
+      const events = Array.isArray(response.events) ? response.events : [];
+      const page = response.page ?? { nextCursor: null, hasMore: false };
+      if (!Array.isArray(response.events)) {
+        console.warn('[api] run events response missing events array; defaulting to empty', { runId });
+      }
+      if (!response.page) {
+        console.warn('[api] run events response missing page info; paging disabled', { runId });
+      }
+      return { events, page };
     },
 
     createRun: async (input?: CreateRunRequest): Promise<CreateRunResponse['run']> => {
