@@ -13,6 +13,23 @@ interface ConnectionState {
   connected: boolean;
 }
 
+const HISTORY_PAGE_SIZE = 200;
+const MAX_HISTORY_EVENTS = 1000;
+const MIN_MESSAGE_EVENTS = 20;
+
+const isMessageEvent = (event: EventEnvelope): boolean => {
+  switch (event.type) {
+    case 'message.user':
+    case 'message.assistant.delta':
+    case 'message.assistant.final':
+    case 'message.assistant.thinking.delta':
+    case 'message.assistant.thinking.final':
+      return true;
+    default:
+      return false;
+  }
+};
+
 const hasNodeCoreFields = (patch: Partial<NodeState>): patch is Partial<NodeState> & {
   label: string;
   roleTemplate: string;
@@ -300,10 +317,16 @@ export function useRunConnection(runId: string | undefined, refreshKey = 0): Con
         return;
       }
       api
-        .getRunEvents(runId)
-        .then((events) => {
+        .getRunEvents(runId, { limit: HISTORY_PAGE_SIZE })
+        .then((response) => {
           if (connectionId !== connectionIdRef.current) {
             return;
+          }
+          const events = Array.isArray(response?.events) ? response.events : [];
+          if (!Array.isArray(response?.events)) {
+            console.warn('[ws] run events response missing events array; skipping history sync', {
+              runId,
+            });
           }
           for (const event of events) {
             handleEvent(event);
@@ -393,15 +416,24 @@ export function useRunConnection(runId: string | undefined, refreshKey = 0): Con
     seenEventIdsRef.current = new Set();
     setState({ loading: true, error: null, connected: false });
 
-    Promise.all([api.getRun(runId), api.getRunEvents(runId)])
-      .then(async ([run, events]) => {
-        if (!isMounted) return;
-        setRun(run);
+    const loadHistory = async () => {
+      let before: string | undefined;
+      let totalEvents = 0;
+      let messageEvents = 0;
+      let pageCount = 0;
+      const CHUNK_SIZE = 50;
 
-        // Replay history (messages, tools, etc)
-        // We skip patches because getRun() already returns the latest state
-        // Process in chunks to avoid blocking the UI thread
-        const CHUNK_SIZE = 50;
+      while (isMounted) {
+        const response = await api.getRunEvents(runId, {
+          limit: HISTORY_PAGE_SIZE,
+          before,
+        });
+        const events = Array.isArray(response?.events) ? response.events : [];
+        if (!Array.isArray(response?.events)) {
+          console.warn('[ws] run events response missing events array; replay stopped', { runId });
+          break;
+        }
+
         for (let i = 0; i < events.length; i += CHUNK_SIZE) {
           if (!isMounted) return;
           const chunk = events.slice(i, i + CHUNK_SIZE);
@@ -421,20 +453,64 @@ export function useRunConnection(runId: string | undefined, refreshKey = 0): Con
                 handleEvent(event);
                 break;
             }
+            if (isMessageEvent(event)) {
+              messageEvents += 1;
+            }
           }
-          // Yield to main thread to let animation frame pass
           await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
+        totalEvents += events.length;
+        pageCount += 1;
+
+        const hasMore = Boolean(response.page?.hasMore);
+        const nextCursor = response.page?.nextCursor ?? null;
+        if (!hasMore || !nextCursor) {
+          break;
+        }
+        if (totalEvents >= MAX_HISTORY_EVENTS) {
+          console.info('[ws] history replay capped', { runId, totalEvents, pageCount });
+          break;
+        }
+        if (messageEvents >= MIN_MESSAGE_EVENTS) {
+          console.info('[ws] history replay satisfied message target', {
+            runId,
+            messageEvents,
+            totalEvents,
+            pageCount,
+          });
+          break;
+        }
+
+        before = nextCursor;
+      }
+
+      console.info('[ws] history replay complete', {
+        runId,
+        pages: pageCount,
+        events: totalEvents,
+        messages: messageEvents,
+      });
+    };
+
+    const bootstrap = async () => {
+      try {
+        const run = await api.getRun(runId);
+        if (!isMounted) return;
+        setRun(run);
+        await loadHistory();
         if (!isMounted) return;
         setState((s) => ({ ...s, loading: false }));
         connect();
-      })
-      .catch((err: Error) => {
-        if (isMounted) {
-          setState({ loading: false, error: err.message, connected: false });
-        }
-      });
+      } catch (err) {
+        if (!isMounted) return;
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[ws] failed to bootstrap run connection:', message);
+        setState({ loading: false, error: message, connected: false });
+      }
+    };
+
+    void bootstrap();
 
     return () => {
       isMounted = false;
