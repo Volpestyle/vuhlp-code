@@ -50,7 +50,7 @@ export default function RootLayout() {
         />
         <Stack.Screen
           name="run/[id]"
-          options={{ title: 'Graph' }}
+          options={{ title: 'Agent Graph' }}
         />
       </Stack>
     </GestureHandlerRootView>

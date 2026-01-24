@@ -6,6 +6,13 @@ export const PERMISSIONS_MODE_OPTIONS: Array<NodePermissions["cliPermissionsMode
   "gated",
 ];
 export const ORCHESTRATOR_ROLE = "orchestrator";
+export const ROLE_TEMPLATES = [
+  "implementer",
+  ORCHESTRATOR_ROLE,
+  "investigator",
+  "planner",
+  "reviewer",
+];
 
 export const DEFAULT_CAPABILITIES: NodeCapabilities = {
   edgeManagement: "none",

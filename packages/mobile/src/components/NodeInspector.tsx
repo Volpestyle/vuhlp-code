@@ -31,7 +31,7 @@ import Animated, {
   type EasingFunctionFactory,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Plus, Clock, ArrowUp, MoreHoriz, Copy, Link as LinkIcon, Play, Pause } from 'iconoir-react-native';
+import { Plus, Clock, ArrowUp, MoreHoriz, Copy, Link as LinkIcon, Play, Pause, NavArrowRight } from 'iconoir-react-native';
 import {
   useGraphStore,
   type TurnStatusEvent,
@@ -42,6 +42,7 @@ import { useChatAutoScroll } from '@/lib/useChatAutoScroll';
 import { ThinkingSpinner } from '@vuhlp/spinners/native';
 import { MarkdownMessage } from '@/components/MarkdownMessage';
 import { MediaPickerDrawer } from '@/components/MediaPickerDrawer';
+import { JsonSyntax } from '@/components/JsonSyntax';
 import { colors, getStatusColor, getProviderColors, fontFamily } from '@/lib/theme';
 import { createLocalId } from '@/lib/ids';
 import {
@@ -1069,9 +1070,9 @@ export function NodeInspector() {
                   style={styles.todosPanelToggle}
                   onPress={handleTodosToggle}
                 >
-                  <Animated.Text style={[styles.todosPanelToggleIcon, todosIconAnimatedStyle]}>
-                    ▶
-                  </Animated.Text>
+                  <Animated.View style={[styles.todosPanelToggleIconContainer, todosIconAnimatedStyle]}>
+                    <NavArrowRight width={12} height={12} color={colors.textMuted} strokeWidth={2.5} />
+                  </Animated.View>
                   <Text style={styles.todosPanelToggleLabel}>
                     Todos ({activeNode.todos.length})
                   </Text>
@@ -1404,6 +1405,17 @@ function MessageItem({
   const isThinkingActive = message.thinkingStreaming || hasThinking;
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
   const thinkingExpanded = manualExpanded ?? Boolean(message.thinkingStreaming);
+  const thinkingChevronRotation = useSharedValue(thinkingExpanded ? 1 : 0);
+
+  const handleThinkingToggle = useCallback(() => {
+    const next = manualExpanded === null ? !thinkingExpanded : !manualExpanded;
+    setManualExpanded(next);
+    thinkingChevronRotation.value = withSpring(next ? 1 : 0, { damping: 100, stiffness: 700 });
+  }, [manualExpanded, thinkingExpanded, thinkingChevronRotation]);
+
+  const thinkingChevronStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${thinkingChevronRotation.value * 90}deg` }],
+  }));
   const isPending = message.pending;
   const hasError = Boolean(message.sendError);
 
@@ -1456,13 +1468,11 @@ function MessageItem({
         >
           <Pressable
             style={styles.thinkingToggle}
-            onPress={() =>
-              setManualExpanded(manualExpanded === null ? !thinkingExpanded : !manualExpanded)
-            }
+            onPress={handleThinkingToggle}
           >
-            <Text style={styles.thinkingToggleIcon}>
-              {thinkingExpanded ? 'v' : '>'}
-            </Text>
+            <Animated.View style={[styles.thinkingChevronContainer, thinkingChevronStyle]}>
+              <NavArrowRight width={10} height={10} color={colors.textSecondary} strokeWidth={2.5} />
+            </Animated.View>
             <Text style={styles.thinkingToggleLabel}>Thinking</Text>
             {message.thinkingStreaming && <View style={styles.thinkingDot} />}
           </Pressable>
@@ -1505,10 +1515,9 @@ function StatusItem({ event }: { event: TurnStatusEvent }) {
 
 function ToolItem({ event }: { event: ToolEvent }) {
   const [expanded, setExpanded] = useState(false);
+  const chevronRotation = useSharedValue(0);
   const isCompleted = event.status === 'completed' || event.status === 'failed';
   const hasError = event.status === 'failed' || Boolean(event.error);
-  const argsText = JSON.stringify(event.tool.args, null, 2);
-  const resultText = event.result ? JSON.stringify(event.result, null, 2) : null;
   const statusStyle =
     event.status === 'completed'
       ? styles.toolStatusCompleted
@@ -1518,11 +1527,23 @@ function ToolItem({ event }: { event: ToolEvent }) {
           ? styles.toolStatusStarted
           : styles.toolStatusProposed;
 
+  const handleToggle = useCallback(() => {
+    const next = !expanded;
+    setExpanded(next);
+    chevronRotation.value = withSpring(next ? 1 : 0, { damping: 100, stiffness: 700 });
+  }, [expanded, chevronRotation]);
+
+  const chevronStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${chevronRotation.value * 90}deg` }],
+  }));
+
   return (
     <View style={[styles.toolCard, hasError && styles.toolCardError]}>
-      <Pressable style={styles.toolHeader} onPress={() => setExpanded(!expanded)}>
+      <Pressable style={styles.toolHeader} onPress={handleToggle}>
         <View style={styles.toolTitleRow}>
-          <Text style={styles.toolCaret}>{expanded ? 'v' : '>'}</Text>
+          <Animated.View style={[styles.toolChevronContainer, chevronStyle]}>
+            <NavArrowRight width={12} height={12} color={colors.textSecondary} strokeWidth={2.5} />
+          </Animated.View>
           <Text style={styles.toolName} numberOfLines={1}>
             {event.tool.name}
           </Text>
@@ -1536,9 +1557,7 @@ function ToolItem({ event }: { event: ToolEvent }) {
       {expanded && (
         <View style={styles.toolBody}>
           <Text style={styles.toolSectionLabel}>Arguments</Text>
-          <Text style={[styles.toolCode, styles.mono]} selectable>
-            {argsText}
-          </Text>
+          <JsonSyntax data={event.tool.args} style={styles.toolCode} />
 
           {hasError && event.error?.message && (
             <>
@@ -1549,12 +1568,10 @@ function ToolItem({ event }: { event: ToolEvent }) {
             </>
           )}
 
-          {isCompleted && resultText && (
+          {isCompleted && event.result && (
             <>
               <Text style={styles.toolSectionLabel}>Result</Text>
-              <Text style={[styles.toolCode, styles.mono]} selectable>
-                {resultText}
-              </Text>
+              <JsonSyntax data={event.result} style={styles.toolCode} />
             </>
           )}
         </View>
@@ -1823,9 +1840,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     backgroundColor: colors.bgSecondary,
   },
-  thinkingToggleIcon: {
-    color: colors.textSecondary,
-    fontSize: 12,
+  thinkingChevronContainer: {
+    width: 14,
+    height: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   thinkingToggleLabel: {
     color: colors.textSecondary,
@@ -1913,9 +1932,11 @@ const styles = StyleSheet.create({
     gap: 6,
     flexShrink: 1,
   },
-  toolCaret: {
-    color: colors.textSecondary,
-    fontSize: 12,
+  toolChevronContainer: {
+    width: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   toolName: {
     color: colors.textPrimary,
@@ -2134,10 +2155,11 @@ const styles = StyleSheet.create({
     padding: 10,
     backgroundColor: colors.bgSurface,
   },
-  todosPanelToggleIcon: {
-    color: colors.textMuted,
-    fontSize: 10,
-    width: 14,
+  todosPanelToggleIconContainer: {
+    width: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   todosPanelToggleLabel: {
     color: colors.textPrimary,

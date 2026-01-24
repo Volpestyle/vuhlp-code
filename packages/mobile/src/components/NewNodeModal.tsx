@@ -12,7 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import type { NodeCapabilities, NodePermissions, ProviderName } from '@vuhlp/contracts';
+import type { NodeCapabilities, NodePermissions, ProviderName, TemplateInfo } from '@vuhlp/contracts';
 import { Plus } from 'iconoir-react-native';
 import { colors, fontFamily, fontSize, radius, spacing } from '@/lib/theme';
 import { api } from '@/lib/api';
@@ -23,6 +23,7 @@ import {
   EDGE_MANAGEMENT_OPTIONS,
   PERMISSIONS_MODE_OPTIONS,
   PROVIDER_OPTIONS,
+  ROLE_TEMPLATES,
   getEdgeManagementDefaults,
   parseEdgeManagement,
 } from '@vuhlp/shared';
@@ -48,7 +49,9 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
   const scrollViewRef = useRef<ScrollView>(null);
 
   const [label, setLabel] = useState('');
+  const [roleMode, setRoleMode] = useState<'basic' | 'custom'>('basic');
   const [roleTemplate, setRoleTemplate] = useState('implementer');
+  const [customTemplates, setCustomTemplates] = useState<TemplateInfo[]>([]);
   const [provider, setProvider] = useState<ProviderName>('claude');
   const [capabilities, setCapabilities] = useState<NodeCapabilities>(DEFAULT_CAPABILITIES);
   const [permissions, setPermissions] = useState<NodePermissions>(DEFAULT_PERMISSIONS);
@@ -61,6 +64,7 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
   useEffect(() => {
     if (!visible) return;
     setLabel(`New Agent ${nodeCount + 1}`);
+    setRoleMode('basic');
     setRoleTemplate('implementer');
     setProvider('claude');
     setCapabilities(DEFAULT_CAPABILITIES);
@@ -88,6 +92,18 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
       }));
     }
   }, [visible, roleTemplate, edgeManagementTouched, agentManagementApprovalTouched]);
+
+  // Load custom templates
+  useEffect(() => {
+    if (visible && roleMode === 'custom') {
+      api.listTemplates()
+        .then((res) => {
+           const filtered = res.templates.filter(t => !ROLE_TEMPLATES.includes(t.name));
+           setCustomTemplates(filtered);
+        })
+        .catch((err) => console.error('[NewNodeModal] Failed to list templates', err));
+    }
+  }, [visible, roleMode]);
 
   const canSubmit = label.trim().length > 0 && !isSubmitting;
 
@@ -214,13 +230,81 @@ export function NewNodeModal({ visible, onClose, runId }: NewNodeModalProps) {
             {/* Role Template input */}
             <View style={styles.formGroup}>
               <Text style={styles.label}>Role Template</Text>
-              <TextInput
-                style={styles.input}
-                value={roleTemplate}
-                onChangeText={setRoleTemplate}
-                placeholder="implementer"
-                placeholderTextColor={colors.textMuted}
-              />
+              
+              <View style={styles.tabsRow}>
+                <TouchableOpacity
+                  style={[styles.tab, roleMode === 'basic' && styles.tabActive]}
+                  onPress={() => {
+                    setRoleMode('basic');
+                    setRoleTemplate(ROLE_TEMPLATES[0] || 'implementer');
+                  }}
+                >
+                  <Text style={[styles.tabText, roleMode === 'basic' && styles.tabTextActive]}>
+                    Basic
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.tab, roleMode === 'custom' && styles.tabActive]}
+                  onPress={() => {
+                    setRoleMode('custom');
+                    setRoleTemplate('');
+                  }}
+                >
+                  <Text style={[styles.tabText, roleMode === 'custom' && styles.tabTextActive]}>
+                    Custom
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {roleMode === 'basic' ? (
+                <View style={styles.providerRow}>
+                  {ROLE_TEMPLATES.map((template: string) => (
+                    <TouchableOpacity
+                      key={template}
+                      style={[
+                        styles.providerOption,
+                        roleTemplate === template && styles.providerOptionSelected,
+                      ]}
+                      onPress={() => setRoleTemplate(template)}
+                    >
+                      <Text
+                        style={[
+                          styles.providerOptionText,
+                          roleTemplate === template && styles.providerOptionTextSelected,
+                        ]}
+                      >
+                        {template.toUpperCase()}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : (
+                 <View style={styles.providerRow}>
+                  {customTemplates.length === 0 ? (
+                    <Text style={styles.label}>No saved templates found</Text>
+                  ) : (
+                    customTemplates.map((template) => (
+                      <TouchableOpacity
+                        key={template.name}
+                        style={[
+                          styles.providerOption,
+                          roleTemplate === template.name && styles.providerOptionSelected,
+                        ]}
+                        onPress={() => setRoleTemplate(template.name)}
+                      >
+                        <Text
+                          style={[
+                            styles.providerOptionText,
+                            roleTemplate === template.name && styles.providerOptionTextSelected,
+                          ]}
+                        >
+                          {template.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))
+                  )}
+                </View>
+              )}
             </View>
 
             {/* Provider selection */}
@@ -438,6 +522,32 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: spacing.md,
+  },
+  tabsRow: {
+    flexDirection: 'row',
+    backgroundColor: colors.bgSecondary,
+    padding: 2,
+    borderRadius: radius.sm,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: spacing.xs,
+    alignItems: 'center',
+    borderRadius: radius.sm,
+  },
+  tabActive: {
+    backgroundColor: colors.bgElevated,
+  },
+  tabText: {
+    fontFamily: fontFamily.medium,
+    fontSize: fontSize.xs,
+    color: colors.textMuted,
+  },
+  tabTextActive: {
+    color: colors.textPrimary,
   },
   input: {
     backgroundColor: colors.bgSecondary,
