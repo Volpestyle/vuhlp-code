@@ -198,7 +198,7 @@ Consumers must support:
 - `POST /api/runs`
 - `GET /api/runs` / `GET /api/runs/:id`
 - `PATCH /api/runs/:id` / `DELETE /api/runs/:id`
-- `GET /api/runs/:id/events`
+- `GET /api/runs/:id/events` (paged; supports `limit` and `before`, returns `page.nextCursor` + `page.hasMore`)
 - `POST /api/runs/:id/nodes`
 - `PATCH /api/runs/:id/nodes/:nodeId`
 - `DELETE /api/runs/:id/nodes/:nodeId`

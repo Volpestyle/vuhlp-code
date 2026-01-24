@@ -10,6 +10,7 @@ import type {
   UUID
 } from "@vuhlp/contracts";
 import { EventLog } from "./event-log.js";
+import type { Logger } from "@vuhlp/providers";
 
 export interface NodeRuntime {
   inbox: Envelope[];
@@ -45,9 +46,11 @@ export interface RunRecord {
 export class RunStore {
   private runs = new Map<UUID, RunRecord>();
   private readonly dataDir: string;
+  private readonly logger?: Logger;
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, logger?: Logger) {
     this.dataDir = dataDir;
+    this.logger = logger;
   }
 
   createRun(runState: RunState): RunRecord {
@@ -57,7 +60,7 @@ export class RunStore {
       edges: new Map(),
       artifacts: new Map(),
       approvals: new Map(),
-      eventLog: new EventLog(this.dataDir, runState.id)
+      eventLog: new EventLog(this.dataDir, runState.id, this.logger)
     };
     this.runs.set(runState.id, record);
     return record;

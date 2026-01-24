@@ -1,4 +1,5 @@
 import express from "express";
+import type { ParsedQs } from "qs";
 import http from "http";
 import { WebSocketServer } from "ws";
 import type { Runtime } from "../runtime/runtime.js";
@@ -17,6 +18,19 @@ import type {
 export function createServer(runtime: Runtime): http.Server {
   const app = express();
   app.use(express.json({ limit: "4mb" }));
+
+  const DEFAULT_EVENTS_PAGE_SIZE = 200;
+  const MAX_EVENTS_PAGE_SIZE = 2000;
+
+  const getQueryString = (value: string | string[] | ParsedQs | ParsedQs[] | undefined): string | undefined => {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (Array.isArray(value) && typeof value[0] === "string") {
+      return value[0];
+    }
+    return undefined;
+  };
 
 
 
@@ -76,8 +90,24 @@ export function createServer(runtime: Runtime): http.Server {
 
   app.get("/api/runs/:id/events", async (req, res) => {
     try {
-      const events = await runtime.getEvents(req.params.id);
-      res.json({ events });
+      const limitParam = getQueryString(req.query.limit);
+      const beforeParam = getQueryString(req.query.before);
+      const limit = limitParam ? Number.parseInt(limitParam, 10) : DEFAULT_EVENTS_PAGE_SIZE;
+      if (!Number.isFinite(limit) || limit <= 0 || limit > MAX_EVENTS_PAGE_SIZE) {
+        res.status(400).json({ error: `limit must be between 1 and ${MAX_EVENTS_PAGE_SIZE}` });
+        return;
+      }
+      let before: number | undefined;
+      if (beforeParam) {
+        const parsed = Number.parseInt(beforeParam, 10);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          res.status(400).json({ error: "before must be a non-negative integer cursor" });
+          return;
+        }
+        before = parsed;
+      }
+      const result = await runtime.getEvents(req.params.id, { limit, before });
+      res.json(result);
     } catch (error) {
       res.status(404).json({ error: String(error) });
     }

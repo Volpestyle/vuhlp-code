@@ -49,7 +49,23 @@ Deletes a run and its data.
 
 ### GET /api/runs/:runId/events
 
-Returns stored event log.
+Returns stored event log (paged).
+
+Query params:
+- `limit` (optional, default 200, max 2000)
+- `before` (optional cursor from previous response)
+
+Response:
+
+```json
+{
+  "events": [ { "type": "message.user", "...": "..." } ],
+  "page": {
+    "nextCursor": "12345",
+    "hasMore": true
+  }
+}
+```
 
 ---
 

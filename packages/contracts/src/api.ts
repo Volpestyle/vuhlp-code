@@ -48,8 +48,19 @@ export interface GetRunResponse {
   run: RunState;
 }
 
+export interface GetRunEventsQuery {
+  limit?: number;
+  before?: string;
+}
+
+export interface RunEventsPageInfo {
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
 export interface GetRunEventsResponse {
   events: EventEnvelope[];
+  page: RunEventsPageInfo;
 }
 
 export interface UpdateRunRequest {

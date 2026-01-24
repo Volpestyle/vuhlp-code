@@ -85,7 +85,7 @@ export class Runtime {
     this.appRoot = path.resolve(options.appRoot ?? this.repoRoot);
     this.systemTemplatesDir = options.systemTemplatesDir;
     this.logger = options.logger ?? new ConsoleLogger({ scope: "runtime" });
-    this.store = new RunStore(this.dataDir);
+    this.store = new RunStore(this.dataDir, this.logger);
     this.eventBus = new EventBus();
     this.runner =
       options.runner ??
@@ -372,9 +372,14 @@ export class Runtime {
     return { name: trimmedName };
   }
 
-  async getEvents(runId: UUID): Promise<EventEnvelope[]> {
+  async getEvents(
+    runId: UUID,
+    options?: { limit?: number; before?: number }
+  ): Promise<{ events: EventEnvelope[]; page: { nextCursor: string | null; hasMore: boolean } }> {
     const record = this.requireRun(runId);
-    return record.eventLog.readAll();
+    const limit = options?.limit ?? 200;
+    const page = await record.eventLog.readPage({ limit, before: options?.before });
+    return { events: page.events, page: { nextCursor: page.nextCursor, hasMore: page.hasMore } };
   }
 
   private runSnapshotPath(runId: UUID): string {
@@ -485,100 +490,102 @@ export class Runtime {
   }
 
   private async rebuildRunStateFromEvents(runId: string): Promise<RunState | null> {
-    const eventLog = new EventLog(this.dataDir, runId);
-    let events: EventEnvelope[] = [];
+    const eventLog = new EventLog(this.dataDir, runId, this.logger);
+    let runState: RunState | null = null;
+    let eventCount = 0;
+
     try {
-      events = await eventLog.readAll();
+      eventCount = await eventLog.replay((event) => {
+        if (event.type === "run.patch") {
+          if (!runState) {
+            const base: RunState = {
+              id: event.runId,
+              contractVersion: "1",
+              status: "paused",
+              mode: "AUTO",
+              globalMode: "IMPLEMENTATION",
+              createdAt: event.ts,
+              updatedAt: event.ts,
+              nodes: {},
+              nodeConfigs: {},
+              edges: {},
+              artifacts: {}
+            };
+            runState = { ...base, ...event.patch };
+          } else {
+            runState = {
+              ...runState,
+              ...event.patch,
+              nodes: event.patch.nodes ? { ...runState.nodes, ...event.patch.nodes } : runState.nodes,
+              nodeConfigs: event.patch.nodeConfigs
+                ? { ...runState.nodeConfigs, ...event.patch.nodeConfigs }
+                : runState.nodeConfigs,
+              edges: event.patch.edges ? { ...runState.edges, ...event.patch.edges } : runState.edges,
+              artifacts: event.patch.artifacts
+                ? { ...runState.artifacts, ...event.patch.artifacts }
+                : runState.artifacts
+            };
+          }
+          return;
+        }
+
+        if (!runState) {
+          return;
+        }
+
+        switch (event.type) {
+          case "node.patch": {
+            const existing = runState.nodes[event.nodeId] ?? {
+              id: event.nodeId,
+              runId: event.runId,
+              label: "unknown",
+              roleTemplate: "unknown",
+              provider: "custom",
+              status: "idle",
+              summary: "idle",
+              lastActivityAt: event.ts,
+              capabilities: {
+                edgeManagement: "none",
+                writeCode: false,
+                writeDocs: false,
+                runCommands: false,
+                delegateOnly: false
+              },
+              permissions: {
+                cliPermissionsMode: "skip",
+                agentManagementRequiresApproval: true
+              },
+              session: {
+                sessionId: "pending",
+                resetCommands: []
+              }
+            };
+            runState.nodes[event.nodeId] = { ...existing, ...event.patch };
+            break;
+          }
+          case "node.deleted":
+            delete runState.nodes[event.nodeId];
+            delete runState.nodeConfigs[event.nodeId];
+            break;
+          case "edge.created":
+            runState.edges[event.edge.id] = event.edge;
+            break;
+          case "edge.deleted":
+            delete runState.edges[event.edgeId];
+            break;
+          case "artifact.created":
+            runState.artifacts[event.artifact.id] = event.artifact;
+            break;
+        }
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error("failed to read run events", { runId, message });
       return null;
     }
-    if (events.length === 0) {
-      return null;
-    }
 
-    let runState: RunState | null = null;
-    for (const event of events) {
-      if (event.type === "run.patch") {
-        if (!runState) {
-          const base: RunState = {
-            id: event.runId,
-            contractVersion: "1",
-            status: "paused",
-            mode: "AUTO",
-            globalMode: "IMPLEMENTATION",
-            createdAt: event.ts,
-            updatedAt: event.ts,
-            nodes: {},
-            nodeConfigs: {},
-            edges: {},
-            artifacts: {}
-          };
-          runState = { ...base, ...event.patch };
-        } else {
-          runState = {
-            ...(runState as any),
-            ...event.patch,
-            nodes: event.patch.nodes ? { ...(runState.nodes as any), ...event.patch.nodes } : runState.nodes,
-            nodeConfigs: event.patch.nodeConfigs
-              ? { ...(runState.nodeConfigs as any), ...event.patch.nodeConfigs }
-              : runState.nodeConfigs,
-            edges: event.patch.edges ? { ...(runState.edges as any), ...event.patch.edges } : runState.edges,
-            artifacts: event.patch.artifacts
-              ? { ...(runState.artifacts as any), ...event.patch.artifacts }
-              : runState.artifacts
-          };
-        }
-        continue;
-      }
-      if (!runState) {
-        continue;
-      }
-      switch (event.type) {
-        case "node.patch": {
-          const existing = runState.nodes[event.nodeId] ?? {
-            id: event.nodeId,
-            runId: event.runId,
-            label: "unknown",
-            roleTemplate: "unknown",
-            provider: "custom",
-            status: "idle",
-            summary: "idle",
-            lastActivityAt: event.ts,
-            capabilities: {
-              edgeManagement: "none",
-              writeCode: false,
-              writeDocs: false,
-              runCommands: false,
-              delegateOnly: false
-            },
-            permissions: {
-              cliPermissionsMode: "skip",
-              agentManagementRequiresApproval: true
-            },
-            session: {
-              sessionId: "pending",
-              resetCommands: []
-            }
-          };
-          runState.nodes[event.nodeId] = { ...existing, ...event.patch };
-          break;
-        }
-        case "node.deleted":
-          delete runState.nodes[event.nodeId];
-          delete runState.nodeConfigs[event.nodeId];
-          break;
-        case "edge.created":
-          runState.edges[event.edge.id] = event.edge;
-          break;
-        case "edge.deleted":
-          delete runState.edges[event.edgeId];
-          break;
-        case "artifact.created":
-          runState.artifacts[event.artifact.id] = event.artifact;
-          break;
-      }
+    if (eventCount === 0 || !runState) {
+      return null;
     }
 
     return runState;
@@ -1665,7 +1672,10 @@ export class Runtime {
         record.state.updatedAt = event.ts ?? nowIso();
       }
     }
-    void record.eventLog.append(event);
+    void record.eventLog.append(event).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error("failed to append run event", { runId, type: event.type, message });
+    });
     this.eventBus.emit(event);
 
     if (usagePatch?.nodeId && usagePatch.nodeUsage) {
